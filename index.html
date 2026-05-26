@@ -2227,7 +2227,7 @@ let ST = {
 
 // ============================================================
 // TEMP: skip login screen — local-only mode.
-window.BYPASS_LOGIN = false;
+window.BYPASS_LOGIN = true;
 
 // ============================================================
 // SUPABASE CONFIG
@@ -2452,6 +2452,32 @@ async function loadSt() {
         render();
         return;
       }
+    }
+
+    // ── STEP 1.5: Load the workspaces this user can see ───────────────────────
+    // RLS policies filter automatically: masters see all, regular users see only their own.
+    try {
+      const { data: wsRows, error: wsErr } = await sb
+        .from('workspaces')
+        .select('*');
+      if (wsErr) throw wsErr;
+      ST.workspaces = {};
+      for (const ws of (wsRows || [])) {
+        // Map DB snake_case columns to in-memory camelCase keys
+        ST.workspaces[ws.id] = {
+          id: ws.id,
+          name: ws.name,
+          wordmark: ws.wordmark || '',
+          accentColor: ws.accent_color || '#c8780f',
+          logoData: ws.logo_data || null,
+          divisions: ws.divisions || [],
+          jurisdictions: ws.jurisdictions || [],
+          rfiTemplates: ws.rfi_templates || [],
+        };
+      }
+      console.log(`Loaded ${Object.keys(ST.workspaces).length} workspace(s). isMaster=${AUTH.isMaster}`);
+    } catch(e) {
+      console.error('Failed to load workspaces list:', e);
     }
 
     // ── STEP 2: Load app_state scoped to that workspace ───────────────────────
@@ -9652,7 +9678,7 @@ function wsGenId() {
 }
 
 // Create a new workspace from config
-function wsCreate(config) {
+async function wsCreate(config) {
   const id = wsGenId();
   const ws = {
     id,
@@ -9669,6 +9695,36 @@ function wsCreate(config) {
   if (!ST.workspaces) ST.workspaces = {};
   ST.workspaces[id] = ws;
   wsSaveRegistry(ST.workspaces);
+
+  // If authenticated and master, persist to Supabase
+  if (AUTH.session && AUTH.isMaster) {
+    try {
+      // 1) Create the workspace row
+      const { error: wsErr } = await sb.from('workspaces').insert({
+        id: ws.id,
+        name: ws.name,
+        wordmark: ws.wordmark,
+        accent_color: ws.accentColor,
+        logo_data: ws.logoData || null,
+        divisions: ws.divisions,
+        jurisdictions: ws.jurisdictions,
+        rfi_templates: ws.rfiTemplates,
+      });
+      if (wsErr) throw wsErr;
+      // 2) Assign the master user as a member (so they retain visibility)
+      const { error: mErr } = await sb.from('workspace_members').insert({
+        workspace_id: ws.id,
+        user_id: AUTH.user.id,
+        role: 'admin',
+        is_master: true,
+      });
+      if (mErr) throw mErr;
+      console.log('Workspace created in backend:', ws.id);
+    } catch(e) {
+      console.error('Failed to persist workspace to backend:', e);
+      showToast('Workspace saved locally but failed to sync to cloud: ' + e.message, 'error');
+    }
+  }
   return ws;
 }
 
@@ -9823,7 +9879,7 @@ function buildWorkspaceSwitcher() {
       </button>
       ${isOpen ? `
         <div class="ws-dropdown">
-          <div class="ws-dropdown-label">Master · Switch workspace</div>
+          <div class="ws-dropdown-label">${AUTH.isMaster ? 'Master · Switch workspace' : 'Your workspace'}</div>
           ${wsList.map(ws => `
             <button class="ws-option${ws.id===active.id?' active':''}" onclick="event.stopPropagation();wsSwitchTo('${ws.id}');ST.workspaceSwitcherOpen=false">
               ${ws.logoData
@@ -9836,15 +9892,17 @@ function buildWorkspaceSwitcher() {
               ${ws.id===active.id ? '<span style="color:var(--amber);font-family:var(--mono);font-size:11px">●</span>' : ''}
             </button>
           `).join('')}
-          <div class="ws-dropdown-divider"></div>
-          <button class="ws-option ws-action" onclick="event.stopPropagation();ST.workspaceSwitcherOpen=false;ST.wsWizard={step:1,config:{}};render()">
-            <span class="ws-action-icon">+</span>
-            <span>New workspace…</span>
-          </button>
-          <button class="ws-option ws-action" onclick="event.stopPropagation();ST.workspaceSwitcherOpen=false;ST.wsSettingsModal=true;render()">
-            <span class="ws-action-icon">⚙</span>
-            <span>Workspace settings…</span>
-          </button>
+          ${AUTH.isMaster ? `
+            <div class="ws-dropdown-divider"></div>
+            <button class="ws-option ws-action" onclick="event.stopPropagation();ST.workspaceSwitcherOpen=false;ST.wsWizard={step:1,config:{}};render()">
+              <span class="ws-action-icon">+</span>
+              <span>New workspace…</span>
+            </button>
+            <button class="ws-option ws-action" onclick="event.stopPropagation();ST.workspaceSwitcherOpen=false;ST.wsSettingsModal=true;render()">
+              <span class="ws-action-icon">⚙</span>
+              <span>Workspace settings…</span>
+            </button>
+          ` : ''}
         </div>
       ` : ''}
     </div>
@@ -10105,7 +10163,7 @@ function buildWsWizard() {
   `;
 }
 
-function wsWizardNext() {
+async function wsWizardNext() {
   if (!ST.wsWizard) return;
   const step = ST.wsWizard.step || 1;
   if (step < 4) {
@@ -10116,7 +10174,7 @@ function wsWizardNext() {
   // Step 4 → create workspace
   const cfg = ST.wsWizard.config || {};
   if (!cfg.name) { showToast('Name is required', 'warn'); return; }
-  const ws = wsCreate(cfg);
+  const ws = await wsCreate(cfg);
   ST.wsWizard = null;
   showToast(`Workspace "${ws.name}" created. Switching…`, 'success');
   wsSwitchTo(ws.id);
