@@ -2227,7 +2227,7 @@ let ST = {
 
 // ============================================================
 // TEMP: skip login screen — local-only mode.
-window.BYPASS_LOGIN = false;
+window.BYPASS_LOGIN = true;
 
 // ============================================================
 // SUPABASE CONFIG
@@ -2424,7 +2424,41 @@ async function loadSt() {
   }
   try {
     setSaveStatus('saving');
-    const { data, error } = await sb.from('app_state').select('key, value');
+
+    // ── STEP 1: Load this user's workspace memberships ────────────────────────
+    // Determine which workspace this session is operating on.
+    if (!ST.activeWorkspace) {
+      try {
+        const { data: members, error: mErr } = await sb
+          .from('workspace_members')
+          .select('workspace_id, role, is_master')
+          .eq('user_id', AUTH.user.id);
+        if (mErr) throw mErr;
+        if (!members || members.length === 0) {
+          setSaveStatus('error', 'No workspace assigned to your account. Contact admin.');
+          console.warn('User has no workspace memberships in workspace_members table.');
+          // Don't bail entirely — still render the shell so user sees the error.
+          render();
+          return;
+        }
+        // Prefer the master workspace if user is a master, else first one
+        const master = members.find(m => m.is_master);
+        ST.activeWorkspace = (master || members[0]).workspace_id;
+        AUTH.isMaster = !!master;
+        AUTH.workspaceMemberships = members;
+      } catch(e) {
+        console.error('Failed to load workspace memberships:', e);
+        setSaveStatus('error', 'Could not load workspace assignments: ' + e.message);
+        render();
+        return;
+      }
+    }
+
+    // ── STEP 2: Load app_state scoped to that workspace ───────────────────────
+    const { data, error } = await sb
+      .from('app_state')
+      .select('key, value')
+      .eq('workspace_id', ST.activeWorkspace);
     if (error) throw error;
     const state = {};
     for (const row of (data || [])) state[row.key] = row.value;
@@ -2448,6 +2482,9 @@ async function loadSt() {
     ST.estimateVersions = state.estimateVersions || {};
     ST.customCategories = Array.isArray(state.customCategories) ? state.customCategories : null;
     ST.printTemplates = Array.isArray(state.printTemplates) ? state.printTemplates : [];
+    ST.estimator = state.estimator || {};
+    ST.bidStages = state.bidStages || {};
+    ST.toSpaces = state.toSpaces || [];
     // aiChat lives inside ST.estimator[pid].aiChat — persisted as part of the
     // estimator blob. Clear streaming flags on load (in case of hard reload mid-stream).
     ST.estimatorAIStreaming = false;
@@ -2481,8 +2518,8 @@ async function loadSt() {
       for (const s of (ST.addedSubs || [])) s.bids = {};
       try {
         await sb.from('app_state').upsert(
-          [{ key: 'pricing_wipe_v2', value: true }],
-          { onConflict: 'key' }
+          [{ workspace_id: ST.activeWorkspace, key: 'pricing_wipe_v2', value: true }],
+          { onConflict: 'workspace_id,key' }
         );
       } catch(e) { console.warn('Could not persist pricing_wipe_v2 flag:', e); }
       // Best-effort orphan PDF cleanup (non-blocking).
@@ -2541,7 +2578,7 @@ async function saveSt() {
     if (window.BYPASS_LOGIN) { saveStLocal(); setSaveStatus('saved'); }
     return;
   }
-  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator']
+  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator','bidStages']
     .forEach(k => SAVE_STATE.pendingKeys.add(k));
   if (SAVE_STATE.debounceTimer) clearTimeout(SAVE_STATE.debounceTimer);
   SAVE_STATE.debounceTimer = setTimeout(flushSave, 400);
@@ -2550,6 +2587,13 @@ async function saveSt() {
 async function flushSave() {
   if (!AUTH.session) return;
   if (SAVE_STATE.pendingKeys.size === 0) return;
+
+  // Guard: must have an active workspace assigned to save to backend
+  if (!ST.activeWorkspace) {
+    console.warn('No active workspace — skipping save. User may need to be added to a workspace.');
+    setSaveStatus('error', 'No workspace assigned to your account. Contact admin.');
+    return;
+  }
 
   const rows = [];
   for (const k of SAVE_STATE.pendingKeys) {
@@ -2575,14 +2619,15 @@ async function flushSave() {
     else if (k === 'customCategories') v = ST.customCategories;
     else if (k === 'printTemplates') v = ST.printTemplates;
     else if (k === 'estimator') v = ST.estimator;
-    rows.push({ key: k, value: v });
+    else if (k === 'bidStages') v = ST.bidStages;
+    rows.push({ workspace_id: ST.activeWorkspace, key: k, value: v });
   }
   const keysToFlush = [...SAVE_STATE.pendingKeys];
   SAVE_STATE.pendingKeys.clear();
 
   try {
     setSaveStatus('saving');
-    const { error } = await sb.from('app_state').upsert(rows, { onConflict: 'key' });
+    const { error } = await sb.from('app_state').upsert(rows, { onConflict: 'workspace_id,key' });
     if (error) throw error;
     setSaveStatus('saved');
   } catch(e) {
@@ -2718,6 +2763,10 @@ async function doLogin(email, password) {
 
 async function doLogout() {
   if (!confirm('Sign out?')) return;
+  // Clear in-memory workspace state so next login fetches fresh memberships
+  ST.activeWorkspace = null;
+  AUTH.isMaster = false;
+  AUTH.workspaceMemberships = [];
   await sb.auth.signOut();
 }
 
