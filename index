@@ -3186,7 +3186,7 @@ a:hover{opacity:.7}
 </style>
 
 <!-- External libraries -->
-<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
   if (window.pdfjsLib) {
@@ -3611,9 +3611,58 @@ const PLAN_FEATURES = [
   'Priority email support'
 ];
 // ============================================================
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: { persistSession: true, autoRefreshToken: true }
-});
+// ============================================================
+// Create Supabase client (defensive — handles CDN load failures)
+// ============================================================
+let sb;
+try {
+  if (typeof supabase === 'undefined' || !supabase.createClient) {
+    throw new Error('Supabase SDK did not load from CDN');
+  }
+  sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true }
+  });
+} catch (err) {
+  console.error('Supabase init failed:', err);
+  // Provide a stub so subsequent code doesn't crash before showing error UI
+  sb = {
+    auth: {
+      getSession: async () => ({ data: { session: null } }),
+      onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+      signInWithPassword: async () => ({ data: null, error: { message: 'Supabase not loaded' } }),
+      signOut: async () => ({ error: null }),
+      resetPasswordForEmail: async () => ({ error: null }),
+    },
+    from: () => ({
+      select: () => ({ eq: () => Promise.resolve({ data: [], error: new Error('Supabase not loaded') }) }),
+      upsert: () => Promise.resolve({ error: new Error('Supabase not loaded') }),
+      insert: () => Promise.resolve({ error: new Error('Supabase not loaded') }),
+    }),
+  };
+  // Show a visible banner once the DOM is ready
+  setTimeout(() => {
+    const appEl = document.getElementById('app');
+    if (appEl) {
+      appEl.innerHTML = `
+        <div style="padding:48px 32px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:560px;margin:80px auto">
+          <div style="font-family:monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#c44a2c;margin-bottom:14px">⚠ Library load error</div>
+          <h1 style="font-size:22px;margin:0 0 14px">Could not load Supabase</h1>
+          <p style="color:#666;line-height:1.6;margin:0 0 18px">
+            The Supabase JavaScript SDK failed to load from CDN. This usually means:
+          </p>
+          <ul style="color:#666;line-height:1.8;margin:0 0 18px;padding-left:20px">
+            <li>Your internet connection is down</li>
+            <li>Your network is blocking <code>cdn.jsdelivr.net</code></li>
+            <li>An ad blocker is interfering</li>
+          </ul>
+          <p style="color:#666;line-height:1.6;margin:0 0 18px">
+            Error detail: <code style="background:#f4f1e8;padding:2px 6px;border-radius:3px">${(err.message||err).toString().slice(0,100)}</code>
+          </p>
+          <button onclick="window.location.reload()" style="background:#c44a2c;color:#fff;border:none;padding:10px 20px;font-size:13px;cursor:pointer;border-radius:3px;font-family:inherit">Reload page</button>
+        </div>`;
+    }
+  }, 50);
+}
 
 const AUTH = { user: null, session: null, loaded: !!window.BYPASS_LOGIN };
 
@@ -14856,6 +14905,16 @@ function deleteSubBid(sid, key) {
 }
 
 (async () => {
+  // Guard: ensure all required external libraries are loaded
+  if (typeof supabase === 'undefined' || !supabase.createClient) {
+    document.getElementById('app').innerHTML = `
+      <div style="padding:48px 32px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:560px;margin:80px auto">
+        <h1 style="font-size:22px;margin:0 0 14px">Failed to load Supabase library</h1>
+        <p style="color:#666;line-height:1.6;margin:0 0 18px">The Supabase JavaScript SDK could not be loaded from CDN. Check your internet connection and refresh the page. If the problem persists, your network may be blocking <code>cdn.jsdelivr.net</code>.</p>
+        <button onclick="window.location.reload()" style="background:#c44a2c;color:#fff;border:none;padding:10px 20px;font-size:13px;cursor:pointer;border-radius:3px">Reload</button>
+      </div>`;
+    return;
+  }
   await initAuth();
   await loadSt();
   // Initialize workspace system (profile-based model for local/bypass mode).
