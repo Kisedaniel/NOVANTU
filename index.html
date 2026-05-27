@@ -2583,6 +2583,83 @@ body[data-theme="hc"] {
 .to-selected-detail{padding:10px 14px;border-top:1px solid var(--border);background:var(--bg1)}
 .to-selected-head{}
 
+/* ──────── Calculator panel (right) ──────── */
+.to-detail-calc{display:flex;flex-direction:column}
+.to-calc-meta{
+  padding:8px 14px;border-bottom:1px solid var(--border);background:var(--bg);
+}
+.to-calc-edit-prices{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;font-weight:600;text-transform:uppercase;
+  background:transparent;border:1px solid var(--border);border-radius:var(--r);
+  padding:3px 8px;color:var(--text2);cursor:pointer;
+}
+.to-calc-edit-prices:hover{border-color:var(--amber-border);color:var(--amber);background:var(--amber-bg)}
+
+.to-calc-rows{flex:1;min-height:0;overflow-y:auto;background:var(--bg)}
+.to-calc-row{
+  display:grid;
+  grid-template-columns:22px 1fr 70px 28px 78px;
+  gap:6px;align-items:center;
+  padding:9px 12px 9px 8px;
+  border-bottom:1px solid var(--border);
+  transition:background .12s, opacity .12s;
+}
+.to-calc-row.to-calc-header{
+  background:var(--bg1);position:sticky;top:0;z-index:1;
+  font-family:var(--mono);font-size:9px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--text3);
+  padding-top:7px;padding-bottom:7px;
+}
+.to-calc-row.disabled{opacity:.42;background:var(--bg1)}
+.to-calc-row.disabled .to-calc-itm-name{text-decoration:line-through}
+
+.to-calc-check{
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  width:18px;height:18px;
+}
+.to-calc-check input{
+  width:14px;height:14px;cursor:pointer;
+  accent-color:var(--amber);margin:0;
+}
+
+.to-calc-name{min-width:0}
+.to-calc-itm-name{
+  font-family:var(--sans);font-size:12px;font-weight:500;color:var(--ink-900);
+  letter-spacing:-.005em;line-height:1.25;
+}
+.to-calc-unit-price{
+  font-family:var(--mono);font-size:9px;color:var(--text3);
+  letter-spacing:.04em;flex-shrink:0;
+}
+.to-calc-itm-sub{
+  font-family:var(--mono);font-size:9px;letter-spacing:.02em;
+  color:var(--text3);margin-top:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+
+.to-calc-qty-cell{display:flex;align-items:center}
+.to-calc-qty-input{
+  width:100%;
+  background:var(--bg1);border:1px solid var(--border);border-radius:2px;
+  padding:4px 6px;
+  font-family:var(--mono);font-variant-numeric:tabular-nums;
+  font-size:11.5px;color:var(--ink-900);text-align:right;
+  outline:none;transition:border-color .12s, background .12s;
+}
+.to-calc-qty-input:focus{border-color:var(--amber);background:var(--bg)}
+.to-calc-qty-input:disabled{cursor:not-allowed;color:var(--text3);background:transparent}
+.to-calc-qty-input::-webkit-outer-spin-button,
+.to-calc-qty-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+
+.to-calc-unit-cell{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--text3);text-align:center;
+}
+.to-calc-line-total{
+  font-family:var(--mono);font-variant-numeric:tabular-nums;
+  font-size:12px;font-weight:600;color:var(--ink-900);text-align:right;
+}
+
 @media (max-width:1100px){.to-detail{display:none}}
 @media (max-width:800px){.to-sidebar{width:200px}}
 
@@ -3736,7 +3813,8 @@ let ST = {
   toAnalyzing: false,        // true while Vision API call in flight
   toUploading: false,        // true while file is being uploaded
   toTakeoffType: null,       // 'tile' | 'hardwood' | 'facade' | etc — chosen before upload
-  toExtraction: {},          // {[pid]: {tradeDetected, groups, unreadable, notes, ts, planId}} — AI extraction results
+  toExtraction: {},          // {[pid]: ...} — legacy AI extraction (kept for backward compat, no longer used)
+  toCalculator: {},          // {[pid]: { [code]: { enabled: bool, qty: number } }} — manual budget calculator state
   toScanResult: null,        // last scan result from analyze-plan?mode=scan  // {[accId]: true|false} — open/close state for Plan Sets sub-accordions
   estimatorSuggestDismissed: {},    // {[pid]: [suggestionKey...]} — heuristics already declined
   emailTemplates: null,     // {rfp:{subject,body}, followup:{subject,body}} — loaded from app_state
@@ -4087,6 +4165,7 @@ async function loadSt() {
     ST.printTemplates = Array.isArray(state.printTemplates) ? state.printTemplates : [];
     ST.estimator = state.estimator || {};
     ST.bidStages = state.bidStages || {};
+    ST.toCalculator = state.toCalculator || {};
     ST.toSpaces = state.toSpaces || [];
     // aiChat lives inside ST.estimator[pid].aiChat — persisted as part of the
     // estimator blob. Clear streaming flags on load (in case of hard reload mid-stream).
@@ -4181,7 +4260,7 @@ async function saveSt() {
     if (window.BYPASS_LOGIN) { saveStLocal(); setSaveStatus('saved'); }
     return;
   }
-  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator','bidStages']
+  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator','bidStages','toCalculator']
     .forEach(k => SAVE_STATE.pendingKeys.add(k));
   if (SAVE_STATE.debounceTimer) clearTimeout(SAVE_STATE.debounceTimer);
   SAVE_STATE.debounceTimer = setTimeout(flushSave, 400);
@@ -4237,6 +4316,7 @@ async function flushSave() {
     else if (k === 'printTemplates') v = ST.printTemplates;
     else if (k === 'estimator') v = ST.estimator;
     else if (k === 'bidStages') v = ST.bidStages;
+    else if (k === 'toCalculator') v = ST.toCalculator;
 
     // Critical: app_state.value is NOT NULL. Substitute appropriate empty default.
     if (v === undefined || v === null) {
@@ -10715,40 +10795,59 @@ async function toFinalizePolygon(pid) {
 
 // ── Push to BID Categories ────────────────────────────────────────────────────
 function toPushToBid(pid) {
-  const spaces = toGetSpaces(pid);
-  if (!spaces.length) return;
+  const typeId = ST.toTakeoffType;
+  if (!typeId) { showToast('No trade selected', 'warn'); return; }
+  const typeMeta = TAKEOFF_TYPES.find(t => t.id === typeId);
+  const catalog = getPricingForType(typeId);
+  const calcState = toGetCalcState(pid, typeId);
 
+  // Collect active lines with qty > 0
+  const lines = [];
+  catalog.forEach(row => {
+    const cs = calcState[row.code];
+    if (!cs || !cs.enabled || !cs.qty || cs.qty <= 0) return;
+    lines.push({ row, qty: cs.qty });
+  });
+
+  if (lines.length === 0) {
+    showToast('No active lines with quantities. Enter qty values first.', 'warn');
+    return;
+  }
+
+  // Ensure estimates structure
+  if (!ST.estimates) ST.estimates = {};
+  if (!ST.estimates[pid]) ST.estimates[pid] = { groups: [], notes: '' };
+  const est = ST.estimates[pid];
+
+  // Group title: trade label
+  const groupTitle = typeMeta?.label || typeId;
+  let grp = est.groups.find(g => g.title === groupTitle);
+  if (!grp) {
+    grp = {
+      id: 'g_' + Date.now() + Math.random().toString(36).slice(2, 6),
+      code: typeId.toUpperCase(),
+      title: groupTitle,
+      items: []
+    };
+    est.groups.push(grp);
+  }
+
+  // Push each line as a builder item
   let pushed = 0;
-  spaces.forEach(sp => {
-    sp.finishes.forEach(fin => {
-      if (!fin.qty || fin.qty <= 0) return;
-      if (!ST.estimates) ST.estimates = {};
-      if (!ST.estimates[pid]) ST.estimates[pid] = { groups: [], notes: '' };
-      const est = ST.estimates[pid];
-
-      let grp = est.groups.find(g => g.title === fin.category);
-      if (!grp) {
-        grp = {
-          id: 'g_' + Date.now() + Math.random().toString(36).slice(2, 6),
-          code: fin.category, title: fin.category, items: []
-        };
-        est.groups.push(grp);
-      }
-
-      grp.items.push({
-        id: 'i_' + Date.now() + Math.random().toString(36).slice(2, 6),
-        description: `${fin.item} — ${sp.label}${sp.sheetRef ? ' (' + sp.sheetRef + ')' : ''}`,
-        qty: fin.qty,
-        unit: fin.unit,
-        unitCost: 0,
-        notes: fin.note + (sp.note ? ' | ' + sp.note : ''),
-      });
-      pushed++;
+  lines.forEach(({ row, qty }) => {
+    grp.items.push({
+      id: 'i_' + Date.now() + Math.random().toString(36).slice(2, 6),
+      description: row.name + (row.sub ? ' — ' + row.sub : ''),
+      qty: qty,
+      unit: row.unit,
+      unitCost: row.perUnit,
+      notes: '',
     });
+    pushed++;
   });
 
   saveSt();
-  showToast(`${pushed} item${pushed !== 1 ? 's' : ''} pushed to BID Categories.`, 'success');
+  showToast(`${pushed} line${pushed !== 1 ? 's' : ''} pushed to BID Categories.`, 'success');
   setTimeout(() => { ST.tab = 'builder'; ST.builderSelProj = pid; render(); }, 800);
 }
 
@@ -10850,18 +10949,24 @@ function toRefreshChrome() {
 // ── HTML builders ─────────────────────────────────────────────────────────────
 function toBuildSidebar(p, e) {
   const allPlans = e.plans || [];
-  const spaces = toGetSpaces(p.id);
   const active = ST.toActivePlan;
-  const calState = ST.toCalState || 'idle';
-  const pxPerFoot = ST.toPxPerFoot;
-  const calLabel = calState === 'idle' ? 'Not calibrated'
-    : calState === 'click1' ? '→ Click START of dimension'
-    : calState === 'click2' ? '→ Click END of dimension'
-    : calState === 'awaiting-input' ? '→ Enter feet below'
-    : pxPerFoot ? `${pxPerFoot.toFixed(2)} px/ft @ zoom 1` : 'Set scale';
-  const calDone = calState === 'done' && !!pxPerFoot;
+  const typeId = ST.toTakeoffType;
+  const typeMeta = TAKEOFF_TYPES.find(t => t.id === typeId);
 
   return `<div id="to-sidebar" class="to-sidebar">
+    ${typeMeta ? `
+      <div class="to-sidebar-section">
+        <div class="to-sidebar-label">Trade</div>
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r2)">
+          <span style="font-size:18px;line-height:1">${typeMeta.icon}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-family:var(--sans);font-size:13px;font-weight:600;color:var(--ink-900)">${esc(typeMeta.label)}</div>
+            <div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);letter-spacing:.02em">${esc(typeMeta.desc)}</div>
+          </div>
+        </div>
+      </div>
+    ` : ''}
+
     <div class="to-sidebar-section">
       <div class="to-sidebar-label">Plan sets · ${allPlans.length}</div>
       ${allPlans.map(pl => {
@@ -10873,107 +10978,31 @@ function toBuildSidebar(p, e) {
           <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">${esc(pl.name)}</span>
           ${!hasBin?'<span style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-left:auto">no bin</span>':''}
         </button>`;
-      }).join('') || '<div style="font-family:var(--mono);font-size:10px;color:var(--text3);padding:8px 4px">Upload a PDF in Plan Sets tab.</div>'}
+      }).join('') || '<div style="font-family:var(--mono);font-size:10px;color:var(--text3);padding:8px 4px">No plan loaded.</div>'}
     </div>
 
     <div class="to-sidebar-section">
-      <div class="to-sidebar-label">Scale calibration</div>
-      <div class="to-cal">
-        <div class="to-cal-status${calDone?' done':calState!=='idle'?' active':''}">
-          <span class="to-cal-dot"></span>
-          <span>${calLabel}</span>
-        </div>
-        ${calState === 'awaiting-input' ? `
-          <div style="display:flex;gap:5px;margin-top:8px;align-items:center">
-            <input id="to-cal-ft-input" type="number" step="1" min="0" placeholder="ft"
-              value="${esc(ST.toCalRealFt||'')}"
-              oninput="ST.toCalRealFt=this.value"
-              onkeydown="if(event.key==='Enter')toApplyCalibration()"
-              style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--amber);border-radius:var(--r);padding:6px 6px;font-family:var(--mono);font-size:12px;color:var(--text);outline:none">
-            <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">'</span>
-            <input id="to-cal-in-input" type="number" step="0.5" min="0" max="11.99" placeholder="in"
-              value="${esc(ST.toCalRealFtInches||'')}"
-              oninput="ST.toCalRealFtInches=this.value"
-              onkeydown="if(event.key==='Enter')toApplyCalibration()"
-              style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:6px 6px;font-family:var(--mono);font-size:12px;color:var(--text);outline:none">
-            <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">"</span>
-            <button class="to-tool-btn on" onclick="toApplyCalibration()" style="padding:6px 10px">Set</button>
-          </div>
-          <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:5px;line-height:1.4">Real distance — e.g. <b>11' 5"</b>. Inches are optional.</div>
-        ` : ''}
-        <div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap">
-          ${calDone
-            ? `<button class="to-tool-btn" onclick="toResetCal()">↺ Reset</button>
-               <button class="to-tool-btn" onclick="toStartCalibration()">Re-calibrate</button>`
-            : calState === 'idle'
-              ? (active
-                ? `<button class="to-tool-btn" onclick="toStartCalibration()">Calibrate scale</button>`
-                : `<button class="to-tool-btn" disabled>Select a plan first</button>`)
-              : `<button class="to-tool-btn" onclick="toResetCal()">Cancel</button>`}
-        </div>
+      <div class="to-sidebar-label">How this works</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.6;letter-spacing:.01em">
+        1 · View your PDF on screen<br>
+        2 · Measure with Bluebeam (off-tool)<br>
+        3 · Enter quantities in the calculator panel →<br>
+        4 · Toggle line items in/out of the total<br>
+        5 · Push the total to a bid category
       </div>
     </div>
-
-    <div class="to-sidebar-section" style="padding-bottom:6px">
-      <div class="to-sidebar-label">Measured spaces · ${spaces.length}</div>
-      ${spaces.length
-        ? `<div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-bottom:6px">
-            ∑ ${spaces.reduce((s,sp)=>s+sp.areaSF,0).toFixed(1)} SF · ${spaces.reduce((s,sp)=>s+sp.perimeterLF,0).toFixed(1)} LF
-           </div>`
-        : ''}
-    </div>
-
-    <div class="to-results">
-      ${spaces.length === 0
-        ? `<div style="text-align:center;padding:20px 10px;font-family:var(--mono);font-size:10px;color:var(--text3);line-height:1.7">
-            ${calDone ? 'Click on the plan to start drawing a polygon.' : 'Calibrate scale, then draw polygons.'}
-           </div>`
-        : spaces.map(sp => `
-          <div class="to-result-row${ST.toSelSpace===sp.id?' sel':''}" onclick="toSelSpace('${sp.id}')">
-            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:4px">
-              <div class="to-result-name">${esc(sp.label)}</div>
-              <button onclick="event.stopPropagation();toDeleteSpace('${sp.id}')"
-                style="background:transparent;border:none;color:var(--text3);cursor:pointer;font-size:12px;padding:0;line-height:1;flex-shrink:0">✕</button>
-            </div>
-            <div class="to-result-meta">${sp.areaSF.toFixed(1)} SF · ${sp.perimeterLF.toFixed(1)} LF · pg ${sp.pageNum||1}</div>
-            <span class="to-result-badge ${sp.type}">${esc(sp.type)}</span>
-            ${sp.confidence === 'low' ? `<span style="font-family:var(--mono);font-size:9px;color:var(--amber);margin-left:6px">⚠ low conf</span>` : ''}
-          </div>
-        `).join('')}
-    </div>
-
-    ${spaces.length > 0 ? `
-      <div style="padding:10px 14px;border-top:1px solid var(--border)">
-        <button class="to-push-btn" onclick="toPushToBid('${p.id}')">Push all to BID Categories →</button>
-      </div>
-    ` : ''}
   </div>`;
 }
 
 function toBuildToolbar(p, e) {
   const active = ST.toActivePlan;
-  const calDone = ST.toCalState === 'done' && !!ST.toPxPerFoot;
-  const polyPts = ST.toPolygonPts?.length || 0;
   const zoomPct = Math.round(_TO.zoom * 100);
   return `<div id="to-toolbar" class="to-canvas-toolbar">
-    <span style="font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.06em;margin-right:2px">Tool</span>
-    <button class="to-tool-btn${ST.toTool==='polygon'?' on':''}" onclick="ST.toTool='polygon';toRefreshChrome()">⬡ Polygon</button>
-
-    <div style="width:1px;height:20px;background:var(--border);margin:0 4px"></div>
-
-    ${polyPts > 0 ? `
-      <button class="to-tool-btn on" onclick="toFinalizePolygon('${p.id}')">✓ Close (${polyPts} pts)</button>
-      <button class="to-tool-btn" onclick="toUndoLastPoint()" title="Undo last point (Backspace)">↶ Undo</button>
-      <button class="to-tool-btn" onclick="toCancelPolygon()" title="Cancel (Esc)">✕ Cancel</button>
-    ` : calDone ? `
-      <span style="font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em">
-        Click to add points · Click first vertex (or press Enter) to close
+    ${active ? `
+      <span style="font-family:var(--mono);font-size:10px;color:var(--text2);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:.04em">
+        <span style="color:var(--text3)">PDF</span> · ${esc(active.discipline)} · ${esc(active.name)}
       </span>
-    ` : `
-      <span style="font-family:var(--mono);font-size:10px;color:var(--amber);letter-spacing:.04em">
-        ← Calibrate scale first
-      </span>
-    `}
+    ` : '<span style="font-family:var(--mono);font-size:10px;color:var(--text3)">No plan loaded</span>'}
 
     <div style="flex:1"></div>
 
@@ -10984,16 +11013,13 @@ function toBuildToolbar(p, e) {
       <div style="width:1px;height:20px;background:var(--border);margin:0 4px"></div>
     ` : ''}
 
-    <button class="to-tool-btn" onclick="toSetZoom(_TO.zoom/1.2)" title="Zoom out (–)">−</button>
+    <button class="to-tool-btn" onclick="toSetZoom(_TO.zoom/1.2)" title="Zoom out">−</button>
     <span style="font-family:var(--mono);font-size:10px;color:var(--text2);min-width:42px;text-align:center">${zoomPct}%</span>
-    <button class="to-tool-btn" onclick="toSetZoom(_TO.zoom*1.2)" title="Zoom in (+)">+</button>
-    <button class="to-tool-btn" onclick="toSetZoom(1)" title="Reset zoom (0)">Fit</button>
+    <button class="to-tool-btn" onclick="toSetZoom(_TO.zoom*1.2)" title="Zoom in">+</button>
+    <button class="to-tool-btn" onclick="toSetZoom(1)" title="Reset zoom">Fit</button>
 
     ${active ? `
       <div style="width:1px;height:20px;background:var(--border);margin:0 4px"></div>
-      <span style="font-family:var(--mono);font-size:10px;color:var(--text3);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(active.discipline)} · ${esc(active.name)}</span>
-      <div style="width:1px;height:20px;background:var(--border);margin:0 4px"></div>
-      <button class="to-tool-btn to-ai-btn" onclick="toRunAITakeoff('${p.id}')" title="Read markups from this PDF with Claude Vision">⚡ TAKE OFF AI</button>
       <button class="to-tool-btn" onclick="toResetSession()" title="Clear current take-off and start over">✕ New take-off</button>
     ` : ''}
   </div>`;
@@ -11023,6 +11049,13 @@ function toResetSession() {
   ST.toCalRealFt = ''; ST.toCalRealFtInches = '';
   ST.toPolygonPts = [];
   ST.toSelSpace = null;
+  // Clear calculator state for this project (across all types)
+  if (ST.toCalculator) {
+    Object.keys(ST.toCalculator).forEach(k => {
+      if (k.startsWith(pid + '::')) delete ST.toCalculator[k];
+    });
+  }
+  if (ST.toExtraction) delete ST.toExtraction[pid];
   _TO.pdfDoc = null;
   _TO.mounted = false;
   _TO.konvaStage?.destroy();
@@ -11095,123 +11128,126 @@ async function toRunAITakeoff(pid) {
   }
 }
 
+// ── Calculator state helpers ─────────────────────────────────────────────────
+function toGetCalcState(pid, typeId) {
+  if (!ST.toCalculator) ST.toCalculator = {};
+  const key = `${pid}::${typeId}`;
+  if (!ST.toCalculator[key]) ST.toCalculator[key] = {};
+  return ST.toCalculator[key];
+}
+
+function toCalcSetEnabled(pid, typeId, code, enabled) {
+  const cs = toGetCalcState(pid, typeId);
+  if (!cs[code]) cs[code] = { enabled: true, qty: 0 };
+  cs[code].enabled = enabled;
+  saveSt(); toRefreshChrome();
+}
+
+function toCalcSetQty(pid, typeId, code, qty) {
+  const cs = toGetCalcState(pid, typeId);
+  if (!cs[code]) cs[code] = { enabled: true, qty: 0 };
+  cs[code].qty = parseFloat(qty) || 0;
+  saveSt(); toRefreshChrome();
+}
+
+function toCalcClear(pid, typeId) {
+  if (!confirm('Clear all quantities for this take-off?')) return;
+  if (!ST.toCalculator) ST.toCalculator = {};
+  delete ST.toCalculator[`${pid}::${typeId}`];
+  saveSt(); render();
+  showToast('Quantities cleared', 'info');
+}
+
 function toBuildDetailPanel(p, e) {
-  const spaces = toGetSpaces(p.id);
   const typeId = ST.toTakeoffType;
   const typeMeta = TAKEOFF_TYPES.find(t => t.id === typeId);
-  const extraction = ST.toExtraction?.[p.id];
-  const hasExtraction = extraction && extraction.groups?.length > 0;
 
-  // Empty state — no markups extracted and no manual spaces
-  if (!hasExtraction && spaces.length === 0) {
+  if (!typeId || !typeMeta) {
     return `<div id="to-detail" class="to-detail">
       <div class="to-detail-empty">
-        ${typeMeta ? `<div style="font-size:32px;margin-bottom:10px;opacity:.6">${typeMeta.icon}</div>` : ''}
-        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:8px">[ NO QUANTITIES YET ]</div>
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:8px">[ NO TRADE SELECTED ]</div>
         <div style="font-family:var(--mono);font-size:10.5px;color:var(--text3);line-height:1.7">
-          Click <strong style="color:var(--amber)">⚡ TAKE OFF AI</strong><br>
-          to read measurements<br>
-          marked on this PDF.<br><br>
-          Or trace a polygon<br>
-          to measure manually.
+          Pick a trade<br>to load its calculator
         </div>
       </div>
     </div>`;
   }
 
-  // ── Build pricing breakdown from extracted markups ─────────────────────────
-  const { items, total, unmatched } = hasExtraction
-    ? buildExtractedLineItems(p.id, typeId)
-    : { items: [], total: 0, unmatched: [] };
+  const catalog = getPricingForType(typeId);
+  const calcState = toGetCalcState(p.id, typeId);
 
-  // Add manually-traced spaces as one row each (legacy)
-  let manualTotal = 0;
-  const manualBlock = spaces.length > 0 ? (() => {
-    const totalSF = spaces.reduce((s, sp) => s + (sp.areaSF || 0), 0);
-    const totalLF = spaces.reduce((s, sp) => s + (sp.perimeterLF || 0), 0);
-    return { totalSF, totalLF, count: spaces.length };
-  })() : null;
+  // Compute total
+  let total = 0;
+  const rows = catalog.map(row => {
+    const cs = calcState[row.code] || { enabled: true, qty: 0 };
+    const lineTotal = (cs.enabled && cs.qty > 0) ? cs.qty * row.perUnit : 0;
+    if (cs.enabled) total += lineTotal;
+    return { ...row, enabled: cs.enabled !== false, qty: cs.qty || 0, lineTotal };
+  });
 
-  const grandTotal = total + manualTotal;
+  const activeLines = rows.filter(r => r.enabled && r.qty > 0).length;
 
-  return `<div id="to-detail" class="to-detail to-detail-results">
+  return `<div id="to-detail" class="to-detail to-detail-calc">
     <div class="to-results-head">
-      <span class="to-results-label-strong">[ LINE ITEMS ]</span>
-      <span class="to-results-label">${typeMeta ? typeMeta.label.toUpperCase() : 'AUTO'}</span>
+      <span class="to-results-label-strong">[ BUDGET CALCULATOR ]</span>
+      <span class="to-results-label">${typeMeta.label.toUpperCase()}</span>
     </div>
 
-    ${hasExtraction ? `
-      <div class="to-extraction-meta">
-        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
-          <span style="font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;color:var(--text3);text-transform:uppercase">Extracted</span>
-          <span style="font-family:var(--mono);font-size:9.5px;color:var(--text2)">${extraction.groups.length} groups · trade: <strong>${esc(extraction.tradeDetected||'unknown')}</strong></span>
-        </div>
-        ${extraction.notes ? `<div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:4px;font-style:italic">${esc(extraction.notes)}</div>` : ''}
+    <div class="to-calc-meta">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
+        <span style="font-family:var(--mono);font-size:10px;color:var(--text2);letter-spacing:.04em">${activeLines} active · ${rows.filter(r=>!r.enabled).length} excluded</span>
+        <button class="to-calc-edit-prices" onclick="ST.tab='settings';ST.settingsTab='pricing';render();setTimeout(()=>document.getElementById('settings-pricing')?.scrollIntoView({behavior:'smooth'}),50)" title="Edit unit prices in Settings">⚙ Prices</button>
       </div>
-    ` : manualBlock ? `
-      <div class="to-results-meta">
-        ${manualBlock.count} space${manualBlock.count===1?'':'s'} traced · ${manualBlock.totalSF.toFixed(1)} SF · ${manualBlock.totalLF.toFixed(1)} LF
-      </div>
-    ` : ''}
+    </div>
 
-    <div class="to-results-list">
-      ${items.length === 0 && hasExtraction ? `
-        <div style="padding:18px 14px;text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--text3);line-height:1.5">
-          No catalog rows matched the extracted markups.<br>
-          ${unmatched.length} unmatched item${unmatched.length===1?'':'s'} below.
-        </div>
-      ` : items.map((it, i) => `
-        <div class="to-result-row" title="${esc(it.sources.join(' • '))}">
-          <div class="to-result-name">
-            ${esc(it.name)}
-            <span class="to-result-sub">${esc(it.code)} · ${esc(it.sub)}${it.sources.length > 0 ? ` · from ${it.sources.length} markup${it.sources.length===1?'':'s'}` : ''}</span>
+    <div class="to-calc-rows">
+      <div class="to-calc-row to-calc-header">
+        <div></div>
+        <div>Item</div>
+        <div>Qty</div>
+        <div>Unit</div>
+        <div style="text-align:right">Total</div>
+      </div>
+      ${rows.map(r => `
+        <div class="to-calc-row${r.enabled ? '' : ' disabled'}">
+          <label class="to-calc-check" title="${r.enabled ? 'Click to exclude from total' : 'Click to include in total'}">
+            <input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toCalcSetEnabled('${p.id}','${typeId}','${r.code}',this.checked)">
+          </label>
+          <div class="to-calc-name">
+            <div style="display:flex;align-items:baseline;gap:6px">
+              <span class="to-calc-itm-name">${esc(r.name)}</span>
+              <span class="to-calc-unit-price">${fmt$(r.perUnit)}/${esc(r.unit)}</span>
+            </div>
+            <div class="to-calc-itm-sub">${esc(r.sub || '')}</div>
           </div>
-          <div class="to-result-qty">${it.qty.toLocaleString(undefined, {maximumFractionDigits:1})}</div>
-          <div class="to-result-unit">${esc(it.unit)}</div>
-          <div class="to-result-price">${fmt$(it.total)}</div>
+          <div class="to-calc-qty-cell">
+            <input type="number" step="0.01" min="0"
+              value="${r.qty || ''}"
+              placeholder="0"
+              onchange="toCalcSetQty('${p.id}','${typeId}','${r.code}',this.value)"
+              ${r.enabled ? '' : 'disabled'}
+              class="to-calc-qty-input">
+          </div>
+          <div class="to-calc-unit-cell">${esc(r.unit)}</div>
+          <div class="to-calc-line-total">${r.lineTotal > 0 ? fmt$(r.lineTotal) : '<span style="color:var(--text3)">—</span>'}</div>
         </div>
       `).join('')}
-
-      ${unmatched.length > 0 ? `
-        <details style="border-top:1px solid var(--border);padding:8px 14px;background:var(--bg1)">
-          <summary style="cursor:pointer;font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--amber);font-weight:600;padding:4px 0">
-            ⚠ ${unmatched.length} unmatched · review
-          </summary>
-          <div style="margin-top:6px">
-            ${unmatched.map(u => `
-              <div style="padding:5px 0;font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.4;border-bottom:1px solid var(--border)">
-                <span style="color:var(--text3)">${esc(u.location||'—')}</span> · ${esc(u.label||u.category||'?')} · <span style="color:var(--ink-900);font-weight:600">${u.qty} ${u.unit}</span>
-              </div>
-            `).join('')}
-          </div>
-          <div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:6px;line-height:1.5">
-            These markups have no matching row in the <strong>${esc(typeId)}</strong> catalog.
-            Edit Settings to add matching rows, or pick a different trade type.
-          </div>
-        </details>
-      ` : ''}
     </div>
 
     <div class="to-results-foot">
-      <span class="to-results-foot-lbl">Total · ${typeMeta?typeMeta.label.toLowerCase():''}</span>
-      <span class="to-results-foot-total">${fmt$(grandTotal)}</span>
+      <span class="to-results-foot-lbl">Total · ${esc(typeMeta.label.toLowerCase())}</span>
+      <span class="to-results-foot-total">${fmt$(total)}</span>
     </div>
 
     <div class="to-results-actions">
-      <button class="to-tool-btn" onclick="ST.tab='settings';ST.settingsTab='pricing';render();setTimeout(()=>document.getElementById('settings-pricing')?.scrollIntoView({behavior:'smooth'}),50)" title="Edit unit prices in Settings">
-        ⚙ Edit prices
-      </button>
-      ${hasExtraction ? `<button class="to-tool-btn" onclick="toClearExtraction('${p.id}')" title="Clear AI extraction">↺ Clear AI</button>` : ''}
+      <button class="to-tool-btn" onclick="toCalcClear('${p.id}','${typeId}')" title="Reset all quantities for this trade">↺ Clear qty</button>
       <button class="to-push-btn" onclick="toPushToBid('${p.id}')">Push to BID →</button>
     </div>
   </div>`;
 }
 
 function toClearExtraction(pid) {
-  if (!confirm('Clear AI extraction? Your manually traced spaces will stay.')) return;
-  if (ST.toExtraction) delete ST.toExtraction[pid];
-  saveSt(); render();
-  showToast('AI extraction cleared', 'info');
+  // Legacy — kept for backward compatibility, no-op
 }
 
 // ── Top-level builder called by render() (initial mount only) ────────────────
@@ -11269,7 +11305,7 @@ function buildEstTakeoff(p, e) {
       <div class="to-wizard-card">
         <div class="to-wizard-step">[ STEP 2 OF 2 ]</div>
         <div class="to-wizard-title">Upload your plan for ${esc(typeMeta.label.toLowerCase())}</div>
-        <div class="to-wizard-sub">A single-sheet PDF works best. Manual calibration happens after upload.</div>
+        <div class="to-wizard-sub">A single-sheet PDF works best. You'll see it next to the budget calculator.</div>
 
         <div class="to-wizard-typebadge">
           <span class="to-type-icon" style="font-size:18px">${typeMeta.icon}</span>
@@ -11292,16 +11328,16 @@ function buildEstTakeoff(p, e) {
         </div>
 
         <div class="to-wizard-footer">
-          Tip — BIDFLOW Vision will let you trace each space; quantities feed back to bid categories automatically.
+          Tip — Measure on Bluebeam (or another take-off tool), then type the totals here. Toggle line items off to skip them.
         </div>
       </div>
     </div>`;
   }
 
-  // ── Active session — full take-off UI ──────────────────────────────────────
+  // ── Active session — viewer + calculator UI ────────────────────────────────
   const existingRoot = document.getElementById('to-mount-root');
   if (existingRoot && _TO.mounted && _TO.pdfDoc) {
-    setTimeout(() => { toRefreshChrome(); toAttachInteractionHandlers(); }, 0);
+    setTimeout(() => { toRefreshChrome(); }, 0);
     _TO_RENDER_SKIP = true;
     return existingRoot.outerHTML;
   }
@@ -11309,7 +11345,6 @@ function buildEstTakeoff(p, e) {
   _TO.mounted = true;
 
   setTimeout(() => {
-    toAttachInteractionHandlers();
     if (ST.toActivePlan && !_TO.pdfDoc) {
       const pl = e.plans.find(x => x.id === ST.toActivePlan.planId);
       if (pl?.dataUrl) toLoadPDFAndRender(pl.dataUrl);
@@ -11323,16 +11358,9 @@ function buildEstTakeoff(p, e) {
 
     <div class="to-canvas-wrap">
       ${toBuildToolbar(p, e)}
-      <div id="to-canvas-zone" class="to-canvas-container" style="cursor:crosshair">
+      <div id="to-canvas-zone" class="to-canvas-container">
         <div id="to-canvas-inner" class="to-canvas-inner" style="position:relative">
           <canvas id="to-pdf-canvas"></canvas>
-          <div id="to-konva-stage" style="position:absolute;top:0;left:0"></div>
-          ${ST.toAnalyzing ? `
-            <div class="to-analyzing" style="position:absolute;inset:0">
-              <div class="to-analyzing-spinner"></div>
-              <div class="to-analyzing-text">Claude Vision is identifying the space…</div>
-            </div>
-          ` : ''}
         </div>
       </div>
     </div>
