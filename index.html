@@ -3735,7 +3735,8 @@ let ST = {
   toSelSpace: null,          // id of selected space in results list
   toAnalyzing: false,        // true while Vision API call in flight
   toUploading: false,        // true while file is being uploaded
-  toTakeoffType: null,       // 'finishes' | 'facade' | 'gypsum' | 'railing' — chosen before upload
+  toTakeoffType: null,       // 'tile' | 'hardwood' | 'facade' | etc — chosen before upload
+  toExtraction: {},          // {[pid]: {tradeDetected, groups, unreadable, notes, ts, planId}} — AI extraction results
   toScanResult: null,        // last scan result from analyze-plan?mode=scan  // {[accId]: true|false} — open/close state for Plan Sets sub-accordions
   estimatorSuggestDismissed: {},    // {[pid]: [suggestionKey...]} — heuristics already declined
   emailTemplates: null,     // {rfp:{subject,body}, followup:{subject,body}} — loaded from app_state
@@ -10992,7 +10993,7 @@ function toBuildToolbar(p, e) {
       <div style="width:1px;height:20px;background:var(--border);margin:0 4px"></div>
       <span style="font-family:var(--mono);font-size:10px;color:var(--text3);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(active.discipline)} · ${esc(active.name)}</span>
       <div style="width:1px;height:20px;background:var(--border);margin:0 4px"></div>
-      <button class="to-tool-btn to-ai-btn${calDone?'':' disabled'}" onclick="toRunAITakeoff('${p.id}')" title="Run AI take-off (needs scale calibration)">⚡ TAKE OFF AI</button>
+      <button class="to-tool-btn to-ai-btn" onclick="toRunAITakeoff('${p.id}')" title="Read markups from this PDF with Claude Vision">⚡ TAKE OFF AI</button>
       <button class="to-tool-btn" onclick="toResetSession()" title="Clear current take-off and start over">✕ New take-off</button>
     ` : ''}
   </div>`;
@@ -11032,12 +11033,9 @@ function toResetSession() {
   render();
 }
 
-// Placeholder for AI auto-takeoff using the breakform-takeoff skill
+// AI auto-takeoff: reads marked-up PDF and returns structured quantities
 async function toRunAITakeoff(pid) {
   if (!_TO.pdfDoc) { showToast('No PDF loaded', 'error'); return; }
-  if (!ST.toPxPerFoot) { showToast('Calibrate scale first', 'warn'); return; }
-
-  // Capture full-page render as image
   const pdfCanvas = document.getElementById('to-pdf-canvas');
   if (!pdfCanvas) return;
 
@@ -11046,64 +11044,54 @@ async function toRunAITakeoff(pid) {
   try {
     const imageBase64 = pdfCanvas.toDataURL('image/jpeg', 0.85);
     const e = getEstProj(pid);
-    const typeId = ST.toTakeoffType || 'finishes';
+    const typeId = ST.toTakeoffType || 'general';
 
     const res = await fetch(`${SUPABASE_URL}/functions/v1/analyze-plan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
       body: JSON.stringify({
-        mode: 'full-takeoff',           // NEW mode — edge function should handle this
-        skill: 'breakform-takeoff',     // hint to the edge function which skill prompt to use
+        mode: 'extract-markups',
         takeoffType: typeId,
         imageBase64,
         setup: e.setup || {},
-        canvasWidth: pdfCanvas.width,
-        canvasHeight: pdfCanvas.height,
-        pxPerFoot: ST.toPxPerFoot * _TO.zoom,
-        zoom: _TO.zoom,
       }),
     });
 
-    if (!res.ok) {
-      const errBody = await res.text();
-      throw new Error(`Edge ${res.status}: ${errBody.slice(0, 200)}`);
-    }
     const data = await res.json();
-    if (data.error) throw new Error(data.error);
+    if (!res.ok || data.error) {
+      throw new Error(data.error || ('HTTP ' + res.status));
+    }
+    // data: { tradeDetected, groups: [{location, items: [{category, label, qty, unit, ...}]}], unreadable, notes }
 
-    // Expected response: { spaces: [{ label, type, polygonPts, areaSF, perimeterLF, finishes }] }
-    const newSpaces = (data.spaces || []).map(sp => ({
-      id: 'sp_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
-      pid,
-      planId: ST.toActivePlan?.planId || '',
-      pageNum: _TO.pageNum,
-      label: sp.label || 'Space',
-      type: sp.type || 'other',
-      areaSF: Math.round((sp.areaSF || 0) * 10) / 10,
-      perimeterLF: Math.round((sp.perimeterLF || 0) * 10) / 10,
-      polygonPts: sp.polygonPts || [],
-      finishes: sp.finishes || [],
-      sheetRef: ST.toActivePlan?.name || '',
-      confidence: sp.confidence || 'medium',
-      note: sp.note || '',
-      ts: Date.now(),
-      aiGenerated: true,
-    }));
+    if (!data.groups || data.groups.length === 0) {
+      ST.toAnalyzing = false;
+      toRefreshChrome();
+      const reasons = (data.unreadable || []).join(' · ');
+      showToast(`No markups extracted. ${reasons || data.notes || 'Try a clearer PDF with visible labels.'}`, 'warn');
+      return;
+    }
 
-    ST.toSpaces = [...(ST.toSpaces || []), ...newSpaces];
+    // Store the extraction in state so the right panel can render it
+    if (!ST.toExtraction) ST.toExtraction = {};
+    ST.toExtraction[pid] = {
+      tradeDetected: data.tradeDetected,
+      groups: data.groups,
+      unreadable: data.unreadable || [],
+      notes: data.notes || '',
+      ts: new Date().toISOString(),
+      planId: ST.toActivePlan?.planId || null,
+    };
+
     ST.toAnalyzing = false;
     saveSt();
-    toRedrawAllPolygons();
     toRefreshChrome();
-    showToast(`AI take-off complete — ${newSpaces.length} spaces identified`, 'success');
+
+    const totalItems = data.groups.reduce((s, g) => s + (g.items?.length || 0), 0);
+    showToast(`Extracted ${totalItems} measurement${totalItems===1?'':'s'} across ${data.groups.length} group${data.groups.length===1?'':'s'}`, 'success');
   } catch (err) {
     ST.toAnalyzing = false;
     toRefreshChrome();
-    if (err.message?.includes('full-takeoff') || err.message?.includes('mode')) {
-      showToast('AI take-off needs the edge function update. Skill: breakform-takeoff', 'info');
-    } else {
-      showToast('AI error: ' + err.message, 'error');
-    }
+    showToast('AI extraction failed: ' + (err.message || err), 'error');
   }
 }
 
@@ -11111,77 +11099,119 @@ function toBuildDetailPanel(p, e) {
   const spaces = toGetSpaces(p.id);
   const typeId = ST.toTakeoffType;
   const typeMeta = TAKEOFF_TYPES.find(t => t.id === typeId);
+  const extraction = ST.toExtraction?.[p.id];
+  const hasExtraction = extraction && extraction.groups?.length > 0;
 
-  // If a space is explicitly selected, show the legacy single-space detail at the top.
-  const selSpace = spaces.find(s => s.id === ST.toSelSpace) || null;
-
-  if (spaces.length === 0) {
+  // Empty state — no markups extracted and no manual spaces
+  if (!hasExtraction && spaces.length === 0) {
     return `<div id="to-detail" class="to-detail">
       <div class="to-detail-empty">
         ${typeMeta ? `<div style="font-size:32px;margin-bottom:10px;opacity:.6">${typeMeta.icon}</div>` : ''}
-        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">[ LINE ITEMS ]</div>
-        <div style="font-family:var(--mono);font-size:10px;color:var(--text3);line-height:1.7">
-          Calibrate the scale,<br>then trace a space<br>to see ${typeMeta ? typeMeta.label.toLowerCase() : 'finish'} quantities<br>and pricing here.
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:8px">[ NO QUANTITIES YET ]</div>
+        <div style="font-family:var(--mono);font-size:10.5px;color:var(--text3);line-height:1.7">
+          Click <strong style="color:var(--amber)">⚡ TAKE OFF AI</strong><br>
+          to read measurements<br>
+          marked on this PDF.<br><br>
+          Or trace a polygon<br>
+          to measure manually.
         </div>
       </div>
     </div>`;
   }
 
-  // Aggregate line items across all spaces, using the pricing catalog
-  const { items, total } = buildTakeoffLineItems(p.id, typeId);
+  // ── Build pricing breakdown from extracted markups ─────────────────────────
+  const { items, total, unmatched } = hasExtraction
+    ? buildExtractedLineItems(p.id, typeId)
+    : { items: [], total: 0, unmatched: [] };
 
-  // Sum of all measurements
-  const totalSF = spaces.reduce((s, sp) => s + (sp.areaSF || 0), 0);
-  const totalLF = spaces.reduce((s, sp) => s + (sp.perimeterLF || 0), 0);
+  // Add manually-traced spaces as one row each (legacy)
+  let manualTotal = 0;
+  const manualBlock = spaces.length > 0 ? (() => {
+    const totalSF = spaces.reduce((s, sp) => s + (sp.areaSF || 0), 0);
+    const totalLF = spaces.reduce((s, sp) => s + (sp.perimeterLF || 0), 0);
+    return { totalSF, totalLF, count: spaces.length };
+  })() : null;
+
+  const grandTotal = total + manualTotal;
 
   return `<div id="to-detail" class="to-detail to-detail-results">
     <div class="to-results-head">
       <span class="to-results-label-strong">[ LINE ITEMS ]</span>
-      <span class="to-results-label">${typeMeta ? typeMeta.label.toUpperCase() : 'AUTO'} · CSI</span>
+      <span class="to-results-label">${typeMeta ? typeMeta.label.toUpperCase() : 'AUTO'}</span>
     </div>
 
-    <div class="to-results-meta">
-      ${spaces.length} space${spaces.length===1?'':'s'} · ${totalSF.toFixed(1)} SF · ${totalLF.toFixed(1)} LF
-    </div>
+    ${hasExtraction ? `
+      <div class="to-extraction-meta">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px">
+          <span style="font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;color:var(--text3);text-transform:uppercase">Extracted</span>
+          <span style="font-family:var(--mono);font-size:9.5px;color:var(--text2)">${extraction.groups.length} groups · trade: <strong>${esc(extraction.tradeDetected||'unknown')}</strong></span>
+        </div>
+        ${extraction.notes ? `<div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:4px;font-style:italic">${esc(extraction.notes)}</div>` : ''}
+      </div>
+    ` : manualBlock ? `
+      <div class="to-results-meta">
+        ${manualBlock.count} space${manualBlock.count===1?'':'s'} traced · ${manualBlock.totalSF.toFixed(1)} SF · ${manualBlock.totalLF.toFixed(1)} LF
+      </div>
+    ` : ''}
 
     <div class="to-results-list">
-      ${items.map(it => `
-        <div class="to-result-row">
+      ${items.length === 0 && hasExtraction ? `
+        <div style="padding:18px 14px;text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--text3);line-height:1.5">
+          No catalog rows matched the extracted markups.<br>
+          ${unmatched.length} unmatched item${unmatched.length===1?'':'s'} below.
+        </div>
+      ` : items.map((it, i) => `
+        <div class="to-result-row" title="${esc(it.sources.join(' • '))}">
           <div class="to-result-name">
             ${esc(it.name)}
-            <span class="to-result-sub">${esc(it.code)} · ${esc(it.sub)}</span>
+            <span class="to-result-sub">${esc(it.code)} · ${esc(it.sub)}${it.sources.length > 0 ? ` · from ${it.sources.length} markup${it.sources.length===1?'':'s'}` : ''}</span>
           </div>
           <div class="to-result-qty">${it.qty.toLocaleString(undefined, {maximumFractionDigits:1})}</div>
           <div class="to-result-unit">${esc(it.unit)}</div>
           <div class="to-result-price">${fmt$(it.total)}</div>
         </div>
       `).join('')}
+
+      ${unmatched.length > 0 ? `
+        <details style="border-top:1px solid var(--border);padding:8px 14px;background:var(--bg1)">
+          <summary style="cursor:pointer;font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--amber);font-weight:600;padding:4px 0">
+            ⚠ ${unmatched.length} unmatched · review
+          </summary>
+          <div style="margin-top:6px">
+            ${unmatched.map(u => `
+              <div style="padding:5px 0;font-family:var(--mono);font-size:10px;color:var(--text2);line-height:1.4;border-bottom:1px solid var(--border)">
+                <span style="color:var(--text3)">${esc(u.location||'—')}</span> · ${esc(u.label||u.category||'?')} · <span style="color:var(--ink-900);font-weight:600">${u.qty} ${u.unit}</span>
+              </div>
+            `).join('')}
+          </div>
+          <div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:6px;line-height:1.5">
+            These markups have no matching row in the <strong>${esc(typeId)}</strong> catalog.
+            Edit Settings to add matching rows, or pick a different trade type.
+          </div>
+        </details>
+      ` : ''}
     </div>
 
     <div class="to-results-foot">
       <span class="to-results-foot-lbl">Total · ${typeMeta?typeMeta.label.toLowerCase():''}</span>
-      <span class="to-results-foot-total">${fmt$(total)}</span>
+      <span class="to-results-foot-total">${fmt$(grandTotal)}</span>
     </div>
 
     <div class="to-results-actions">
       <button class="to-tool-btn" onclick="ST.tab='settings';ST.settingsTab='pricing';render();setTimeout(()=>document.getElementById('settings-pricing')?.scrollIntoView({behavior:'smooth'}),50)" title="Edit unit prices in Settings">
         ⚙ Edit prices
       </button>
+      ${hasExtraction ? `<button class="to-tool-btn" onclick="toClearExtraction('${p.id}')" title="Clear AI extraction">↺ Clear AI</button>` : ''}
       <button class="to-push-btn" onclick="toPushToBid('${p.id}')">Push to BID →</button>
     </div>
-
-    ${selSpace ? `
-      <div class="to-selected-detail">
-        <div class="to-selected-head">
-          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:6px">
-            <div style="font-family:var(--sans);font-size:13px;font-weight:600;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(selSpace.label)}</div>
-            <button onclick="ST.toSelSpace=null;render()" style="background:transparent;border:none;color:var(--text3);font-size:14px;cursor:pointer;line-height:1;padding:0">✕</button>
-          </div>
-          <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:3px">${selSpace.areaSF.toFixed(1)} SF · ${selSpace.perimeterLF.toFixed(1)} LF · ${esc(selSpace.type)}</div>
-        </div>
-      </div>
-    ` : ''}
   </div>`;
+}
+
+function toClearExtraction(pid) {
+  if (!confirm('Clear AI extraction? Your manually traced spaces will stay.')) return;
+  if (ST.toExtraction) delete ST.toExtraction[pid];
+  saveSt(); render();
+  showToast('AI extraction cleared', 'info');
 }
 
 // ── Top-level builder called by render() (initial mount only) ────────────────
@@ -14564,51 +14594,96 @@ async function pdfCleanupOrphans() {
 
 
 // ============================================================
-// TAKE-OFF PRICING CATALOG — default unit prices per discipline
-// Users can override in Settings → Pricing
+// TAKE-OFF PRICING CATALOG — Breakform Excel style
+// Mirror of the real Take-Off Budget format:
+//   - Each "trade" has rows with: label, default unit price, unit
+//   - User edits unit prices in Settings; quantities come from AI extraction
+//   - Pricing math: qty × unitPrice = lineTotal (no AI needed for math)
 // ============================================================
 
 const TAKEOFF_TYPES = [
-  { id: 'finishes', label: 'Finishes', desc: 'Floors, paint, tile, baseboards', icon: '🎨' },
-  { id: 'facade',   label: 'Facade',   desc: 'Stucco, siding, cladding, parapets', icon: '🏛' },
-  { id: 'gypsum',   label: 'Gypsum Board', desc: 'Drywall, partitions, ceilings', icon: '⬜' },
-  { id: 'railing',  label: 'Railing',  desc: 'Guardrails, handrails, balustrades', icon: '═' },
+  { id: 'tile',       label: 'Tile',          desc: 'Floor & wall tile install + material', icon: '◫' },
+  { id: 'hardwood',   label: 'Hardwood',      desc: 'Hardwood / engineered floor',          icon: '▤' },
+  { id: 'countertop', label: 'Countertop',    desc: 'Quartz, granite, solid surface',        icon: '═' },
+  { id: 'facade',     label: 'Facade',        desc: 'Stucco, siding, cladding',              icon: '🏛' },
+  { id: 'roofing',    label: 'Roofing',       desc: 'Membrane, shingle, metal',              icon: '◢' },
+  { id: 'gypsum',     label: 'Gypsum Board',  desc: 'Drywall, partitions, ceilings',         icon: '⬜' },
+  { id: 'railing',    label: 'Railing',       desc: 'Guard, hand, balustrades',              icon: '═' },
+  { id: 'paint',      label: 'Paint',         desc: 'Walls, ceilings, trim',                 icon: '🎨' },
+  { id: 'doors',      label: 'Doors',         desc: 'Interior, exterior, glass',             icon: '🚪' },
+  { id: 'general',    label: 'General',       desc: 'Mixed / GC scope',                      icon: '⊞' },
 ];
 
-// Default catalog. Keys are takeoff type IDs. Each entry is an array of
-// line items with default unit price (user-editable in Settings).
+// Each catalog entry is a line item with:
+//   code      — internal id for the row
+//   name      — display label
+//   sub       — optional notes shown smaller
+//   unit      — SF | LF | EA
+//   perUnit   — default $/unit
+//   matchTags — list of strings used to auto-map AI-extracted markups to this row
+//
+// matchTags is the magic: when AI returns a markup labeled "FLOORS" with unit SF,
+// we match it to whichever row has "floor" in its matchTags. Multiple matches allowed.
 const DEFAULT_PRICING_CATALOG = {
-  finishes: [
-    { code: '096400', name: 'Wood flooring',         sub: 'White oak · 7" plank',           unit: 'SF', perUnit: 14.50 },
-    { code: '096000', name: 'Tile installation',     sub: 'Porcelain · large format',       unit: 'SF', perUnit: 18.00 },
-    { code: '099000', name: 'Paint · walls',         sub: '2 coats premium latex',          unit: 'SF', perUnit: 2.20 },
-    { code: '099001', name: 'Paint · ceiling',       sub: '1 coat flat white',              unit: 'SF', perUnit: 1.80 },
-    { code: '061000', name: 'Base trim',             sub: '4" MDF baseboard',               unit: 'LF', perUnit: 6.50 },
-    { code: '092000', name: 'Skim coat',             sub: 'Level 5 finish',                 unit: 'SF', perUnit: 3.00 },
+  tile: [
+    { code: 'tile-floor-install',  name: 'Tile install · floors', sub: 'Labor only',                    unit: 'SF', perUnit: 20.00, matchTags: ['floor','floors','flooring','tile floor'] },
+    { code: 'tile-wall-install',   name: 'Tile install · walls',  sub: 'Labor only',                    unit: 'SF', perUnit: 25.00, matchTags: ['wall','walls','tile wall'] },
+    { code: 'tile-material',       name: 'Tile material',         sub: 'Mid-range porcelain',           unit: 'SF', perUnit: 15.00, matchTags: ['material','tile material'] },
+    { code: 'tile-thinset-grout',  name: 'Thinset + grout',       sub: 'Setting materials',             unit: 'SF', perUnit: 2.50,  matchTags: [] },
+  ],
+  hardwood: [
+    { code: 'hw-install-material', name: 'Hardwood install + material', sub: 'White oak · 7" plank',   unit: 'SF', perUnit: 16.00, matchTags: ['floor','floors','flooring','hardwood'] },
+    { code: 'hw-underlayment',     name: 'Underlayment',                sub: 'Cork or felt',           unit: 'SF', perUnit: 1.20,  matchTags: [] },
+    { code: 'hw-base',             name: 'Base trim',                   sub: '4" wood baseboard',      unit: 'LF', perUnit: 7.50,  matchTags: ['base','trim','baseboard'] },
+  ],
+  countertop: [
+    { code: 'ct-install',  name: 'Countertop install',   sub: 'Labor + edge profile',  unit: 'SF', perUnit: 60.00, matchTags: ['countertop','install'] },
+    { code: 'ct-material', name: 'Countertop material',  sub: 'Quartz mid-tier',       unit: 'SF', perUnit: 40.00, matchTags: ['countertop','material'] },
+    { code: 'ct-backsplash',name: 'Backsplash',          sub: 'Same material 4" high', unit: 'LF', perUnit: 22.00, matchTags: ['backsplash'] },
   ],
   facade: [
-    { code: '074600', name: 'Fiber cement siding',   sub: 'Hardie plank · primed',          unit: 'SF', perUnit: 11.50 },
-    { code: '092400', name: '3-coat stucco',         sub: 'Float finish · acrylic',         unit: 'SF', perUnit: 14.00 },
-    { code: '074200', name: 'Metal panel cladding',  sub: 'Standing seam · 24 ga',          unit: 'SF', perUnit: 28.00 },
-    { code: '076100', name: 'Parapet flashing',      sub: 'Galvanized · 24 ga',             unit: 'LF', perUnit: 22.00 },
-    { code: '079200', name: 'Sealant joints',        sub: 'Polyurethane · 1/2"',            unit: 'LF', perUnit: 4.50 },
-    { code: '072100', name: 'Insulation board',      sub: 'Rigid · R-10',                   unit: 'SF', perUnit: 3.20 },
+    { code: 'fac-stucco',   name: '3-coat stucco',         sub: 'Float finish acrylic',    unit: 'SF', perUnit: 14.00, matchTags: ['stucco','facade'] },
+    { code: 'fac-siding',   name: 'Fiber cement siding',   sub: 'Hardie plank primed',     unit: 'SF', perUnit: 11.50, matchTags: ['siding'] },
+    { code: 'fac-metal',    name: 'Metal panel cladding',  sub: 'Standing seam · 24 ga',   unit: 'SF', perUnit: 28.00, matchTags: ['metal','panel','cladding'] },
+    { code: 'fac-flashing', name: 'Parapet flashing',      sub: 'Galv 24 ga',              unit: 'LF', perUnit: 22.00, matchTags: ['flashing','parapet'] },
+  ],
+  roofing: [
+    { code: 'roof-membrane', name: 'TPO membrane roof',  sub: '60 mil mechanically attached', unit: 'SF', perUnit: 12.00, matchTags: ['roof','roofing','membrane','tpo'] },
+    { code: 'roof-shingle',  name: 'Asphalt shingle',    sub: 'Architectural 30-yr',          unit: 'SF', perUnit: 6.50,  matchTags: ['shingle'] },
+    { code: 'roof-metal',    name: 'Metal roof',         sub: 'Standing seam 24 ga',          unit: 'SF', perUnit: 18.00, matchTags: ['metal'] },
+    { code: 'roof-insul',    name: 'Roof insulation',    sub: 'Polyiso · R-30',               unit: 'SF', perUnit: 4.20,  matchTags: ['insulation'] },
+    { code: 'roof-flashing', name: 'Roof flashing',      sub: 'Galv 24 ga',                   unit: 'LF', perUnit: 18.00, matchTags: ['flashing'] },
   ],
   gypsum: [
-    { code: '092900', name: '5/8" Type X · walls',   sub: 'Standard 1-hr rated',            unit: 'SF', perUnit: 3.40 },
-    { code: '092901', name: '1/2" gypsum · ceiling', sub: 'Smooth level 4',                 unit: 'SF', perUnit: 3.10 },
-    { code: '092216', name: 'Metal stud framing',    sub: '3-5/8" · 25 ga · 16" OC',        unit: 'SF', perUnit: 4.80 },
-    { code: '092910', name: 'Level 4 finish',        sub: 'Tape · 3 coats · sand',          unit: 'SF', perUnit: 2.40 },
-    { code: '072100', name: 'Batt insulation',       sub: 'R-13 fiberglass',                unit: 'SF', perUnit: 1.40 },
-    { code: '079200', name: 'Acoustic sealant',      sub: 'Top/bottom track',               unit: 'LF', perUnit: 3.50 },
+    { code: 'gyp-wall',       name: '5/8" Type X · walls',    sub: '1-hr rated',          unit: 'SF', perUnit: 3.40, matchTags: ['wall','walls','partition'] },
+    { code: 'gyp-ceiling',    name: '1/2" gypsum · ceiling',  sub: 'Smooth level 4',      unit: 'SF', perUnit: 3.10, matchTags: ['ceiling','ceilings'] },
+    { code: 'gyp-framing',    name: 'Metal stud framing',     sub: '3-5/8" 25 ga 16" OC', unit: 'SF', perUnit: 4.80, matchTags: ['framing','stud'] },
+    { code: 'gyp-finish',     name: 'Level 4 finish',         sub: 'Tape · 3 coats',      unit: 'SF', perUnit: 2.40, matchTags: ['finish','tape'] },
+    { code: 'gyp-batt',       name: 'Batt insulation',        sub: 'R-13 fiberglass',     unit: 'SF', perUnit: 1.40, matchTags: ['insulation','batt'] },
   ],
   railing: [
-    { code: '057300', name: 'Aluminum guardrail',    sub: 'Picket style · powder coat',     unit: 'LF', perUnit: 145.00 },
-    { code: '057301', name: 'Glass guardrail',       sub: 'Tempered · stainless posts',     unit: 'LF', perUnit: 285.00 },
-    { code: '057302', name: 'Steel handrail',        sub: '1-1/2" round · wall mount',      unit: 'LF', perUnit: 72.00 },
-    { code: '057303', name: 'Cable rail system',     sub: '316 stainless · 1/8" cable',     unit: 'LF', perUnit: 195.00 },
-    { code: '055213', name: 'Pipe rail · galv',      sub: '1-1/2" sch 40 · 2 rail',         unit: 'LF', perUnit: 85.00 },
-    { code: '057310', name: 'Newel post',            sub: 'Decorative · stained wood',      unit: 'EA', perUnit: 320.00 },
+    { code: 'rail-alum',  name: 'Aluminum guardrail', sub: 'Picket · powder coat',     unit: 'LF', perUnit: 145.00, matchTags: ['rail','railing','guard'] },
+    { code: 'rail-glass', name: 'Glass guardrail',    sub: 'Tempered · SS posts',      unit: 'LF', perUnit: 285.00, matchTags: ['glass'] },
+    { code: 'rail-steel', name: 'Steel handrail',     sub: '1-1/2" round wall mount',  unit: 'LF', perUnit: 72.00,  matchTags: ['hand','handrail'] },
+    { code: 'rail-cable', name: 'Cable rail',         sub: '316 SS · 1/8" cable',      unit: 'LF', perUnit: 195.00, matchTags: ['cable'] },
+  ],
+  paint: [
+    { code: 'paint-walls',   name: 'Paint · walls',    sub: '2 coats premium latex', unit: 'SF', perUnit: 2.20, matchTags: ['wall','walls'] },
+    { code: 'paint-ceiling', name: 'Paint · ceiling',  sub: '1 coat flat white',     unit: 'SF', perUnit: 1.80, matchTags: ['ceiling','ceilings'] },
+    { code: 'paint-trim',    name: 'Paint · trim',     sub: 'Semi-gloss enamel',     unit: 'LF', perUnit: 2.50, matchTags: ['trim','base'] },
+    { code: 'paint-prime',   name: 'Primer coat',      sub: 'Stain-block primer',    unit: 'SF', perUnit: 1.20, matchTags: ['primer','prime'] },
+  ],
+  doors: [
+    { code: 'door-int',      name: 'Interior door',         sub: 'Pre-hung · paint grade',  unit: 'EA', perUnit: 650.00,  matchTags: ['interior','door'] },
+    { code: 'door-ext',      name: 'Exterior door',         sub: 'Insulated · steel',       unit: 'EA', perUnit: 1400.00, matchTags: ['exterior','door'] },
+    { code: 'door-glass',    name: 'Exterior glass door',   sub: 'Tempered storefront',     unit: 'EA', perUnit: 1200.00, matchTags: ['glass','sliding'] },
+    { code: 'door-hardware', name: 'Door hardware set',     sub: 'Lever + hinges',          unit: 'EA', perUnit: 185.00,  matchTags: ['hardware'] },
+  ],
+  general: [
+    { code: 'gen-flooring',   name: 'Flooring (allowance)',  sub: 'Mid-range allowance',  unit: 'SF', perUnit: 12.00, matchTags: ['floor','floors','flooring'] },
+    { code: 'gen-walls',      name: 'Walls (allowance)',     sub: 'Frame + drywall + paint', unit: 'SF', perUnit: 8.50,  matchTags: ['wall','walls'] },
+    { code: 'gen-ceiling',    name: 'Ceiling (allowance)',   sub: 'Frame + drywall + paint', unit: 'SF', perUnit: 7.00,  matchTags: ['ceiling','ceilings'] },
+    { code: 'gen-doors',      name: 'Doors (each)',          sub: 'Avg interior + hardware', unit: 'EA', perUnit: 850.00, matchTags: ['door'] },
   ],
 };
 
@@ -14616,7 +14691,6 @@ const DEFAULT_PRICING_CATALOG = {
 function getPricingCatalog() {
   const custom = ST.settings?.takeoffPricing;
   if (custom && typeof custom === 'object') {
-    // Merge custom over defaults so missing keys fall back to defaults
     const merged = {};
     for (const k of Object.keys(DEFAULT_PRICING_CATALOG)) {
       merged[k] = custom[k] && Array.isArray(custom[k]) ? custom[k] : DEFAULT_PRICING_CATALOG[k];
@@ -14634,7 +14708,7 @@ function getPricingForType(typeId) {
 function setPricingItem(typeId, idx, field, value) {
   if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   if (!ST.settings.takeoffPricing) ST.settings.takeoffPricing = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG));
-  if (!ST.settings.takeoffPricing[typeId]) ST.settings.takeoffPricing[typeId] = [...DEFAULT_PRICING_CATALOG[typeId]];
+  if (!ST.settings.takeoffPricing[typeId]) ST.settings.takeoffPricing[typeId] = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG[typeId] || []));
   const list = ST.settings.takeoffPricing[typeId];
   if (!list[idx]) return;
   if (field === 'perUnit') value = parseFloat(value) || 0;
@@ -14645,39 +14719,72 @@ function setPricingItem(typeId, idx, field, value) {
 function resetPricingForType(typeId) {
   if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   if (!ST.settings.takeoffPricing) ST.settings.takeoffPricing = {};
-  ST.settings.takeoffPricing[typeId] = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG[typeId]));
+  ST.settings.takeoffPricing[typeId] = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG[typeId] || []));
   saveSt();
   render();
   showToast('Pricing reset to defaults for ' + typeId, 'success');
 }
 
-// ── Compute line items from measured spaces, scoped to takeoff type ──────────
-function buildTakeoffLineItems(pid, typeId) {
-  const spaces = toGetSpaces(pid);
-  if (!spaces.length || !typeId) return { items: [], total: 0 };
-
-  // Aggregate measurements across all spaces
-  const totalSF = spaces.reduce((s, sp) => s + (sp.areaSF || 0), 0);
-  const totalLF = spaces.reduce((s, sp) => s + (sp.perimeterLF || 0), 0);
-  const spaceCount = spaces.length;
-
-  // Apply unit-pricing catalog for the chosen type
+// ── Match an extracted markup item to a pricing catalog row ──────────────────
+// Returns the row index, or -1 if no good match. Uses matchTags + unit alignment.
+function findCatalogRowForMarkup(typeId, markupCategory, markupLabel, markupUnit) {
   const catalog = getPricingForType(typeId);
-  const items = catalog.map(c => {
-    let qty = 0;
-    if (c.unit === 'SF') qty = totalSF;
-    else if (c.unit === 'LF') qty = totalLF;
-    else if (c.unit === 'EA') qty = spaceCount;
-    else qty = totalSF;
-    const total = qty * c.perUnit;
+  if (!catalog.length) return -1;
+  const needle = (markupCategory + ' ' + markupLabel).toLowerCase();
+  let best = -1, bestScore = 0;
+  catalog.forEach((row, i) => {
+    if (row.unit !== markupUnit) return; // hard requirement: units must match
+    let score = 0;
+    for (const tag of (row.matchTags || [])) {
+      if (needle.includes(tag.toLowerCase())) score += 2;
+    }
+    // bonus for name word overlap
+    const rowWords = row.name.toLowerCase().split(/\W+/).filter(w => w.length > 3);
+    for (const w of rowWords) if (needle.includes(w)) score += 1;
+    if (score > bestScore) { bestScore = score; best = i; }
+  });
+  return bestScore > 0 ? best : -1;
+}
+
+// ── Build line items from AI-extracted markups (the new flow) ────────────────
+// Returns { items: [{ catalogRow, qty, unitTotal, source }], total, unmatched }
+function buildExtractedLineItems(pid, typeId) {
+  const extraction = ST.toExtraction?.[pid];
+  if (!extraction?.groups?.length) return { items: [], total: 0, unmatched: [] };
+  const catalog = getPricingForType(typeId);
+  const itemMap = {};   // catalog row idx → accumulated qty
+  const unmatched = [];
+
+  for (const grp of extraction.groups) {
+    for (const it of (grp.items || [])) {
+      const qty = Number(it.qty) || 0;
+      if (!qty) continue;
+      const idx = findCatalogRowForMarkup(typeId, it.category || '', it.label || '', it.unit || 'SF');
+      if (idx === -1) {
+        unmatched.push({ ...it, location: grp.location || null });
+        continue;
+      }
+      if (!itemMap[idx]) itemMap[idx] = { qty: 0, sources: [] };
+      itemMap[idx].qty += qty;
+      itemMap[idx].sources.push(`${grp.location ? grp.location + ' · ' : ''}${it.label || it.category} (${it.qty} ${it.unit})`);
+    }
+  }
+
+  const items = Object.keys(itemMap).map(idxStr => {
+    const idx = parseInt(idxStr, 10);
+    const row = catalog[idx];
+    const { qty, sources } = itemMap[idx];
+    const total = qty * row.perUnit;
     return {
-      ...c,
-      qty: Math.round(qty * 10) / 10,
+      catalogIdx: idx,
+      ...row,
+      qty: Math.round(qty * 100) / 100,
       total: Math.round(total * 100) / 100,
+      sources,
     };
   });
   const grandTotal = items.reduce((s, it) => s + it.total, 0);
-  return { items, total: grandTotal };
+  return { items, total: grandTotal, unmatched };
 }
 
 // ── Direct upload entry point — uploads PDF and selects it in one shot ────────
@@ -14700,7 +14807,6 @@ async function toUploadAndOpen(pid, typeId) {
         r.onerror = rej;
         r.readAsDataURL(file);
       });
-      // Create a plan record scoped to this take-off
       const e = getEstProj(pid);
       if (!e.plans) e.plans = [];
       const planId = 'plan_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
@@ -14711,21 +14817,19 @@ async function toUploadAndOpen(pid, typeId) {
         size: file.size,
         ts: new Date().toISOString(),
         dataUrl,
-        takeoffType: typeId,    // marker — created from take-off upload
+        takeoffType: typeId,
       };
       e.plans.push(plan);
-      // Set take-off context and active plan
       ST.toTakeoffType = typeId;
       ST.toActivePlan = { pid, planId, discipline: 'A', name: plan.name };
       ST.toCalState = 'idle'; ST.toCalPoints = []; ST.toPxPerFoot = null;
       ST.toPolygonPts = [];
       _TO.zoom = 1; _TO.pageNum = 1;
-      _TO.pdfDoc = null;       // force fresh load
-      _TO.mounted = false;     // force fresh mount of canvas
+      _TO.pdfDoc = null;
+      _TO.mounted = false;
       ST.toUploading = false;
       saveSt();
       render();
-      // After render, the buildEstTakeoff setTimeout will load the PDF
     } catch (err) {
       ST.toUploading = false;
       showToast('Upload failed: ' + err.message, 'error');
