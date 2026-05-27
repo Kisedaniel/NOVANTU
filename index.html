@@ -2429,6 +2429,160 @@ body[data-theme="hc"] {
 .to-empty-title{font-family:var(--sans);font-size:16px;font-weight:600;color:var(--text)}
 .to-empty-sub{font-family:var(--mono);font-size:11px;color:var(--text3);line-height:1.7;max-width:320px}
 
+/* ============================================================
+   TAKE-OFF WIZARD (type picker + upload zone)
+   ============================================================ */
+.to-wizard{display:flex;align-items:flex-start;justify-content:center;height:100%;overflow-y:auto;padding:40px 24px}
+.to-wizard-card{max-width:680px;width:100%}
+.to-wizard-step{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber);font-weight:600;margin-bottom:14px}
+.to-wizard-title{font-family:var(--sans);font-size:30px;font-weight:600;letter-spacing:-.015em;color:var(--ink-900);margin-bottom:8px;line-height:1.2}
+.to-wizard-sub{font-family:var(--mono);font-size:11.5px;color:var(--text3);letter-spacing:.02em;margin-bottom:28px;line-height:1.5}
+.to-wizard-divider{display:flex;align-items:center;gap:14px;margin:28px 0 16px;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)}
+.to-wizard-divider::before,.to-wizard-divider::after{content:"";flex:1;height:1px;background:var(--border)}
+.to-wizard-footer{margin-top:18px;padding-top:14px;border-top:1px solid var(--border);font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.02em;line-height:1.5}
+
+/* Type picker grid */
+.to-type-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:8px}
+@media (max-width:600px){.to-type-grid{grid-template-columns:1fr}}
+.to-type-card{
+  display:flex;flex-direction:column;gap:6px;align-items:flex-start;
+  padding:18px 20px;
+  background:var(--bg);
+  border:1px solid var(--border);
+  cursor:pointer;text-align:left;
+  transition:border-color .15s,transform .15s,background .15s;
+  font-family:inherit;
+}
+.to-type-card:hover{border-color:var(--amber);background:var(--amber-bg);transform:translateY(-1px)}
+.to-type-icon{font-size:24px;line-height:1}
+.to-type-label{font-family:var(--sans);font-size:15px;font-weight:600;color:var(--ink-900);letter-spacing:-.005em}
+.to-type-desc{font-family:var(--mono);font-size:10.5px;color:var(--text3);letter-spacing:.02em;line-height:1.4}
+
+/* Selected type badge */
+.to-wizard-typebadge{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 14px;margin-bottom:18px;
+  background:var(--amber-bg);border:1px solid var(--amber-border);
+  font-family:var(--mono);font-size:11.5px;color:var(--ink-900);
+}
+.to-wizard-typebadge > span:nth-child(2){flex:1}
+.to-type-change{
+  font-family:var(--mono);font-size:10px;color:var(--amber);
+  background:transparent;border:none;cursor:pointer;text-decoration:underline;
+  letter-spacing:.04em;text-transform:lowercase;
+}
+
+/* Upload zone */
+.to-upload-zone{
+  border:2px dashed var(--border);border-radius:var(--r2);
+  padding:48px 28px;text-align:center;cursor:pointer;
+  transition:border-color .15s,background .15s;
+  background:var(--bg1);
+  min-height:200px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+}
+.to-upload-zone:hover,.to-upload-zone.drag{border-color:var(--amber);background:var(--amber-bg)}
+.to-upload-icon{font-size:36px;color:var(--text3);line-height:1;margin-bottom:6px}
+.to-upload-title{font-family:var(--sans);font-size:14px;font-weight:600;color:var(--ink-900)}
+.to-upload-sub{font-family:var(--mono);font-size:10.5px;color:var(--text3);letter-spacing:.02em}
+.to-upload-spinner{
+  width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--amber);
+  border-radius:50%;animation:to-spin 1s linear infinite;
+}
+@keyframes to-spin{to{transform:rotate(360deg)}}
+.to-upload-status{font-family:var(--mono);font-size:11px;color:var(--amber);letter-spacing:.04em;text-transform:uppercase}
+
+/* Existing plans list in step 1 */
+.to-existing-list{display:flex;flex-direction:column;gap:4px}
+.to-existing-row{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 14px;
+  background:var(--bg);border:1px solid var(--border);
+  cursor:pointer;text-align:left;font-family:inherit;
+  transition:border-color .12s,background .12s;
+}
+.to-existing-row:hover:not(:disabled){border-color:var(--border2);background:var(--bg1)}
+.to-existing-disc{
+  font-family:var(--mono);font-size:9px;letter-spacing:.06em;font-weight:600;
+  padding:3px 6px;background:var(--bg1);border:1px solid var(--border);border-radius:2px;
+  color:var(--text2);flex-shrink:0;
+}
+.to-existing-name{flex:1;font-size:13px;color:var(--ink-900);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.to-existing-type{
+  font-family:var(--mono);font-size:9px;color:var(--amber);text-transform:uppercase;letter-spacing:.06em;
+  padding:2px 6px;background:var(--amber-bg);border:1px solid var(--amber-border);
+}
+.to-existing-arrow{font-family:var(--mono);font-size:14px;color:var(--amber);flex-shrink:0}
+
+/* ============================================================
+   TAKE-OFF DETAIL PANEL (landing-style line items)
+   ============================================================ */
+.to-detail-results{padding:0}
+.to-results-head{
+  padding:12px 14px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+  background:var(--bg1);
+}
+.to-results-label-strong{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--amber);font-weight:600;
+}
+.to-results-label{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--text3);
+}
+.to-results-meta{
+  padding:8px 14px;border-bottom:1px solid var(--border);
+  font-family:var(--mono);font-size:10px;letter-spacing:.04em;color:var(--text2);
+  background:var(--bg);
+}
+.to-results-list{flex:1;min-height:0;overflow-y:auto;background:var(--bg)}
+.to-result-row{
+  display:grid;grid-template-columns:1fr 50px 32px 70px;gap:8px;
+  padding:10px 14px;border-bottom:1px solid var(--border);
+  align-items:baseline;
+}
+.to-result-row:last-child{border-bottom:none}
+.to-result-name{
+  font-family:var(--sans);font-size:12.5px;color:var(--ink-900);font-weight:500;
+  line-height:1.3;
+}
+.to-result-sub{
+  display:block;margin-top:2px;
+  font-family:var(--mono);font-size:9px;letter-spacing:.04em;
+  text-transform:uppercase;color:var(--text3);font-weight:400;
+}
+.to-result-qty{
+  font-family:var(--mono);font-variant-numeric:tabular-nums;
+  font-size:12px;color:var(--ink-900);text-align:right;
+}
+.to-result-unit{
+  font-family:var(--mono);font-size:9px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--text3);
+}
+.to-result-price{
+  font-family:var(--mono);font-variant-numeric:tabular-nums;
+  font-size:12px;color:var(--ink-900);text-align:right;font-weight:600;
+}
+.to-results-foot{
+  border-top:2px solid var(--border);
+  padding:14px 14px;background:var(--bg1);
+  display:flex;justify-content:space-between;align-items:baseline;
+}
+.to-results-foot-lbl{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--text3);
+}
+.to-results-foot-total{
+  font-family:var(--mono);font-size:18px;font-weight:700;
+  color:var(--ink-900);font-variant-numeric:tabular-nums;
+}
+.to-results-actions{
+  display:flex;gap:6px;padding:10px 14px;border-top:1px solid var(--border);background:var(--bg);
+}
+.to-results-actions > button{flex:1}
+.to-selected-detail{padding:10px 14px;border-top:1px solid var(--border);background:var(--bg1)}
+.to-selected-head{}
+
 @media (max-width:1100px){.to-detail{display:none}}
 @media (max-width:800px){.to-sidebar{width:200px}}
 
@@ -3561,6 +3715,8 @@ let ST = {
                              //   areaSF, perimeterLF, polygonPts, finishes, sheetRef, ts }]
   toSelSpace: null,          // id of selected space in results list
   toAnalyzing: false,        // true while Vision API call in flight
+  toUploading: false,        // true while file is being uploaded
+  toTakeoffType: null,       // 'finishes' | 'facade' | 'gypsum' | 'railing' — chosen before upload
   toScanResult: null,        // last scan result from analyze-plan?mode=scan  // {[accId]: true|false} — open/close state for Plan Sets sub-accordions
   estimatorSuggestDismissed: {},    // {[pid]: [suggestionKey...]} — heuristics already declined
   emailTemplates: null,     // {rfp:{subject,body}, followup:{subject,body}} — loaded from app_state
@@ -5947,6 +6103,42 @@ function buildSettingsTab() {
       <div style="border:1px solid var(--border);background:var(--bg);overflow:hidden">
         ${COST_TYPES.map(ct => `<div style="display:grid;grid-template-columns:200px 1fr 100px 40px;align-items:center;padding:10px 18px;border-bottom:1px solid var(--border);gap:10px"><div style="font-size:13px;color:var(--ink-900);font-weight:500">${esc(ct)}</div><div style="font-family:var(--mono);font-size:11px;color:var(--text3)">${ct==='None'?'No category':ct==='Materials'?'Wood, hardware':ct==='Labor'?'In-house crews':ct==='Subcontractor'?'External trades':ct==='Equipment'?'Rentals':'Custom'}</div><div style="display:flex;align-items:center;gap:6px"><input type="number" step="0.5" class="minp" style="text-align:right;font-family:var(--mono)" value="${s.defaultMarkup?.[ct] ?? 0}" onchange="settingsSetMarkup('${esc(ct)}', Number(this.value))"><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">%</span></div>${DEFAULT_COST_TYPES.includes(ct) ? '' : `<button class="btn btn-ghost btn-sm" style="color:var(--red);padding:3px 6px" onclick="settingsRemoveCostType('${esc(ct)}')">✕</button>`}</div>`).join('')}
         <div style="padding:10px 18px;display:flex;gap:8px;align-items:center"><input type="text" class="minp" id="new-ct" placeholder="Add custom cost type…" onkeydown="if(event.key==='Enter')settingsAddCostType()" style="flex:1"><button class="btn btn-amber btn-sm" onclick="settingsAddCostType()">+ Add type</button></div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:24px" id="settings-pricing"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Take-off unit prices</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Edit unit costs that feed Estimator → Take-off line items.</div></div>
+      <div style="border:1px solid var(--border);background:var(--bg);overflow:hidden">
+        ${TAKEOFF_TYPES.map(t => {
+          const items = getPricingForType(t.id);
+          return `
+            <details style="border-bottom:1px solid var(--border)" ${ST.settingsPricingOpen===t.id?'open':''}>
+              <summary style="padding:12px 18px;cursor:pointer;display:flex;align-items:center;gap:10px;user-select:none;background:var(--bg1)">
+                <span style="font-size:16px">${t.icon}</span>
+                <span style="font-family:var(--sans);font-size:13px;font-weight:600;color:var(--ink-900)">${esc(t.label)}</span>
+                <span style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-left:auto">${items.length} line items</span>
+              </summary>
+              <div style="padding:6px 0">
+                <div style="display:grid;grid-template-columns:80px 1fr 1fr 60px 100px 40px;gap:8px;padding:6px 18px;font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);border-bottom:1px solid var(--border)">
+                  <span>Code</span><span>Name</span><span>Notes</span><span>Unit</span><span style="text-align:right">$/unit</span><span></span>
+                </div>
+                ${items.map((it, i) => `
+                  <div style="display:grid;grid-template-columns:80px 1fr 1fr 60px 100px 40px;gap:8px;padding:6px 18px;align-items:center;border-bottom:1px solid var(--border)">
+                    <input type="text" class="minp" value="${esc(it.code)}" onblur="setPricingItem('${t.id}',${i},'code',this.value)" style="font-family:var(--mono);font-size:11px">
+                    <input type="text" class="minp" value="${esc(it.name)}" onblur="setPricingItem('${t.id}',${i},'name',this.value)" style="font-size:12px">
+                    <input type="text" class="minp" value="${esc(it.sub)}" onblur="setPricingItem('${t.id}',${i},'sub',this.value)" style="font-size:12px">
+                    <select class="msel" onchange="setPricingItem('${t.id}',${i},'unit',this.value)" style="font-family:var(--mono);font-size:11px">
+                      <option value="SF"${it.unit==='SF'?' selected':''}>SF</option>
+                      <option value="LF"${it.unit==='LF'?' selected':''}>LF</option>
+                      <option value="EA"${it.unit==='EA'?' selected':''}>EA</option>
+                    </select>
+                    <div style="display:flex;align-items:center;gap:4px"><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">$</span><input type="number" step="0.01" class="minp" value="${it.perUnit}" onchange="setPricingItem('${t.id}',${i},'perUnit',this.value)" style="text-align:right;font-family:var(--mono)"></div>
+                    <button class="btn btn-ghost btn-sm" style="color:var(--text3);padding:3px 6px" onclick="if(confirm('Reset ${esc(t.label)} prices to defaults?'))resetPricingForType('${t.id}')" title="Reset ${esc(t.label)} prices">↻</button>
+                  </div>
+                `).join('')}
+              </div>
+            </details>
+          `;
+        }).join('')}
       </div>
     </div>
 
@@ -10734,52 +10926,78 @@ function toBuildToolbar(p, e) {
 
 function toBuildDetailPanel(p, e) {
   const spaces = toGetSpaces(p.id);
+  const typeId = ST.toTakeoffType;
+  const typeMeta = TAKEOFF_TYPES.find(t => t.id === typeId);
+
+  // If a space is explicitly selected, show the legacy single-space detail at the top.
   const selSpace = spaces.find(s => s.id === ST.toSelSpace) || null;
 
-  if (!selSpace) {
+  if (spaces.length === 0) {
     return `<div id="to-detail" class="to-detail">
       <div class="to-detail-empty">
-        Select a measured space<br>from the list to see<br>finish quantities
+        ${typeMeta ? `<div style="font-size:32px;margin-bottom:10px;opacity:.6">${typeMeta.icon}</div>` : ''}
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">[ LINE ITEMS ]</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text3);line-height:1.7">
+          Calibrate the scale,<br>then trace a space<br>to see ${typeMeta ? typeMeta.label.toLowerCase() : 'finish'} quantities<br>and pricing here.
+        </div>
       </div>
     </div>`;
   }
 
-  return `<div id="to-detail" class="to-detail">
-    <div class="to-detail-head">
-      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:6px">
-        <div style="font-family:var(--sans);font-size:14px;font-weight:600;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(selSpace.label)}</div>
-        <span style="font-family:var(--mono);font-size:9px;color:var(--text3);padding:1px 6px;border:1px solid var(--border);border-radius:10px;letter-spacing:.04em">${esc(selSpace.type)}</span>
-      </div>
-      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.04em;margin-top:4px">
-        ${selSpace.areaSF.toFixed(1)} SF · ${selSpace.perimeterLF.toFixed(1)} LF
-      </div>
-      <div style="font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.04em;margin-top:2px">${esc(selSpace.sheetRef||'—')} · pg ${selSpace.pageNum||1}</div>
-      ${selSpace.note ? `<div style="font-family:var(--sans);font-size:11px;color:var(--amber);margin-top:6px;font-style:italic;line-height:1.45">⚠ ${esc(selSpace.note)}</div>` : ''}
+  // Aggregate line items across all spaces, using the pricing catalog
+  const { items, total } = buildTakeoffLineItems(p.id, typeId);
+
+  // Sum of all measurements
+  const totalSF = spaces.reduce((s, sp) => s + (sp.areaSF || 0), 0);
+  const totalLF = spaces.reduce((s, sp) => s + (sp.perimeterLF || 0), 0);
+
+  return `<div id="to-detail" class="to-detail to-detail-results">
+    <div class="to-results-head">
+      <span class="to-results-label-strong">[ LINE ITEMS ]</span>
+      <span class="to-results-label">${typeMeta ? typeMeta.label.toUpperCase() : 'AUTO'} · CSI</span>
     </div>
 
-    <div style="padding:8px 16px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);display:grid;grid-template-columns:1fr 70px 40px 20px;gap:6px">
-      <span>Item</span><span style="text-align:right">Qty</span><span>Unit</span><span></span>
+    <div class="to-results-meta">
+      ${spaces.length} space${spaces.length===1?'':'s'} · ${totalSF.toFixed(1)} SF · ${totalLF.toFixed(1)} LF
     </div>
 
-    <div style="flex:1;overflow-y:auto">
-      ${selSpace.finishes.map((fin, i) => `
-        <div class="to-finish-row">
-          <div>
-            <div class="to-finish-item">${esc(fin.item)}</div>
-            <div class="to-finish-cat">${esc(fin.category)}</div>
+    <div class="to-results-list">
+      ${items.map(it => `
+        <div class="to-result-row">
+          <div class="to-result-name">
+            ${esc(it.name)}
+            <span class="to-result-sub">${esc(it.code)} · ${esc(it.sub)}</span>
           </div>
-          <input type="number" value="${fin.qty}" min="0" step="0.5"
-            onchange="toEditQty('${selSpace.id}',${i},this.value)"
-            style="text-align:right;background:var(--bg1);border:1px solid var(--border);border-radius:2px;padding:3px 5px;font-family:var(--mono);font-size:11px;color:var(--text);width:100%;outline:none"
-            onfocus="this.style.borderColor='var(--amber)'" onblur="this.style.borderColor='var(--border)'">
-          <div class="to-finish-unit">${esc(fin.unit)}</div>
-          <button class="to-finish-del" onclick="toDeleteFinish('${selSpace.id}',${i})">✕</button>
+          <div class="to-result-qty">${it.qty.toLocaleString(undefined, {maximumFractionDigits:1})}</div>
+          <div class="to-result-unit">${esc(it.unit)}</div>
+          <div class="to-result-price">${fmt$(it.total)}</div>
         </div>
-        ${fin.note ? `<div style="padding:2px 16px 6px;font-family:var(--mono);font-size:9px;color:var(--text3);font-style:italic;line-height:1.4">${esc(fin.note)}</div>` : ''}
       `).join('')}
     </div>
 
-    <button class="to-push-btn" onclick="toPushToBid('${p.id}')">Push to BID Categories →</button>
+    <div class="to-results-foot">
+      <span class="to-results-foot-lbl">Total · ${typeMeta?typeMeta.label.toLowerCase():''}</span>
+      <span class="to-results-foot-total">${fmt$(total)}</span>
+    </div>
+
+    <div class="to-results-actions">
+      <button class="to-tool-btn" onclick="ST.tab='settings';ST.settingsTab='pricing';render();setTimeout(()=>document.getElementById('settings-pricing')?.scrollIntoView({behavior:'smooth'}),50)" title="Edit unit prices in Settings">
+        ⚙ Edit prices
+      </button>
+      <button class="to-push-btn" onclick="toPushToBid('${p.id}')">Push to BID →</button>
+    </div>
+
+    ${selSpace ? `
+      <div class="to-selected-detail">
+        <div class="to-selected-head">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:6px">
+            <div style="font-family:var(--sans);font-size:13px;font-weight:600;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(selSpace.label)}</div>
+            <button onclick="ST.toSelSpace=null;render()" style="background:transparent;border:none;color:var(--text3);font-size:14px;cursor:pointer;line-height:1;padding:0">✕</button>
+          </div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:3px">${selSpace.areaSF.toFixed(1)} SF · ${selSpace.perimeterLF.toFixed(1)} LF · ${esc(selSpace.type)}</div>
+        </div>
+      </div>
+    ` : ''}
   </div>`;
 }
 
@@ -10789,23 +11007,87 @@ function toBuildDetailPanel(p, e) {
 let _TO_RENDER_SKIP = false;
 function buildEstTakeoff(p, e) {
   const allPlans = e.plans || [];
-  if (!allPlans.length) {
+  const hasActiveSession = ST.toActivePlan && allPlans.find(pl => pl.id === ST.toActivePlan.planId);
+
+  // ── Empty state OR no take-off type chosen yet → show wizard ───────────────
+  if (!hasActiveSession) {
     _TO.mounted = false;
-    return `<div class="to-empty">
-      <div style="font-size:28px;margin-bottom:8px">📐</div>
-      <div class="to-empty-title">No plan sets uploaded yet</div>
-      <div class="to-empty-sub">Go to <b>Plan Sets</b> and upload PDF drawings (≤5 MB to use Take-off here).</div>
-      <button class="btn btn-amber" style="margin-top:14px" onclick="ST.estimatorTab='plans';render()">Go to Plan Sets →</button>
+    const chosenType = ST.toTakeoffType;
+    const typeMeta = TAKEOFF_TYPES.find(t => t.id === chosenType);
+
+    if (!chosenType) {
+      // STEP 1 — pick take-off type
+      return `<div class="to-wizard">
+        <div class="to-wizard-card">
+          <div class="to-wizard-step">[ STEP 1 OF 2 ]</div>
+          <div class="to-wizard-title">What are you taking off?</div>
+          <div class="to-wizard-sub">Pick the discipline so BIDFLOW maps measurements to the right unit prices.</div>
+
+          <div class="to-type-grid">
+            ${TAKEOFF_TYPES.map(t => `
+              <button class="to-type-card" onclick="ST.toTakeoffType='${t.id}';render()">
+                <div class="to-type-icon">${t.icon}</div>
+                <div class="to-type-label">${esc(t.label)}</div>
+                <div class="to-type-desc">${esc(t.desc)}</div>
+              </button>
+            `).join('')}
+          </div>
+
+          ${allPlans.length > 0 ? `
+            <div class="to-wizard-divider"><span>or pick a plan you already uploaded</span></div>
+            <div class="to-existing-list">
+              ${allPlans.map(pl => `
+                <button class="to-existing-row" ${pl.dataUrl ? '' : 'disabled style="opacity:.4"'}
+                  onclick="ST.toTakeoffType='${pl.takeoffType||'finishes'}';toSelectPlan('${p.id}','${pl.id}')">
+                  <span class="to-existing-disc">${esc(pl.discipline)}</span>
+                  <span class="to-existing-name">${esc(pl.name)}</span>
+                  ${pl.takeoffType ? `<span class="to-existing-type">${esc(pl.takeoffType)}</span>` : ''}
+                  ${pl.dataUrl ? '<span class="to-existing-arrow">→</span>' : '<span class="to-existing-arrow" style="color:var(--text3)">no bin</span>'}
+                </button>
+              `).join('')}
+            </div>
+          ` : ''}
+        </div>
+      </div>`;
+    }
+
+    // STEP 2 — upload PDF
+    return `<div class="to-wizard">
+      <div class="to-wizard-card">
+        <div class="to-wizard-step">[ STEP 2 OF 2 ]</div>
+        <div class="to-wizard-title">Upload your plan for ${esc(typeMeta.label.toLowerCase())}</div>
+        <div class="to-wizard-sub">A single-sheet PDF works best. Manual calibration happens after upload.</div>
+
+        <div class="to-wizard-typebadge">
+          <span class="to-type-icon" style="font-size:18px">${typeMeta.icon}</span>
+          <span>${esc(typeMeta.label)} · ${esc(typeMeta.desc)}</span>
+          <button class="to-type-change" onclick="ST.toTakeoffType=null;render()">change</button>
+        </div>
+
+        <div class="to-upload-zone" onclick="toUploadAndOpen('${p.id}','${chosenType}')"
+          ondragover="event.preventDefault();this.classList.add('drag')"
+          ondragleave="this.classList.remove('drag')"
+          ondrop="event.preventDefault();this.classList.remove('drag');toHandleDrop(event,'${p.id}','${chosenType}')">
+          ${ST.toUploading ? `
+            <div class="to-upload-spinner"></div>
+            <div class="to-upload-status">Reading PDF…</div>
+          ` : `
+            <div class="to-upload-icon">⬆</div>
+            <div class="to-upload-title">Drop PDF here or click to browse</div>
+            <div class="to-upload-sub">Max 10 MB · single sheet recommended</div>
+          `}
+        </div>
+
+        <div class="to-wizard-footer">
+          Tip — BIDFLOW Vision will let you trace each space; quantities feed back to bid categories automatically.
+        </div>
+      </div>
     </div>`;
   }
 
-  // If we're already mounted in the DOM and have a PDF, just refresh chrome
-  // and return a no-op shell so the surrounding render doesn't blow away the
-  // canvas. The 'data-mount-skip' attribute tells the parent render to leave
-  // this subtree alone (handled by buildEstimatorTab's body-replacement logic).
+  // ── Active session — full take-off UI ──────────────────────────────────────
   const existingRoot = document.getElementById('to-mount-root');
   if (existingRoot && _TO.mounted && _TO.pdfDoc) {
-    // Schedule a chrome-only refresh
     setTimeout(() => { toRefreshChrome(); toAttachInteractionHandlers(); }, 0);
     _TO_RENDER_SKIP = true;
     return existingRoot.outerHTML;
@@ -10813,7 +11095,6 @@ function buildEstTakeoff(p, e) {
   _TO_RENDER_SKIP = false;
   _TO.mounted = true;
 
-  // First mount: schedule PDF load + handler attach after DOM paint
   setTimeout(() => {
     toAttachInteractionHandlers();
     if (ST.toActivePlan && !_TO.pdfDoc) {
@@ -10845,6 +11126,52 @@ function buildEstTakeoff(p, e) {
 
     ${toBuildDetailPanel(p, e)}
   </div>`;
+}
+
+// Drag-and-drop helper for upload zone
+function toHandleDrop(ev, pid, typeId) {
+  const file = ev.dataTransfer?.files?.[0];
+  if (!file || !file.type.includes('pdf')) {
+    showToast('Drop a PDF file.', 'warn');
+    return;
+  }
+  // Reuse the input-based path by simulating it
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  inp.files = dt.files;
+  // Mimic the same flow as toUploadAndOpen
+  (async () => {
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('File too large (>10MB).', 'error');
+      return;
+    }
+    ST.toUploading = true; render();
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result); r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      const e = getEstProj(pid);
+      if (!e.plans) e.plans = [];
+      const planId = 'plan_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+      const plan = { id: planId, name: file.name.replace(/\.pdf$/i,''), discipline: 'A', size: file.size, ts: new Date().toISOString(), dataUrl, takeoffType: typeId };
+      e.plans.push(plan);
+      ST.toTakeoffType = typeId;
+      ST.toActivePlan = { pid, planId, discipline: 'A', name: plan.name };
+      ST.toCalState = 'idle'; ST.toCalPoints = []; ST.toPxPerFoot = null;
+      ST.toPolygonPts = []; _TO.zoom = 1; _TO.pageNum = 1;
+      _TO.pdfDoc = null; _TO.mounted = false;
+      ST.toUploading = false;
+      saveSt(); render();
+    } catch (err) {
+      ST.toUploading = false;
+      showToast('Upload failed: ' + err.message, 'error');
+      render();
+    }
+  })();
 }
 
 // Reset mount flag when leaving take-off tab so re-entry triggers a fresh load
@@ -14048,6 +14375,181 @@ async function pdfCleanupOrphans() {
     logError && logError('pdf-cleanup', err);
     return 0;
   }
+}
+
+
+
+
+// ============================================================
+// TAKE-OFF PRICING CATALOG — default unit prices per discipline
+// Users can override in Settings → Pricing
+// ============================================================
+
+const TAKEOFF_TYPES = [
+  { id: 'finishes', label: 'Finishes', desc: 'Floors, paint, tile, baseboards', icon: '🎨' },
+  { id: 'facade',   label: 'Facade',   desc: 'Stucco, siding, cladding, parapets', icon: '🏛' },
+  { id: 'gypsum',   label: 'Gypsum Board', desc: 'Drywall, partitions, ceilings', icon: '⬜' },
+  { id: 'railing',  label: 'Railing',  desc: 'Guardrails, handrails, balustrades', icon: '═' },
+];
+
+// Default catalog. Keys are takeoff type IDs. Each entry is an array of
+// line items with default unit price (user-editable in Settings).
+const DEFAULT_PRICING_CATALOG = {
+  finishes: [
+    { code: '096400', name: 'Wood flooring',         sub: 'White oak · 7" plank',           unit: 'SF', perUnit: 14.50 },
+    { code: '096000', name: 'Tile installation',     sub: 'Porcelain · large format',       unit: 'SF', perUnit: 18.00 },
+    { code: '099000', name: 'Paint · walls',         sub: '2 coats premium latex',          unit: 'SF', perUnit: 2.20 },
+    { code: '099001', name: 'Paint · ceiling',       sub: '1 coat flat white',              unit: 'SF', perUnit: 1.80 },
+    { code: '061000', name: 'Base trim',             sub: '4" MDF baseboard',               unit: 'LF', perUnit: 6.50 },
+    { code: '092000', name: 'Skim coat',             sub: 'Level 5 finish',                 unit: 'SF', perUnit: 3.00 },
+  ],
+  facade: [
+    { code: '074600', name: 'Fiber cement siding',   sub: 'Hardie plank · primed',          unit: 'SF', perUnit: 11.50 },
+    { code: '092400', name: '3-coat stucco',         sub: 'Float finish · acrylic',         unit: 'SF', perUnit: 14.00 },
+    { code: '074200', name: 'Metal panel cladding',  sub: 'Standing seam · 24 ga',          unit: 'SF', perUnit: 28.00 },
+    { code: '076100', name: 'Parapet flashing',      sub: 'Galvanized · 24 ga',             unit: 'LF', perUnit: 22.00 },
+    { code: '079200', name: 'Sealant joints',        sub: 'Polyurethane · 1/2"',            unit: 'LF', perUnit: 4.50 },
+    { code: '072100', name: 'Insulation board',      sub: 'Rigid · R-10',                   unit: 'SF', perUnit: 3.20 },
+  ],
+  gypsum: [
+    { code: '092900', name: '5/8" Type X · walls',   sub: 'Standard 1-hr rated',            unit: 'SF', perUnit: 3.40 },
+    { code: '092901', name: '1/2" gypsum · ceiling', sub: 'Smooth level 4',                 unit: 'SF', perUnit: 3.10 },
+    { code: '092216', name: 'Metal stud framing',    sub: '3-5/8" · 25 ga · 16" OC',        unit: 'SF', perUnit: 4.80 },
+    { code: '092910', name: 'Level 4 finish',        sub: 'Tape · 3 coats · sand',          unit: 'SF', perUnit: 2.40 },
+    { code: '072100', name: 'Batt insulation',       sub: 'R-13 fiberglass',                unit: 'SF', perUnit: 1.40 },
+    { code: '079200', name: 'Acoustic sealant',      sub: 'Top/bottom track',               unit: 'LF', perUnit: 3.50 },
+  ],
+  railing: [
+    { code: '057300', name: 'Aluminum guardrail',    sub: 'Picket style · powder coat',     unit: 'LF', perUnit: 145.00 },
+    { code: '057301', name: 'Glass guardrail',       sub: 'Tempered · stainless posts',     unit: 'LF', perUnit: 285.00 },
+    { code: '057302', name: 'Steel handrail',        sub: '1-1/2" round · wall mount',      unit: 'LF', perUnit: 72.00 },
+    { code: '057303', name: 'Cable rail system',     sub: '316 stainless · 1/8" cable',     unit: 'LF', perUnit: 195.00 },
+    { code: '055213', name: 'Pipe rail · galv',      sub: '1-1/2" sch 40 · 2 rail',         unit: 'LF', perUnit: 85.00 },
+    { code: '057310', name: 'Newel post',            sub: 'Decorative · stained wood',      unit: 'EA', perUnit: 320.00 },
+  ],
+};
+
+// ── Pricing accessors ────────────────────────────────────────────────────────
+function getPricingCatalog() {
+  const custom = ST.settings?.takeoffPricing;
+  if (custom && typeof custom === 'object') {
+    // Merge custom over defaults so missing keys fall back to defaults
+    const merged = {};
+    for (const k of Object.keys(DEFAULT_PRICING_CATALOG)) {
+      merged[k] = custom[k] && Array.isArray(custom[k]) ? custom[k] : DEFAULT_PRICING_CATALOG[k];
+    }
+    return merged;
+  }
+  return DEFAULT_PRICING_CATALOG;
+}
+
+function getPricingForType(typeId) {
+  const cat = getPricingCatalog();
+  return cat[typeId] || [];
+}
+
+function setPricingItem(typeId, idx, field, value) {
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  if (!ST.settings.takeoffPricing) ST.settings.takeoffPricing = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG));
+  if (!ST.settings.takeoffPricing[typeId]) ST.settings.takeoffPricing[typeId] = [...DEFAULT_PRICING_CATALOG[typeId]];
+  const list = ST.settings.takeoffPricing[typeId];
+  if (!list[idx]) return;
+  if (field === 'perUnit') value = parseFloat(value) || 0;
+  list[idx][field] = value;
+  saveSt();
+}
+
+function resetPricingForType(typeId) {
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  if (!ST.settings.takeoffPricing) ST.settings.takeoffPricing = {};
+  ST.settings.takeoffPricing[typeId] = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG[typeId]));
+  saveSt();
+  render();
+  showToast('Pricing reset to defaults for ' + typeId, 'success');
+}
+
+// ── Compute line items from measured spaces, scoped to takeoff type ──────────
+function buildTakeoffLineItems(pid, typeId) {
+  const spaces = toGetSpaces(pid);
+  if (!spaces.length || !typeId) return { items: [], total: 0 };
+
+  // Aggregate measurements across all spaces
+  const totalSF = spaces.reduce((s, sp) => s + (sp.areaSF || 0), 0);
+  const totalLF = spaces.reduce((s, sp) => s + (sp.perimeterLF || 0), 0);
+  const spaceCount = spaces.length;
+
+  // Apply unit-pricing catalog for the chosen type
+  const catalog = getPricingForType(typeId);
+  const items = catalog.map(c => {
+    let qty = 0;
+    if (c.unit === 'SF') qty = totalSF;
+    else if (c.unit === 'LF') qty = totalLF;
+    else if (c.unit === 'EA') qty = spaceCount;
+    else qty = totalSF;
+    const total = qty * c.perUnit;
+    return {
+      ...c,
+      qty: Math.round(qty * 10) / 10,
+      total: Math.round(total * 100) / 100,
+    };
+  });
+  const grandTotal = items.reduce((s, it) => s + it.total, 0);
+  return { items, total: grandTotal };
+}
+
+// ── Direct upload entry point — uploads PDF and selects it in one shot ────────
+async function toUploadAndOpen(pid, typeId) {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = 'application/pdf';
+  inp.onchange = async () => {
+    const file = inp.files?.[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('File too large (>10MB). Use a single-sheet PDF for take-off.', 'error');
+      return;
+    }
+    try {
+      ST.toUploading = true; render();
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      // Create a plan record scoped to this take-off
+      const e = getEstProj(pid);
+      if (!e.plans) e.plans = [];
+      const planId = 'plan_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+      const plan = {
+        id: planId,
+        name: file.name.replace(/\.pdf$/i, ''),
+        discipline: 'A',
+        size: file.size,
+        ts: new Date().toISOString(),
+        dataUrl,
+        takeoffType: typeId,    // marker — created from take-off upload
+      };
+      e.plans.push(plan);
+      // Set take-off context and active plan
+      ST.toTakeoffType = typeId;
+      ST.toActivePlan = { pid, planId, discipline: 'A', name: plan.name };
+      ST.toCalState = 'idle'; ST.toCalPoints = []; ST.toPxPerFoot = null;
+      ST.toPolygonPts = [];
+      _TO.zoom = 1; _TO.pageNum = 1;
+      _TO.pdfDoc = null;       // force fresh load
+      _TO.mounted = false;     // force fresh mount of canvas
+      ST.toUploading = false;
+      saveSt();
+      render();
+      // After render, the buildEstTakeoff setTimeout will load the PDF
+    } catch (err) {
+      ST.toUploading = false;
+      showToast('Upload failed: ' + err.message, 'error');
+      render();
+    }
+  };
+  inp.click();
 }
 
 
