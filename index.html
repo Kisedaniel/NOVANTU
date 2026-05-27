@@ -2586,6 +2586,24 @@ body[data-theme="hc"] {
 @media (max-width:1100px){.to-detail{display:none}}
 @media (max-width:800px){.to-sidebar{width:200px}}
 
+/* TAKE OFF AI button */
+.to-ai-btn{
+  background:linear-gradient(135deg, var(--amber), #d18838) !important;
+  color:#fff !important;
+  border-color:var(--amber) !important;
+  font-weight:700;letter-spacing:.06em;
+  box-shadow:0 1px 0 rgba(0,0,0,.06),0 0 0 1px rgba(196,74,44,.18);
+  position:relative;overflow:hidden;
+}
+.to-ai-btn:not(.disabled):hover{filter:brightness(1.06);transform:translateY(-1px)}
+.to-ai-btn.disabled{opacity:.45;cursor:not-allowed;background:var(--bg1) !important;color:var(--text3) !important;border-color:var(--border) !important;box-shadow:none}
+.to-ai-btn:not(.disabled)::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(120deg, transparent 30%, rgba(255,255,255,.25), transparent 70%);
+  transform:translateX(-100%);transition:transform .8s ease;
+}
+.to-ai-btn:not(.disabled):hover::before{transform:translateX(100%)}
+
 @media (max-width:900px){
   .est-topbar{padding:0 10px;gap:4px}
   .est-projsel{max-width:140px;padding:0 6px}
@@ -3707,7 +3725,8 @@ let ST = {
   toActivePlan: null,        // { pid, planId, discipline, name, dataUrl, pageNum }
   toCalState: 'idle',        // 'idle' | 'click1' | 'click2' | 'done'
   toCalPoints: [],           // [{ x, y }, { x, y }] — canvas pixel coords
-  toCalRealFt: '',           // user-entered real-world distance in feet
+  toCalRealFt: '',           // user-entered real-world distance — feet portion
+  toCalRealFtInches: '',     // user-entered real-world distance — inches portion (0-11)
   toPxPerFoot: null,         // calibrated px/foot ratio
   toTool: 'polygon',         // 'polygon' | 'pan'
   toPolygonPts: [],          // current in-progress polygon points (canvas px)
@@ -10085,32 +10104,75 @@ function toStartCalibration() {
   ST.toCalState = 'click1'; ST.toCalPoints = []; ST.toPolygonPts = [];
   toClearLiveLayer();
   toRefreshChrome();
+  // Force canvas redraw to clear any stale render artifacts
+  if (_TO.pdfDoc) toRenderCurrentPage();
   showToast('Click the START of a known dimension on the plan.', 'info');
 }
 
 function toResetCal() {
   ST.toCalState = 'idle'; ST.toCalPoints = []; ST.toPxPerFoot = null; ST.toCalRealFt = '';
+  ST.toCalRealFtInches = '';
   ST.toPolygonPts = [];
   toClearLiveLayer();
   saveSt(); toRefreshChrome();
+  if (_TO.pdfDoc) toRenderCurrentPage();
+}
+
+// Parse "11' 5\"" or "11.5" or "11 5" into total feet
+function toParseFeetInches(input) {
+  if (!input) return null;
+  const s = String(input).trim();
+  if (!s) return null;
+  // Format: 11' 5" or 11'5" or 11' 5  or 11ft 5in
+  const m1 = s.match(/^(\d+(?:\.\d+)?)\s*(?:'|ft|feet)\s*(\d+(?:\.\d+)?)?\s*(?:"|in|inch|inches)?$/i);
+  if (m1) {
+    const ft = parseFloat(m1[1]);
+    const inches = m1[2] ? parseFloat(m1[2]) : 0;
+    if (inches >= 12) return null;
+    return ft + inches / 12;
+  }
+  // Format: 11 5 (feet, inches space-separated)
+  const m2 = s.match(/^(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$/);
+  if (m2) {
+    const ft = parseFloat(m2[1]);
+    const inches = parseFloat(m2[2]);
+    if (inches >= 12) return null;
+    return ft + inches / 12;
+  }
+  // Just a decimal number → feet
+  const n = parseFloat(s);
+  if (!isNaN(n) && n > 0) return n;
+  return null;
 }
 
 function toApplyCalibration() {
   const pts = ST.toCalPoints;
-  const ft = parseFloat(ST.toCalRealFt);
+  // Combine feet + inches inputs
+  const ftRaw = ST.toCalRealFt;
+  const inRaw = ST.toCalRealFtInches;
+  let ft = 0;
+  if (ftRaw && (inRaw || inRaw === 0)) {
+    // Both inputs filled
+    ft = (parseFloat(ftRaw) || 0) + (parseFloat(inRaw) || 0) / 12;
+  } else if (ftRaw) {
+    // Try parsing as combined string first
+    const parsed = toParseFeetInches(ftRaw);
+    ft = parsed !== null ? parsed : (parseFloat(ftRaw) || 0);
+  }
   if (pts.length < 2 || !ft || ft <= 0) {
-    showToast('Enter a valid dimension in feet.', 'warn'); return;
+    showToast('Enter a valid dimension (feet and optional inches).', 'warn'); return;
   }
   const dx = pts[1].x - pts[0].x, dy = pts[1].y - pts[0].y;
   const pxDist = Math.sqrt(dx*dx + dy*dy);
-  // Save in "natural" canvas units (zoom-independent). pxPerFoot here is
-  // px per foot AT THE CURRENT ZOOM LEVEL. We normalize by dividing by
-  // current zoom so polygon measurements stay accurate when user zooms.
   ST.toPxPerFoot = (pxDist / ft) / _TO.zoom;
   ST.toCalState = 'done';
   toClearLiveLayer();
   saveSt(); toRefreshChrome();
-  showToast(`Scale set: ${ft} ft = ${pxDist.toFixed(1)} px @ zoom ${_TO.zoom.toFixed(2)} → ${ST.toPxPerFoot.toFixed(2)} px/ft (normalized)`, 'success');
+  // Force canvas redraw to clear calibration line artifact
+  if (_TO.pdfDoc) toRenderCurrentPage();
+  const feetWhole = Math.floor(ft);
+  const inchesRem = Math.round((ft - feetWhole) * 12);
+  showToast(`Scale set: ${feetWhole}' ${inchesRem}" = ${pxDist.toFixed(1)} px @ zoom ${_TO.zoom.toFixed(2)}`, 'success');
 }
 
 // ── Plan selection ────────────────────────────────────────────────────────────
@@ -10341,6 +10403,7 @@ function toHandleCanvasClick(x, y) {
     ST.toCalPoints = [{ x, y }];
     ST.toCalState = 'click2';
     toRefreshChrome();
+    if (_TO.pdfDoc) toRenderCurrentPage();
     showToast('Now click the END of the dimension. A live line will follow your cursor.', 'info');
     return;
   }
@@ -10348,6 +10411,7 @@ function toHandleCanvasClick(x, y) {
     ST.toCalPoints.push({ x, y });
     ST.toCalState = 'awaiting-input';
     toRefreshChrome();
+    if (_TO.pdfDoc) toRenderCurrentPage();
     setTimeout(() => document.getElementById('to-cal-ft-input')?.focus(), 80);
     return;
   }
@@ -10819,15 +10883,22 @@ function toBuildSidebar(p, e) {
           <span>${calLabel}</span>
         </div>
         ${calState === 'awaiting-input' ? `
-          <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
-            <input id="to-cal-ft-input" type="number" step="0.5" min="0.5" placeholder="feet"
+          <div style="display:flex;gap:5px;margin-top:8px;align-items:center">
+            <input id="to-cal-ft-input" type="number" step="1" min="0" placeholder="ft"
               value="${esc(ST.toCalRealFt||'')}"
               oninput="ST.toCalRealFt=this.value"
               onkeydown="if(event.key==='Enter')toApplyCalibration()"
-              style="flex:1;background:var(--bg);border:1px solid var(--amber);border-radius:var(--r);padding:6px 8px;font-family:var(--mono);font-size:12px;color:var(--text);outline:none">
-            <button class="to-tool-btn on" onclick="toApplyCalibration()">Set</button>
+              style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--amber);border-radius:var(--r);padding:6px 6px;font-family:var(--mono);font-size:12px;color:var(--text);outline:none">
+            <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">'</span>
+            <input id="to-cal-in-input" type="number" step="0.5" min="0" max="11.99" placeholder="in"
+              value="${esc(ST.toCalRealFtInches||'')}"
+              oninput="ST.toCalRealFtInches=this.value"
+              onkeydown="if(event.key==='Enter')toApplyCalibration()"
+              style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:6px 6px;font-family:var(--mono);font-size:12px;color:var(--text);outline:none">
+            <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">"</span>
+            <button class="to-tool-btn on" onclick="toApplyCalibration()" style="padding:6px 10px">Set</button>
           </div>
-          <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:5px;line-height:1.4">Enter the real distance in feet between your two click points.</div>
+          <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:5px;line-height:1.4">Real distance — e.g. <b>11' 5"</b>. Inches are optional.</div>
         ` : ''}
         <div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap">
           ${calDone
@@ -10919,9 +10990,121 @@ function toBuildToolbar(p, e) {
 
     ${active ? `
       <div style="width:1px;height:20px;background:var(--border);margin:0 4px"></div>
-      <span style="font-family:var(--mono);font-size:10px;color:var(--text3);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(active.discipline)} · ${esc(active.name)}</span>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--text3);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(active.discipline)} · ${esc(active.name)}</span>
+      <div style="width:1px;height:20px;background:var(--border);margin:0 4px"></div>
+      <button class="to-tool-btn to-ai-btn${calDone?'':' disabled'}" onclick="toRunAITakeoff('${p.id}')" title="Run AI take-off (needs scale calibration)">⚡ TAKE OFF AI</button>
+      <button class="to-tool-btn" onclick="toResetSession()" title="Clear current take-off and start over">✕ New take-off</button>
     ` : ''}
   </div>`;
+}
+
+// Reset the entire take-off session — clears active plan + measurements
+function toResetSession() {
+  if (!confirm('Clear this take-off session?\n\n• Current plan will be removed\n• All measured spaces will be deleted\n• Calibration will be reset\n\nThe original PDF stays in Plan Sets unless you also delete it there.')) return;
+  const pid = ST.toActivePlan?.pid;
+  const planId = ST.toActivePlan?.planId;
+  // Remove plan from estimator (only if it was created from take-off upload)
+  if (pid && planId) {
+    const e = getEstProj(pid);
+    if (e?.plans) {
+      const plan = e.plans.find(pl => pl.id === planId);
+      if (plan?.takeoffType) {
+        // Auto-cleanup take-off-created plans
+        e.plans = e.plans.filter(pl => pl.id !== planId);
+      }
+    }
+    // Remove spaces tied to this plan
+    ST.toSpaces = (ST.toSpaces || []).filter(sp => !(sp.pid === pid && sp.planId === planId));
+  }
+  ST.toActivePlan = null;
+  ST.toTakeoffType = null;
+  ST.toCalState = 'idle'; ST.toCalPoints = []; ST.toPxPerFoot = null;
+  ST.toCalRealFt = ''; ST.toCalRealFtInches = '';
+  ST.toPolygonPts = [];
+  ST.toSelSpace = null;
+  _TO.pdfDoc = null;
+  _TO.mounted = false;
+  _TO.konvaStage?.destroy();
+  _TO.konvaStage = null;
+  _TO.konvaBgLayer = null;
+  _TO.konvaLiveLayer = null;
+  saveSt();
+  render();
+}
+
+// Placeholder for AI auto-takeoff using the breakform-takeoff skill
+async function toRunAITakeoff(pid) {
+  if (!_TO.pdfDoc) { showToast('No PDF loaded', 'error'); return; }
+  if (!ST.toPxPerFoot) { showToast('Calibrate scale first', 'warn'); return; }
+
+  // Capture full-page render as image
+  const pdfCanvas = document.getElementById('to-pdf-canvas');
+  if (!pdfCanvas) return;
+
+  ST.toAnalyzing = true; toRefreshChrome();
+
+  try {
+    const imageBase64 = pdfCanvas.toDataURL('image/jpeg', 0.85);
+    const e = getEstProj(pid);
+    const typeId = ST.toTakeoffType || 'finishes';
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/analyze-plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+      body: JSON.stringify({
+        mode: 'full-takeoff',           // NEW mode — edge function should handle this
+        skill: 'breakform-takeoff',     // hint to the edge function which skill prompt to use
+        takeoffType: typeId,
+        imageBase64,
+        setup: e.setup || {},
+        canvasWidth: pdfCanvas.width,
+        canvasHeight: pdfCanvas.height,
+        pxPerFoot: ST.toPxPerFoot * _TO.zoom,
+        zoom: _TO.zoom,
+      }),
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`Edge ${res.status}: ${errBody.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    // Expected response: { spaces: [{ label, type, polygonPts, areaSF, perimeterLF, finishes }] }
+    const newSpaces = (data.spaces || []).map(sp => ({
+      id: 'sp_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5),
+      pid,
+      planId: ST.toActivePlan?.planId || '',
+      pageNum: _TO.pageNum,
+      label: sp.label || 'Space',
+      type: sp.type || 'other',
+      areaSF: Math.round((sp.areaSF || 0) * 10) / 10,
+      perimeterLF: Math.round((sp.perimeterLF || 0) * 10) / 10,
+      polygonPts: sp.polygonPts || [],
+      finishes: sp.finishes || [],
+      sheetRef: ST.toActivePlan?.name || '',
+      confidence: sp.confidence || 'medium',
+      note: sp.note || '',
+      ts: Date.now(),
+      aiGenerated: true,
+    }));
+
+    ST.toSpaces = [...(ST.toSpaces || []), ...newSpaces];
+    ST.toAnalyzing = false;
+    saveSt();
+    toRedrawAllPolygons();
+    toRefreshChrome();
+    showToast(`AI take-off complete — ${newSpaces.length} spaces identified`, 'success');
+  } catch (err) {
+    ST.toAnalyzing = false;
+    toRefreshChrome();
+    if (err.message?.includes('full-takeoff') || err.message?.includes('mode')) {
+      showToast('AI take-off needs the edge function update. Skill: breakform-takeoff', 'info');
+    } else {
+      showToast('AI error: ' + err.message, 'error');
+    }
+  }
 }
 
 function toBuildDetailPanel(p, e) {
