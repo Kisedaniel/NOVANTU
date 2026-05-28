@@ -4810,40 +4810,24 @@ async function addNewUser() {
   }
 }
 
-// Add an EXISTING user to this workspace by email (they already have an account)
+// Add an EXISTING user to this workspace by email.
+// NOTE: With a composite (workspace_id, user_id) primary key we can't insert
+// a membership row without knowing the user's auth UUID, and the client SDK
+// can't look up users by email. So the practical path is: create the user
+// here (which generates the UUID), OR link them in the Supabase dashboard.
 async function addExistingUserByEmail() {
-  const email = document.getElementById('addex-email')?.value.trim();
-  const role  = document.getElementById('addex-role')?.value || 'member';
-  const wsId  = ST.usersModal?.wsId || ST.activeWorkspace;
-  if (!email) { showToast('Enter an email.', 'warn'); return; }
-  if (!wsId) { showToast('No active workspace.', 'error'); return; }
-  try {
-    // We can't look up auth users by email from the client, so we store the
-    // email on the membership row. When that user logs in, a trigger or the
-    // app reconciles user_id. For now we insert with a null user_id + email.
-    const { error } = await sb.from('workspace_members').insert({
-      workspace_id: wsId,
-      user_id: null,
-      email: email,
-      display_name: email,
-      role: role,
-      is_master: false,
-      pending: true,
-    });
-    if (error) throw error;
-    showToast(`Invited ${email} to this workspace.`, 'success');
-    const el = document.getElementById('addex-email'); if (el) el.value = '';
-    openUsersModal();
-  } catch(e) {
-    console.error('addExistingUserByEmail:', e);
-    showToast('Could not add user: ' + e.message, 'error');
-  }
+  showToast('To add an existing user, create them with a password below, or link them via the Supabase dashboard (Authentication → Users → copy UUID → workspace_members).', 'info');
 }
 
-async function removeUserFromWorkspace(memberId, email) {
+async function removeUserFromWorkspace(userId, email) {
+  if (!userId) { showToast('This member has no linked account yet — remove it from Supabase directly.', 'warn'); return; }
+  const wsId = ST.usersModal?.wsId || ST.activeWorkspace;
   if (!confirm(`Remove ${email || 'this user'} from this workspace?\n\nTheir account is not deleted — they just lose access to this workspace.`)) return;
   try {
-    const { error } = await sb.from('workspace_members').delete().eq('id', memberId);
+    const { error } = await sb.from('workspace_members')
+      .delete()
+      .eq('workspace_id', wsId)
+      .eq('user_id', userId);
     if (error) throw error;
     showToast('User removed from workspace.', 'success');
     openUsersModal();
@@ -4853,9 +4837,14 @@ async function removeUserFromWorkspace(memberId, email) {
   }
 }
 
-async function changeUserRole(memberId, newRole) {
+async function changeUserRole(userId, newRole) {
+  const wsId = ST.usersModal?.wsId || ST.activeWorkspace;
+  if (!userId) return;
   try {
-    const { error } = await sb.from('workspace_members').update({ role: newRole }).eq('id', memberId);
+    const { error } = await sb.from('workspace_members')
+      .update({ role: newRole })
+      .eq('workspace_id', wsId)
+      .eq('user_id', userId);
     if (error) throw error;
     showToast('Role updated.', 'success');
     openUsersModal();
@@ -4908,19 +4897,18 @@ function buildUsersModal() {
               <div style="font-size:13px;color:var(--text);font-weight:500;display:flex;align-items:center;gap:8px">
                 ${esc(u.display_name || u.email || 'Unknown')}
                 ${u.is_master ? '<span style="font-family:var(--mono);font-size:8px;letter-spacing:.08em;color:var(--amber);border:1px solid var(--amber-border);background:var(--amber-bg);padding:1px 5px;border-radius:8px">MASTER</span>' : ''}
-                ${u.pending ? '<span style="font-family:var(--mono);font-size:8px;letter-spacing:.08em;color:var(--text3);border:1px solid var(--border);padding:1px 5px;border-radius:8px">PENDING</span>' : ''}
                 ${u.user_id === AUTH.user?.id ? '<span style="font-family:var(--mono);font-size:9px;color:var(--amber)">(you)</span>' : ''}
               </div>
-              <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:1px">${esc(u.email || '')}</div>
+              <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:1px">${esc(u.email || u.user_id || '')}</div>
             </div>
             <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
               ${u.is_master ? `<span style="font-family:var(--mono);font-size:10px;color:var(--text3)">${esc(u.role||'admin')}</span>` : `
-                <select onchange="changeUserRole('${u.id}', this.value)" class="minp" style="font-family:var(--mono);font-size:10px;padding:3px 6px;width:auto">
+                <select onchange="changeUserRole('${u.user_id}', this.value)" class="minp" style="font-family:var(--mono);font-size:10px;padding:3px 6px;width:auto">
                   <option value="admin"${u.role==='admin'?' selected':''}>Admin</option>
                   <option value="member"${u.role==='member'||!u.role?' selected':''}>Member</option>
                   <option value="viewer"${u.role==='viewer'?' selected':''}>Viewer</option>
                 </select>
-                <button onclick="removeUserFromWorkspace('${u.id}','${esc(u.email||'')}')" title="Remove from workspace" style="background:transparent;border:1px solid var(--border);color:var(--text3);padding:4px 8px;font-family:var(--mono);font-size:11px;cursor:pointer;border-radius:var(--r)">✕</button>
+                <button onclick="removeUserFromWorkspace('${u.user_id}','${esc(u.email||'')}')" title="Remove from workspace" style="background:transparent;border:1px solid var(--border);color:var(--text3);padding:4px 8px;font-family:var(--mono);font-size:11px;cursor:pointer;border-radius:var(--r)">✕</button>
               `}
             </div>
           </div>`).join('')}
@@ -4944,20 +4932,11 @@ function buildUsersModal() {
         <button class="btn btn-amber" style="width:100%" onclick="addNewUser()">Create user &amp; add to workspace</button>
       </div>
 
-      <!-- Add existing user -->
+      <!-- Linking an existing account -->
       <div style="border-top:1px solid var(--border);padding-top:16px">
-        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Invite an existing user by email</div>
-        <div style="display:grid;grid-template-columns:1fr auto auto;gap:6px">
-          <input id="addex-email" type="email" placeholder="their@email.com" class="minp">
-          <select id="addex-role" class="minp" style="width:auto">
-            <option value="admin">Admin</option>
-            <option value="member" selected>Member</option>
-            <option value="viewer">Viewer</option>
-          </select>
-          <button class="btn btn-ghost btn-sm" onclick="addExistingUserByEmail()">Invite</button>
-        </div>
-        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:8px;line-height:1.5">
-          Creating a user requires a temporary password. Inviting links an email that already has an account — they'll get access next time they log in. To fully delete an account, use the Supabase dashboard.
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);line-height:1.6">
+          <strong style="color:var(--text2)">Adding someone who already has an account?</strong><br>
+          Create them above with a new password, or in the Supabase dashboard go to Authentication → Users, copy their UUID, and add a row to <code>workspace_members</code> with this workspace's ID. To fully delete an account, use the dashboard.
         </div>
       </div>
     </div>
@@ -13035,6 +13014,7 @@ function buildWsSettingsModal() {
   `;
 }
 
+let _wsUpdateSyncTimer = null;
 function wsUpdate(wsId, field, value) {
   const ws = ST.workspaces?.[wsId];
   if (!ws) return;
@@ -13043,6 +13023,11 @@ function wsUpdate(wsId, field, value) {
   // If editing the active workspace, re-apply brand
   if (wsId === ST.activeWorkspace) {
     wsApplyBrand(ws);
+  }
+  // Debounced cloud sync (so editing a name doesn't fire a request per keystroke)
+  if (AUTH.session && AUTH.isMaster) {
+    if (_wsUpdateSyncTimer) clearTimeout(_wsUpdateSyncTimer);
+    _wsUpdateSyncTimer = setTimeout(() => wsSyncToCloud(wsId, true), 600);
   }
   render();
 }
@@ -13107,26 +13092,56 @@ function wsHandleLogoEdit(ev, wsId) {
   reader.readAsDataURL(file);
 }
 
-function wsDelete(wsId) {
+async function wsDelete(wsId) {
   const ws = ST.workspaces?.[wsId];
   if (!ws) return;
   if (Object.keys(ST.workspaces).length <= 1) {
     showToast('Cannot delete the only workspace.', 'warn');
     return;
   }
-  showConfirm(`Permanently delete "${ws.name}"?`, () => {
-    // If deleting the active one, switch to another first
-    if (wsId === ST.activeWorkspace) {
-      const next = Object.keys(ST.workspaces).find(id => id !== wsId);
-      if (next) wsSwitchTo(next);
+  showConfirm(`Permanently delete "${ws.name}"?`, async () => {
+    const deletingActive = (wsId === ST.activeWorkspace);
+
+    // ── Delete from Supabase FIRST (so a reload doesn't bring it back) ──
+    if (AUTH.session && AUTH.isMaster) {
+      try {
+        // Remove member rows for this workspace
+        const { error: memErr } = await sb.from('workspace_members').delete().eq('workspace_id', wsId);
+        if (memErr) throw memErr;
+        // Remove any app_state rows scoped to this workspace
+        try { await sb.from('app_state').delete().eq('workspace_id', wsId); } catch(e) { console.warn('app_state cleanup:', e); }
+        // Remove the workspace row itself
+        const { error: wsErr } = await sb.from('workspaces').delete().eq('id', wsId);
+        if (wsErr) throw wsErr;
+      } catch(e) {
+        console.error('Failed to delete workspace from cloud:', e);
+        showToast('Could not delete from cloud: ' + e.message + ' — nothing was removed.', 'error');
+        return; // Abort — don't delete locally if cloud delete failed
+      }
     }
+
+    // ── Switch away if we're deleting the active workspace ──
+    if (deletingActive) {
+      const next = Object.keys(ST.workspaces).find(id => id !== wsId);
+      if (next) {
+        // Switch WITHOUT re-saving the doomed workspace's data
+        ST.activeWorkspace = next;
+        wsSetActiveId(next);
+        wsLoadWorkspaceData(next);
+        wsApplyBrand(ST.workspaces[next]);
+        ST.selProj = null; ST.selSub = null;
+        ST.builderSelProj = null; ST.estimatorSelProj = null;
+      }
+    }
+
+    // ── Delete locally ──
     delete ST.workspaces[wsId];
     try { localStorage.removeItem(WS_STATE_PREFIX + wsId); } catch {}
     wsSaveRegistry(ST.workspaces);
     ST.wsSettingsModal = null;
-    showToast(`Workspace "${ws.name}" deleted.`, 'info');
+    showToast(`Workspace "${ws.name}" deleted.`, 'success');
     render();
-  }, { danger: true, detail: 'All projects, subs, files, and estimates inside it will be erased.' });
+  }, { danger: true, detail: 'All projects, subs, files, and estimates inside it will be erased — locally and in the cloud.' });
 }
 
 
