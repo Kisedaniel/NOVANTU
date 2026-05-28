@@ -3949,6 +3949,7 @@ let ST = {
   toExtraction: {},          // {[pid]: ...} — legacy AI extraction (kept for backward compat, no longer used)
   toCalculator: {},          // {[pid]: { [code]: { enabled: bool, qty: number } }} — manual budget calculator state
   readPlansStatus: null,     // {pid, running, page, total, lastResult, error} — Read Plans AI progress
+  masterSeeAll: false,       // master-only: reveal all features regardless of active workspace plan
   toScanResult: null,        // last scan result from analyze-plan?mode=scan  // {[accId]: true|false} — open/close state for Plan Sets sub-accordions
   estimatorSuggestDismissed: {},    // {[pid]: [suggestionKey...]} — heuristics already declined
   emailTemplates: null,     // {rfp:{subject,body}, followup:{subject,body}} — loaded from app_state
@@ -4994,15 +4995,25 @@ function render() {
   if (fid && a && 'selectionStart' in a) { try { selStart = a.selectionStart; selEnd = a.selectionEnd; } catch(e) {} }
   if (fid && a) scrollTop = a.scrollTop;
 
-  // ── Preserve window scroll + all scrollable element scroll positions ──
-  // Without this, the browser snaps back to (0,0) every time the DOM is
-  // rebuilt — which is why clicking SET / SENT / RECV (or anything that
-  // calls render()) feels like it jumps to the top of the page.
-  const winScrollX = window.scrollX || window.pageXOffset || 0;
+  // ── Preserve scroll positions across the DOM rebuild ──────────────────────
+  // The whole #app is replaced on every render, so any scrolled container
+  // (detail panels, list scrollers, the main content area, the window itself)
+  // snaps back to the top. We snapshot scrollTop for every scrollable element
+  // keyed by a stable "class#index" signature, then restore after rebuild.
   const winScrollY = window.scrollY || window.pageYOffset || 0;
-  const scrollersBefore = [];
-  document.querySelectorAll('[data-scroll-id]').forEach(el => {
-    scrollersBefore.push({ id: el.getAttribute('data-scroll-id'), top: el.scrollTop, left: el.scrollLeft });
+  const winScrollX = window.scrollX || window.pageXOffset || 0;
+  const SCROLL_SELECTORS = '.detail-panel,.list-scroll,.content,.app-main > .content,.to-calc-rows,.to-results-list,.modal,.today-wrap,.est-shell,.detail-panel-body';
+  const scrollSnap = {};
+  // Count occurrences per selector-key to build stable indices
+  const seen = {};
+  document.querySelectorAll(SCROLL_SELECTORS).forEach(el => {
+    if (el.scrollTop === 0 && el.scrollLeft === 0) return; // nothing to save
+    // Build a signature from the element's class list (sorted) + ordinal
+    const sig = (el.className || 'noclass').toString().trim().split(/\s+/).sort().join('.');
+    seen[sig] = (seen[sig] || 0);
+    const key = sig + '#' + seen[sig];
+    seen[sig]++;
+    scrollSnap[key] = { top: el.scrollTop, left: el.scrollLeft };
   });
 
   let html;
@@ -5025,16 +5036,17 @@ function render() {
   }
   applyThemeAndBrand();
 
-  // ── Restore window scroll + named scrollers AFTER the new DOM is in place ──
-  // Use requestAnimationFrame so the browser has a chance to paint before we
-  // restore — otherwise some browsers ignore the scrollTo on freshly-injected DOM.
-  requestAnimationFrame(() => {
-    window.scrollTo(winScrollX, winScrollY);
-    for (const s of scrollersBefore) {
-      const el = document.querySelector(`[data-scroll-id="${s.id}"]`);
-      if (el) { el.scrollTop = s.top; el.scrollLeft = s.left; }
-    }
+  // ── Restore scroll positions synchronously (before the browser paints) ─────
+  const seen2 = {};
+  document.querySelectorAll(SCROLL_SELECTORS).forEach(el => {
+    const sig = (el.className || 'noclass').toString().trim().split(/\s+/).sort().join('.');
+    seen2[sig] = (seen2[sig] || 0);
+    const key = sig + '#' + seen2[sig];
+    seen2[sig]++;
+    const saved = scrollSnap[key];
+    if (saved) { el.scrollTop = saved.top; el.scrollLeft = saved.left; }
   });
+  if (winScrollY || winScrollX) window.scrollTo(winScrollX, winScrollY);
 
   // After render: populate any tab-specific async content
   if (ST.tab === 'settings' && typeof populateStorageTelemetry === 'function') {
@@ -11925,17 +11937,19 @@ function getPlanById(id) {
 }
 
 // Resolve the effective feature set for the CURRENT workspace.
-// Master always sees everything. Clients see their workspace's features.
+// Gating is based on the ACTIVE WORKSPACE's plan/features — even for the master.
+// This way the master sees exactly what a client in that workspace would see.
+// The master can flip ST.masterSeeAll = true (via the workspace switcher) to
+// temporarily reveal every feature regardless of the workspace plan.
 function getActiveFeatures() {
-  // Master user: full access regardless of workspace
-  if (AUTH.isMaster) {
+  // Master "see everything" override (off by default)
+  if (AUTH.isMaster && ST.masterSeeAll) {
     const all = {};
     FEATURE_GROUPS.forEach(f => all[f.id] = true);
     return all;
   }
   const ws = ST.workspaces?.[ST.activeWorkspace];
   if (ws && ws.features && typeof ws.features === 'object') {
-    // Ensure branding is always on
     return { ...ws.features, branding: true };
   }
   // No workspace config → default to Pro plan features (safe baseline)
@@ -11944,7 +11958,7 @@ function getActiveFeatures() {
 
 // Check if a single feature is enabled for the current user/workspace
 function hasFeature(featureId) {
-  if (AUTH.isMaster) return true;
+  if (AUTH.isMaster && ST.masterSeeAll) return true;
   const f = FEATURE_GROUPS.find(g => g.id === featureId);
   if (f && f.always) return true;
   const feats = getActiveFeatures();
@@ -12236,10 +12250,21 @@ function wsGetActiveRfiTemplates() {
 function wsInit() {
   const registry = wsLoadRegistry();
   if (registry && Object.keys(registry).length > 0) {
+    // Normalize: any workspace missing plan/features gets enterprise defaults
+    // (legacy workspaces created before the plan system existed).
+    for (const id of Object.keys(registry)) {
+      const w = registry[id];
+      if (!w.plan) w.plan = 'enterprise';
+      if (!w.features || typeof w.features !== 'object') {
+        w.features = { ...getPlanById(w.plan).features, branding: true };
+      } else {
+        w.features.branding = true;
+      }
+    }
+    wsSaveRegistry(registry);
     ST.workspaces = registry;
     let activeId = wsGetActiveId();
     if (!activeId || !registry[activeId]) {
-      // Pick first available
       activeId = Object.keys(registry)[0];
       wsSetActiveId(activeId);
     }
@@ -12256,6 +12281,7 @@ function wsInit() {
         wordmark: getSettings().brand?.wordmark || 'BIDFLOW',
         accentColor: getSettings().brand?.accentColor || '#c8780f',
         logoData: getSettings().brand?.logoData || '',
+        planId: 'enterprise',
       });
       // Snapshot current data into the new workspace's slot
       try {
@@ -12265,11 +12291,12 @@ function wsInit() {
       wsSetActiveId(ws.id);
       wsApplyBrand(ws);
     } else {
-      // Truly empty: create a starter workspace
+      // Truly empty: create a starter workspace (your own = full access)
       const ws = wsCreate({
         name: 'My Studio',
         wordmark: 'BIDFLOW',
         accentColor: '#c8780f',
+        planId: 'enterprise',
       });
       ST.activeWorkspace = ws.id;
       wsSetActiveId(ws.id);
@@ -12298,19 +12325,26 @@ function buildWorkspaceSwitcher() {
       ${isOpen ? `
         <div class="ws-dropdown">
           <div class="ws-dropdown-label">${AUTH.isMaster ? 'Master · Switch workspace' : 'Your workspace'}</div>
-          ${wsList.map(ws => `
+          ${wsList.map(ws => {
+            const planMeta = getPlanById(ws.plan || 'pro');
+            return `
             <button class="ws-option${ws.id===active.id?' active':''}" onclick="event.stopPropagation();wsSwitchTo('${ws.id}');ST.workspaceSwitcherOpen=false">
               ${ws.logoData
                 ? `<img src="${esc(ws.logoData)}" alt="" style="height:20px;width:20px;object-fit:contain;border-radius:3px;flex-shrink:0">`
                 : `<span class="ws-dot" style="background:${esc(ws.accentColor)};width:10px;height:10px"></span>`}
               <div style="flex:1;min-width:0">
                 <div class="ws-option-name">${esc(ws.name)}</div>
-                <div class="ws-option-meta">${esc(ws.wordmark)} · ${(ws.divisions||[]).length} divs</div>
+                <div class="ws-option-meta">${esc(ws.wordmark)} · ${AUTH.isMaster ? esc(planMeta.name)+' · $'+planMeta.price : (ws.divisions||[]).length+' divs'}</div>
               </div>
               ${ws.id===active.id ? '<span style="color:var(--amber);font-family:var(--mono);font-size:11px">●</span>' : ''}
             </button>
-          `).join('')}
+          `;}).join('')}
           ${AUTH.isMaster ? `
+            <div class="ws-dropdown-divider"></div>
+            <button class="ws-option ws-action" onclick="event.stopPropagation();ST.masterSeeAll=!ST.masterSeeAll;render()">
+              <span class="ws-action-icon">${ST.masterSeeAll ? '◉' : '○'}</span>
+              <span>See all features ${ST.masterSeeAll ? '(on)' : '(off — preview as client)'}</span>
+            </button>
             <div class="ws-dropdown-divider"></div>
             <button class="ws-option ws-action" onclick="event.stopPropagation();ST.workspaceSwitcherOpen=false;ST.wsWizard={step:1,config:{}};render()">
               <span class="ws-action-icon">+</span>
@@ -12821,6 +12855,7 @@ function wsSetPlan(wsId, planId) {
   ws.plan = planId;
   ws.features = { ...plan.features, branding: true };
   wsSaveRegistry(ST.workspaces);
+  if (AUTH.session && AUTH.isMaster) wsSyncToCloud(wsId, true);
   showToast(`Plan set to ${plan.name} ($${plan.price}/mo). Features reset to defaults.`, 'success');
   render();
 }
@@ -12835,14 +12870,15 @@ function wsToggleFeature(wsId, featId, value) {
   ws.features[featId] = value;
   ws.features.branding = true;
   wsSaveRegistry(ST.workspaces);
+  if (AUTH.session && AUTH.isMaster) wsSyncToCloud(wsId, true);
   render();
 }
 
 // Push branding + plan + features to Supabase
-async function wsSyncToCloud(wsId) {
+async function wsSyncToCloud(wsId, silent) {
   const ws = ST.workspaces?.[wsId];
   if (!ws) return;
-  if (!AUTH.session || !AUTH.isMaster) { showToast('Only the master can sync workspaces.', 'warn'); return; }
+  if (!AUTH.session || !AUTH.isMaster) { if(!silent) showToast('Only the master can sync workspaces.', 'warn'); return; }
   try {
     const { error } = await sb.from('workspaces').update({
       name: ws.name,
@@ -12853,10 +12889,10 @@ async function wsSyncToCloud(wsId) {
       features: ws.features,
     }).eq('id', wsId);
     if (error) throw error;
-    showToast('Workspace synced to cloud.', 'success');
+    if (!silent) showToast('Workspace synced to cloud.', 'success');
   } catch (e) {
     console.error('Sync failed:', e);
-    showToast('Sync failed: ' + e.message, 'error');
+    if (!silent) showToast('Sync failed: ' + e.message, 'error');
   }
 }
 
