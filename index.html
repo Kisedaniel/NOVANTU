@@ -2663,6 +2663,76 @@ body[data-theme="hc"] {
 @media (max-width:1100px){.to-detail{display:none}}
 @media (max-width:800px){.to-sidebar{width:200px}}
 
+/* ──────── Read Plans AI ──────── */
+.rp-card{
+  background:linear-gradient(135deg, var(--bg1), var(--amber-bg));
+  border:1px solid var(--amber-border);
+  border-radius:var(--r2);
+  padding:18px 20px;
+}
+.rp-card-head{
+  display:flex;align-items:flex-start;gap:18px;justify-content:space-between;
+}
+.rp-card-title{
+  font-family:var(--sans);font-size:14px;font-weight:600;
+  letter-spacing:-.005em;color:var(--ink-900);
+  margin-bottom:4px;
+}
+.rp-card-sub{
+  font-family:var(--mono);font-size:10.5px;color:var(--text2);
+  letter-spacing:.01em;line-height:1.55;max-width:520px;
+}
+.rp-btn-wrap{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
+.rp-btn{
+  display:inline-flex;align-items:center;gap:7px;
+  background:var(--ink-900);color:var(--bg);
+  border:1px solid var(--ink-900);
+  font-family:var(--sans);font-size:12.5px;font-weight:600;
+  letter-spacing:-.003em;
+  padding:9px 16px;border-radius:var(--r);
+  cursor:pointer;
+  transition:filter .15s, transform .15s;
+  white-space:nowrap;
+}
+.rp-btn:not(:disabled):hover{filter:brightness(1.1);transform:translateY(-1px)}
+.rp-btn:disabled{opacity:.45;cursor:not-allowed}
+.rp-btn-active{background:var(--amber);border-color:var(--amber);color:#fff}
+.rp-btn-loading{background:var(--bg);color:var(--amber);border-color:var(--amber)}
+.rp-icon{font-size:14px;line-height:1}
+.rp-spinner{
+  width:12px;height:12px;
+  border:2px solid var(--amber);border-top-color:transparent;border-radius:50%;
+  animation:rp-spin 0.8s linear infinite;
+}
+@keyframes rp-spin{to{transform:rotate(360deg)}}
+.rp-last{
+  font-family:var(--mono);font-size:9px;letter-spacing:.04em;
+  color:var(--text3);font-style:italic;
+}
+
+.rp-result{
+  margin-top:14px;padding-top:14px;
+  border-top:1px solid var(--amber-border);
+}
+.rp-result-head{
+  display:flex;align-items:baseline;justify-content:space-between;gap:8px;
+  margin-bottom:8px;
+}
+.rp-result-label{
+  font-family:var(--mono);font-size:10px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--amber);font-weight:600;
+}
+.rp-result-meta{
+  font-family:var(--mono);font-size:9.5px;color:var(--text3);
+  letter-spacing:.02em;
+}
+.rp-result-body{
+  font-family:var(--sans);font-size:12.5px;color:var(--ink-900);
+  line-height:1.6;white-space:pre-wrap;
+  background:var(--bg);padding:12px 14px;border-radius:var(--r);
+  border:1px solid var(--border);
+}
+
 /* TAKE OFF AI button */
 .to-ai-btn{
   background:linear-gradient(135deg, var(--amber), #d18838) !important;
@@ -3815,6 +3885,7 @@ let ST = {
   toTakeoffType: null,       // 'tile' | 'hardwood' | 'facade' | etc — chosen before upload
   toExtraction: {},          // {[pid]: ...} — legacy AI extraction (kept for backward compat, no longer used)
   toCalculator: {},          // {[pid]: { [code]: { enabled: bool, qty: number } }} — manual budget calculator state
+  readPlansStatus: null,     // {pid, running, page, total, lastResult, error} — Read Plans AI progress
   toScanResult: null,        // last scan result from analyze-plan?mode=scan  // {[accId]: true|false} — open/close state for Plan Sets sub-accordions
   estimatorSuggestDismissed: {},    // {[pid]: [suggestionKey...]} — heuristics already declined
   emailTemplates: null,     // {rfp:{subject,body}, followup:{subject,body}} — loaded from app_state
@@ -14869,6 +14940,178 @@ async function toUploadAndOpen(pid, typeId) {
 
 
 
+
+// ============================================================
+// READ PLANS — Auto-fill Setup + Code Compliance from cover sheet
+// ────────────────────────────────────────────────────────────
+// Reads first 3 pages of the largest plan PDF in the project,
+// sends to Claude Vision, parses structured JSON, and populates:
+//   - e.setup (project setup fields)
+//   - e.codeFields (code compliance checkboxes/values)
+//
+// User can re-run pointing at a different page if Claude misses
+// info (via page picker).
+// ============================================================
+
+// State: ST.readPlansStatus = { pid, running, page, total, lastResult, error }
+
+async function readPlansForProject(pid, opts = {}) {
+  const e = getEstProj(pid);
+  if (!e?.plans || e.plans.length === 0) {
+    showToast('Upload a PDF first in Plan Sets.', 'warn');
+    return;
+  }
+
+  // Pick the plan: prefer "A" architectural with dataUrl; else first plan with dataUrl
+  let plan = (e.plans || []).find(pl => pl.discipline === 'A' && pl.dataUrl)
+          || (e.plans || []).find(pl => pl.dataUrl);
+  if (opts.planId) plan = e.plans.find(pl => pl.id === opts.planId) || plan;
+  if (!plan) { showToast('No PDF binary available. Re-upload a PDF first.', 'warn'); return; }
+  if (!plan.dataUrl) { showToast('PDF has no binary stored. Re-upload it.', 'warn'); return; }
+
+  const startPage = opts.startPage || 1;
+  const pagesToRead = opts.pagesToRead || 3;
+
+  ST.readPlansStatus = { pid, running: true, page: 0, total: pagesToRead, lastResult: null, error: null };
+  render();
+
+  try {
+    // Render the requested pages as images
+    if (!window.pdfjsLib) {
+      throw new Error('PDF.js not loaded');
+    }
+    const loadingTask = pdfjsLib.getDocument({ data: atob(plan.dataUrl.split(',')[1]) });
+    const pdfDoc = await loadingTask.promise;
+    const maxPage = Math.min(pdfDoc.numPages, startPage + pagesToRead - 1);
+    const images = [];
+    for (let pg = startPage; pg <= maxPage; pg++) {
+      ST.readPlansStatus.page = pg - startPage + 1;
+      render();
+      const page = await pdfDoc.getPage(pg);
+      // Render at ~150 DPI for legible title block text without blowing up tokens
+      const viewport = page.getViewport({ scale: 2.0 });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      images.push({ pageNum: pg, base64: dataUrl.split(',')[1] });
+    }
+
+    // Call the edge function
+    ST.readPlansStatus.page = 0;
+    ST.readPlansStatus.running = true;
+    render();
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/analyze-plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+      body: JSON.stringify({
+        mode: 'read-plans',
+        images,
+        existingSetup: e.setup || {},
+        occupancyOptions: EST_OCCUPANCY,
+        constructionOptions: EST_CONSTR_TYPE,
+        projectTypeOptions: EST_PROJECT_TYPE,
+        jurisdictionOptions: EST_JURISDICTIONS,
+        flagOptions: EST_FLAGS,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+
+    // Expected: { setup: {...}, flags: [...], codeNotes: '...', confidence: {...}, foundOn: {...}, missing: [...] }
+    const setup = data.setup || {};
+    const flags = Array.isArray(data.flags) ? data.flags : [];
+
+    // Merge into existing setup, only filling EMPTY fields (don't overwrite user data)
+    let filled = 0;
+    const filledFields = [];
+    for (const [k, v] of Object.entries(setup)) {
+      if (!v || v === '—' || v === 'Unknown') continue;
+      if (!e.setup[k]) {
+        e.setup[k] = v;
+        filled++;
+        filledFields.push(k);
+      }
+    }
+
+    // Merge flags
+    const existingFlags = Array.isArray(e.setup.flags) ? e.setup.flags : [];
+    for (const f of flags) {
+      if (EST_FLAGS.includes(f) && !existingFlags.includes(f)) {
+        existingFlags.push(f);
+        filled++;
+        filledFields.push('flag:' + f);
+      }
+    }
+    e.setup.flags = existingFlags;
+
+    // Store Code Compliance notes (free-text — the user reviews)
+    if (data.codeNotes) {
+      if (!e.codeNotes) e.codeNotes = {};
+      e.codeNotes._readPlans = {
+        ts: new Date().toISOString(),
+        text: data.codeNotes,
+        pagesRead: maxPage - startPage + 1,
+      };
+    }
+
+    saveSt();
+    ST.readPlansStatus = { pid, running: false, page: 0, total: 0, lastResult: data, error: null };
+    render();
+
+    const msg = filled === 0
+      ? 'Read Plans complete — no new fields filled (everything was already set or not found).'
+      : `Read Plans filled ${filled} field${filled===1?'':'s'} from page${pagesToRead===1?'':'s'} ${startPage}–${maxPage}.`;
+    showToast(msg, filled > 0 ? 'success' : 'info');
+  } catch (err) {
+    console.error('readPlans error:', err);
+    ST.readPlansStatus = { pid, running: false, page: 0, total: 0, lastResult: null, error: err.message || String(err) };
+    render();
+    showToast('Read Plans failed: ' + (err.message || err), 'error');
+  }
+}
+
+// ── Build the "Read Plans" button + recent result indicator ──────────────────
+function buildReadPlansButton(pid, opts = {}) {
+  const e = getEstProj(pid);
+  const hasPdf = (e.plans || []).some(pl => pl.dataUrl);
+  const st = ST.readPlansStatus;
+  const isRunning = st && st.pid === pid && st.running;
+  const last = e.codeNotes?._readPlans;
+
+  if (isRunning) {
+    const label = st.page > 0 ? `Reading page ${st.page} of ${st.total}…` : 'Asking Claude…';
+    return `<button class="rp-btn rp-btn-loading" disabled>
+      <span class="rp-spinner"></span>
+      <span>${label}</span>
+    </button>`;
+  }
+
+  if (!hasPdf) {
+    return `<button class="rp-btn" disabled title="Upload a PDF first">
+      <span class="rp-icon">📑</span> Read Plans
+    </button>`;
+  }
+
+  const lastInfo = last
+    ? `<span class="rp-last">Last run: ${esc(new Date(last.ts).toLocaleDateString())}</span>`
+    : '';
+
+  return `<div class="rp-btn-wrap">
+    <button class="rp-btn rp-btn-active" onclick="readPlansForProject('${pid}')" title="Use Claude Vision to extract Setup + Code Compliance info from the first 3 pages of your plans">
+      <span class="rp-icon">📑</span>
+      <span>${last ? 'Re-read Plans' : 'Read Plans with AI'}</span>
+    </button>
+    ${lastInfo}
+  </div>`;
+}
+
+
+
 // ---------- CODE DERIVATION ----------
 
 // Pure function: given setup, return applicable codes/refs.
@@ -15001,7 +15244,7 @@ function buildEstimatorTab() {
     { id:'plans', label:'Plan Sets',       meta: planCount ? planCount + (planCount===1?' file':' files') : '—' },
     { id:'setup', label:'Setup',           meta: setupFilled + '/5' },
     { id:'code',  label:'Code Compliance', meta: codeCount ? codeCount + ' items' : '—' },
-    { id:'takeoff', label:'Take-off',      meta: 'soon' },
+    { id:'takeoff', label:'Take-off',      meta: '' },
   ];
 
   return `
@@ -15021,7 +15264,7 @@ function buildEstimatorTab() {
         <div class="est-tabs" role="tablist">
           ${tabs.map(t => `
             <button role="tab"
-              class="est-tab${tab===t.id?' on':''}${t.id==='takeoff'?' soon':''}"
+              class="est-tab${tab===t.id?' on':''}"
               onclick="if(ST.estimatorTab==='takeoff'&&'${t.id}'!=='takeoff')_toMountReset();ST.estimatorTab='${t.id}';render()"
               title="${esc(t.label)}">
               <span class="est-tab-label">${esc(t.label)}</span>
@@ -15035,7 +15278,7 @@ function buildEstimatorTab() {
           <button class="est-link-btn" onclick="ST.tab='projects';ST.selProj='${p.id}';render()" title="Open this project in the Bidding view">
             Open in Projects →
           </button>
-          <button class="est-askai-btn" onclick="estOpenAskAI()" title="Ask the AI assistant about this project (coming soon)">
+          <button class="est-askai-btn" onclick="estOpenAskAI()" title="Ask the AI assistant about this project">
             <span class="est-askai-glyph">✦</span>
             <span>Ask AI</span>
           </button>
@@ -15196,6 +15439,31 @@ function buildEstPlans(p, e, activeDiscIds) {
       <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:10px;font-style:italic;line-height:1.5">
         Files ≤ 5 MB are stored in-browser so you can download them back later. Larger files record metadata only — when Supabase Storage is wired in, the full binary will upload to <code>plan-sets/${p.id}/&lt;plan_id&gt;.pdf</code>.
       </div>
+    </div>
+
+    <div style="height:14px"></div>
+
+    <!-- Read Plans AI -->
+    <div class="rp-card">
+      <div class="rp-card-head">
+        <div>
+          <div class="rp-card-title">📑 Read Plans with AI</div>
+          <div class="rp-card-sub">Claude reads the first 3 pages of your largest plan PDF and auto-fills Setup + Code Compliance fields. You review everything before saving.</div>
+        </div>
+        ${buildReadPlansButton(p.id)}
+      </div>
+      ${(() => {
+        const last = e.codeNotes?._readPlans;
+        if (!last) return '';
+        return `
+          <div class="rp-result">
+            <div class="rp-result-head">
+              <span class="rp-result-label">Code Compliance notes from Claude</span>
+              <span class="rp-result-meta">${new Date(last.ts).toLocaleString()} · ${last.pagesRead} pages read</span>
+            </div>
+            <div class="rp-result-body">${esc(last.text)}</div>
+          </div>`;
+      })()}
     </div>
 
     <div style="height:22px"></div>
@@ -15617,7 +15885,7 @@ async function uploadBidPdf(file, sid, projName, cat) {
   });
   if (error) {
     console.error('PDF upload failed:', error);
-    alert('Error al subir el PDF: ' + error.message);
+    alert('PDF upload error: ' + error.message);
     return null;
   }
   return { path, name: file.name };
