@@ -715,8 +715,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh
 .act-time{font-family:var(--mono);font-size:9px;color:var(--text3);flex-shrink:0;margin-top:4px}
 
 /* MODAL */
-.backdrop{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(3px)}
-.modal{background:var(--bg1);border:1px solid var(--border2);border-radius:8px;padding:22px;width:400px;animation:slideUp .18s ease}
+.backdrop{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(3px);overflow-y:auto;padding:24px 0}
+.modal{background:var(--bg1);border:1px solid var(--border2);border-radius:8px;padding:22px;width:400px;animation:slideUp .18s ease;max-height:calc(100vh - 48px);overflow-y:auto;display:flex;flex-direction:column}
 .modal-wide{width:520px}
 @keyframes slideUp{from{transform:translateY(8px);opacity:0}to{transform:translateY(0);opacity:1}}
 .modal-title{font-size:14px;font-weight:600;color:var(--text);margin-bottom:4px}
@@ -731,8 +731,8 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh
 .mrow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .modal-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
 .btn{padding:8px 16px;border-radius:var(--r2);font-size:12px;font-family:var(--sans);cursor:pointer;border:1px solid var(--border2);font-weight:500;transition:all .1s}
-.btn-amber{background:var(--amber);border-color:var(--amber);color:#0a0500}
-.btn-amber:hover{background:#e09010}
+.btn-amber{background:var(--amber);border-color:var(--amber);color:#fff}
+.btn-amber:hover{background:var(--amber-dim);border-color:var(--amber-dim)}
 .btn-ghost{background:transparent;color:var(--text2)}
 .btn-ghost:hover{background:var(--bg2);color:var(--text)}
 .btn-danger{background:var(--red-bg);border-color:var(--red-border);color:var(--red)}
@@ -886,6 +886,16 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
 /* Main content well — hosts existing .content */
 .app-main{grid-column:2;grid-row:2;overflow:hidden;display:flex;min-height:0;min-width:0;background:var(--bg)}
 .app-main > .content{flex:1;overflow:hidden;display:flex}
+/* Tabs that are NOT split-panel scrollers need their own vertical scroll */
+.app-main > .content[data-tab="today"],
+.app-main > .content[data-tab="settings"],
+.app-main > .content[data-tab="insights"],
+.app-main > .content[data-tab="files"],
+.app-main > .content[data-tab="builder"],
+.app-main > .content[data-tab="overview"]{
+  overflow-y:auto;
+  display:block;
+}
 
 /* User dropdown */
 .user-dd{position:absolute;top:calc(100% + 4px);right:0;background:var(--bg);border:1px solid var(--border2);border-radius:2px;padding:4px;min-width:200px;z-index:100;box-shadow:0 8px 24px rgba(20,18,15,.10)}
@@ -939,15 +949,25 @@ body[data-theme="dark"] {
   --bg:#181613; --bg1:#1f1d19; --bg2:#26231e; --bg3:#2d2a24;
   --border:#3a3631; --border2:#4a463e;
   --text:#e9e6e0; --text2:#bcb8af; --text3:#8a857a;
+  /* Remap raw bone/ink scales so hardcoded var(--ink-900) etc. follow dark mode.
+     bone = backgrounds (now dark), ink = text/foreground (now light). */
+  --bone-50:#181613; --bone-100:#1f1d19; --bone-200:#2d2a24; --bone-300:#3a3631;
+  --ink-50:#26231e; --ink-300:#8a857a; --ink-500:#a8a399; --ink-700:#cdc9c0; --ink-900:#e9e6e0; --ink-950:#f4f2ec;
 }
 body[data-theme="sepia"] {
   --bg:#f4ecd8; --bg1:#ede2c5; --bg2:#e3d6b3; --bg3:#d4c79f;
   --border:#bfae89; --border2:#9d8c66;
+  /* Warmer paper. Backgrounds shift to sepia tones; ink stays dark brown. */
+  --bone-50:#f4ecd8; --bone-100:#ede2c5; --bone-200:#e3d6b3; --bone-300:#bfae89;
+  --ink-50:#e3d6b3; --ink-300:#8a7a5a; --ink-500:#5a4e38; --ink-700:#3a3220; --ink-900:#241f14; --ink-950:#161208;
 }
 body[data-theme="hc"] {
   --bg:#ffffff; --bg1:#f0f0f0; --bg2:#e0e0e0; --bg3:#d0d0d0;
   --border:#000000; --border2:#000000;
   --text:#000000; --text2:#222222; --text3:#555555;
+  /* Pure high-contrast. Backgrounds white→grey, ink pure black. */
+  --bone-50:#ffffff; --bone-100:#f0f0f0; --bone-200:#e0e0e0; --bone-300:#000000;
+  --ink-50:#e0e0e0; --ink-300:#555555; --ink-500:#333333; --ink-700:#111111; --ink-900:#000000; --ink-950:#000000;
 }
 
 /* ============================================================
@@ -2512,6 +2532,49 @@ body[data-theme="hc"] {
   padding:2px 6px;background:var(--amber-bg);border:1px solid var(--amber-border);
 }
 .to-existing-arrow{font-family:var(--mono);font-size:14px;color:var(--amber);flex-shrink:0}
+
+/* Saved take-offs list — one row per (project, trade) with data */
+.to-saved-list{display:flex;flex-direction:column;gap:6px}
+.to-saved-row{
+  display:flex;align-items:stretch;gap:6px;
+}
+.to-saved-open{
+  flex:1;display:flex;align-items:center;gap:12px;
+  padding:12px 14px;
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--r);
+  cursor:pointer;text-align:left;font-family:inherit;
+  transition:border-color .12s, background .12s, transform .12s;
+}
+.to-saved-open:hover{border-color:var(--amber);background:var(--amber-bg);transform:translateY(-1px)}
+.to-saved-icon{
+  font-size:22px;line-height:1;
+  width:34px;height:34px;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);
+  flex-shrink:0;
+}
+.to-saved-body{flex:1;min-width:0}
+.to-saved-title{
+  font-family:var(--sans);font-size:13.5px;font-weight:600;
+  color:var(--ink-900);letter-spacing:-.005em;
+}
+.to-saved-meta{
+  font-family:var(--mono);font-size:10px;color:var(--text3);
+  letter-spacing:.02em;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.to-saved-arrow{
+  font-family:var(--mono);font-size:14px;color:var(--amber);
+  flex-shrink:0;opacity:.7;
+}
+.to-saved-open:hover .to-saved-arrow{opacity:1}
+.to-saved-del{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--r);
+  color:var(--text3);font-size:14px;font-family:var(--mono);
+  padding:0 12px;cursor:pointer;flex-shrink:0;
+  transition:border-color .12s, color .12s, background .12s;
+}
+.to-saved-del:hover{border-color:var(--red);color:var(--red);background:var(--bg1)}
 
 /* ============================================================
    TAKE-OFF DETAIL PANEL (landing-style line items)
@@ -4199,6 +4262,10 @@ async function loadSt() {
           divisions: ws.divisions || [],
           jurisdictions: ws.jurisdictions || [],
           rfiTemplates: ws.rfi_templates || [],
+          plan: ws.plan || 'pro',
+          features: (ws.features && typeof ws.features === 'object')
+            ? { ...ws.features, branding: true }
+            : { ...getPlanById(ws.plan || 'pro').features, branding: true },
         };
       }
       console.log(`Loaded ${Object.keys(ST.workspaces).length} workspace(s). isMaster=${AUTH.isMaster}`);
@@ -4926,6 +4993,18 @@ function render() {
   let selStart=null, selEnd=null, scrollTop=null;
   if (fid && a && 'selectionStart' in a) { try { selStart = a.selectionStart; selEnd = a.selectionEnd; } catch(e) {} }
   if (fid && a) scrollTop = a.scrollTop;
+
+  // ── Preserve window scroll + all scrollable element scroll positions ──
+  // Without this, the browser snaps back to (0,0) every time the DOM is
+  // rebuilt — which is why clicking SET / SENT / RECV (or anything that
+  // calls render()) feels like it jumps to the top of the page.
+  const winScrollX = window.scrollX || window.pageXOffset || 0;
+  const winScrollY = window.scrollY || window.pageYOffset || 0;
+  const scrollersBefore = [];
+  document.querySelectorAll('[data-scroll-id]').forEach(el => {
+    scrollersBefore.push({ id: el.getAttribute('data-scroll-id'), top: el.scrollTop, left: el.scrollLeft });
+  });
+
   let html;
   try {
     html = buildApp();
@@ -4945,6 +5024,18 @@ function render() {
     }
   }
   applyThemeAndBrand();
+
+  // ── Restore window scroll + named scrollers AFTER the new DOM is in place ──
+  // Use requestAnimationFrame so the browser has a chance to paint before we
+  // restore — otherwise some browsers ignore the scrollTo on freshly-injected DOM.
+  requestAnimationFrame(() => {
+    window.scrollTo(winScrollX, winScrollY);
+    for (const s of scrollersBefore) {
+      const el = document.querySelector(`[data-scroll-id="${s.id}"]`);
+      if (el) { el.scrollTop = s.top; el.scrollLeft = s.left; }
+    }
+  });
+
   // After render: populate any tab-specific async content
   if (ST.tab === 'settings' && typeof populateStorageTelemetry === 'function') {
     setTimeout(() => populateStorageTelemetry(), 10);
@@ -4955,9 +5046,53 @@ function applyThemeAndBrand() {
     const s = getSettings();
     document.body.setAttribute('data-theme', s.theme || 'bone');
     const ac = s.brand?.accentColor;
-    if (ac) { document.documentElement.style.setProperty('--plano-500', ac); document.documentElement.style.setProperty('--amber', ac); }
-    else { document.documentElement.style.removeProperty('--plano-500'); document.documentElement.style.removeProperty('--amber'); }
+    const root = document.documentElement;
+    if (ac) {
+      root.style.setProperty('--plano-500', ac);
+      root.style.setProperty('--amber', ac);
+      // Derive the full accent ramp so EVERY amber-* token follows the brand color.
+      const rgb = _hexToRgb(ac);
+      if (rgb) {
+        const { r, g, b } = rgb;
+        // amber-bg: very light tint (works on light themes); on dark themes use a low-alpha overlay
+        const isDark = (s.theme === 'dark');
+        root.style.setProperty('--amber-bg', isDark
+          ? `rgba(${r},${g},${b},0.16)`
+          : `rgba(${r},${g},${b},0.10)`);
+        root.style.setProperty('--amber-border', `rgba(${r},${g},${b},0.45)`);
+        // amber-dim: darker shade for hover/active
+        const dim = _shadeRgb(r, g, b, -0.28);
+        root.style.setProperty('--amber-dim', `rgb(${dim.r},${dim.g},${dim.b})`);
+        // plano scale variants used in a few places
+        root.style.setProperty('--plano-50', isDark ? `rgba(${r},${g},${b},0.16)` : `rgba(${r},${g},${b},0.10)`);
+        root.style.setProperty('--plano-300', `rgba(${r},${g},${b},0.55)`);
+        root.style.setProperty('--plano-700', `rgb(${dim.r},${dim.g},${dim.b})`);
+      }
+    } else {
+      // Reset to stylesheet defaults
+      ['--plano-500','--amber','--amber-bg','--amber-border','--amber-dim','--plano-50','--plano-300','--plano-700'].forEach(k => root.style.removeProperty(k));
+    }
   } catch(e) {}
+}
+
+// Hex (#rrggbb or #rgb) → {r,g,b}
+function _hexToRgb(hex) {
+  if (!hex) return null;
+  let h = hex.trim().replace(/^#/, '');
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  if (h.length !== 6) return null;
+  const n = parseInt(h, 16);
+  if (isNaN(n)) return null;
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+// Shade an rgb toward black (factor negative) or white (factor positive)
+function _shadeRgb(r, g, b, factor) {
+  const adj = (c) => {
+    if (factor < 0) return Math.max(0, Math.round(c * (1 + factor)));
+    return Math.min(255, Math.round(c + (255 - c) * factor));
+  };
+  return { r: adj(r), g: adj(g), b: adj(b) };
 }
 
 // ============================================================
@@ -6277,7 +6412,7 @@ function buildSettingsTab() {
       </div>
     </div>
 
-    <div style="margin-bottom:24px" id="settings-pricing"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Take-off unit prices</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Edit unit costs that feed Estimator → Take-off line items.</div></div>
+    ${hasFeature('estimator') ? `<div style="margin-bottom:24px" id="settings-pricing"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Take-off unit prices</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Edit unit costs that feed Estimator → Take-off line items.</div></div>
       <div style="border:1px solid var(--border);background:var(--bg);overflow:hidden">
         ${TAKEOFF_TYPES.map(t => {
           const items = getPricingForType(t.id);
@@ -6311,7 +6446,7 @@ function buildSettingsTab() {
           `;
         }).join('')}
       </div>
-    </div>
+    </div>` : ''}
 
     <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Trade categories</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">${CATS.length} active · used across Projects, RFQs, and Bids.${Array.isArray(ST.customCategories)?` <button onclick="if(confirm('Reset trade categories to default? Your customizations will be lost (existing bid data is preserved).')){resetCategoriesToDefault();render();showToast('Categories reset to default.','success')}" style="background:none;border:none;color:var(--ink-900);text-decoration:underline;cursor:pointer;font-family:var(--mono);font-size:10px;padding:0;margin-left:6px">Reset to default</button>`:''}</div></div>
       <div style="border:1px solid var(--border);background:var(--bg);overflow:hidden;max-height:380px;overflow-y:auto">
@@ -7562,7 +7697,7 @@ function buildSidebar() {
     }
   }
 
-  const items = [
+  const allItems = [
     { id:'today',    label:'Today',          icon:'sun',          count: '' },
     { id:'projects', label:'Projects',       icon:'home',         count: cProjects },
     { id:'subs',     label:'Subcontractors', icon:'users',        count: cSubs },
@@ -7572,6 +7707,12 @@ function buildSidebar() {
     { id:'builder',  label:'Builder',        icon:'hammer',       count: '' },
     { id:'insights', label:'Insights',       icon:'trending-up',  count: '' },
   ];
+  // Gate by feature flags — hide tabs the workspace's plan doesn't include
+  const items = allItems.filter(it => {
+    const featId = TAB_FEATURE_MAP[it.id];
+    if (featId === null || featId === undefined) return true; // ungated
+    return hasFeature(featId);
+  });
 
   const projBlock = sel
     ? `<div class="sb-project" onclick="setTab('projects')" title="Open in Projects">
@@ -7604,9 +7745,9 @@ function buildSidebar() {
 
     <div class="sb-section" style="margin-top:8px"><span>OTHERS</span></div>
     <nav class="sb-nav">
-      <button class="sb-item" onclick="ST.userMenuOpen=false;openUsersModal()" title="Manage team">
+      ${hasFeature('sendcenter') ? `<button class="sb-item" onclick="ST.userMenuOpen=false;openUsersModal()" title="Manage team">
         <i data-lucide="user"></i><span>Team</span>
-      </button>
+      </button>` : ''}
       <button class="sb-item${tab==='settings'?' active':''}" onclick="setTab('settings')" title="Defaults, currency, signature">
         <i data-lucide="settings"></i><span>Settings</span>
       </button>
@@ -7656,12 +7797,25 @@ function buildApp() {
   const totalBids = ST.activityLog.filter(a=>a.type==='price').length;
   const recentBids = ST.activityLog.filter(a=>a.type==='price' && (Date.now()-new Date(a.ts))<86400000).length;
   const userDisplay = AUTH.user?.user_metadata?.display_name || AUTH.user?.email?.split('@')[0] || '?';
+
+  // Feature gate: if current tab isn't allowed for this workspace, fall back
+  // to the first allowed tab so a client never lands on a blank disabled view.
+  (() => {
+    const featId = TAB_FEATURE_MAP[ST.tab];
+    if (featId && !hasFeature(featId)) {
+      const fallbackOrder = ['today','projects','estimator','files','settings'];
+      ST.tab = fallbackOrder.find(t => {
+        const f = TAB_FEATURE_MAP[t];
+        return f === null || f === undefined || hasFeature(f);
+      }) || 'settings';
+    }
+  })();
   return `
     <div class="app-shell" onclick="handleOutsideClick(event)">
       ${buildSidebar()}
       ${buildTopBar({recentBids, totalBids, userDisplay})}
       <main class="app-main">
-      <div class="content">
+      <div class="content" data-tab="${esc(ST.tab)}">
         ${ST.tab==='today' ? buildTodayTab() :
           ST.tab==='projects' ? buildProjectsTab() :
           ST.tab==='subs' ? buildSubsTab() :
@@ -8181,7 +8335,7 @@ function buildSubDetail(sub) {
               </div>
               <div class="proj-bid-date">Updated: ${fmtDate(bid.date)}</div>
               ${bid.comments?`<div style="font-size:11px;color:var(--text3);margin-top:4px">${esc(bid.comments)}</div>`:''}
-              ${bid.pdfPath?`<div style="margin-top:6px"><button class="edit-btn" style="color:#185FA5;border-color:#85B7EB;font-size:10px" onclick="openBidPdf('${esc(bid.pdfPath)}')" title="${esc(bid.pdfName||'PDF')}">📄 View PDF</button></div>`:''}
+              ${bid.pdfPath?`<div style="margin-top:6px"><button class="edit-btn" style="color:var(--blue);border-color:var(--blue-border);font-size:10px" onclick="openBidPdf('${esc(bid.pdfPath)}')" title="${esc(bid.pdfName||'PDF')}">📄 View PDF</button></div>`:''}
               <div class="proj-bid-actions">
                 <button class="edit-btn" onclick="editSubBid('${sub.id}','${esc(key)}')">✎ Edit</button>
                 <button class="edit-btn" style="color:var(--red);border-color:var(--red-border)" onclick="deleteSubBid('${sub.id}','${esc(key)}')">✕</button>
@@ -11279,6 +11433,56 @@ function toCalcClear(pid, typeId) {
   showToast('Quantities cleared', 'info');
 }
 
+// Open a previously-saved take-off (restores type + linked plan if any)
+function toOpenSaved(pid, typeId) {
+  const e = getEstProj(pid);
+  ST.toTakeoffType = typeId;
+  // Try to find a plan linked to this type (uploaded specifically for this take-off)
+  const linkedPlan = (e.plans || []).find(pl => pl.takeoffType === typeId && pl.dataUrl);
+  if (linkedPlan) {
+    ST.toActivePlan = { pid, planId: linkedPlan.id, discipline: linkedPlan.discipline, name: linkedPlan.name };
+    _TO.pdfDoc = null;
+    _TO.mounted = false;
+    _TO.zoom = 1; _TO.pageNum = 1;
+  } else {
+    // No PDF linked — leave activePlan null so user sees the calculator without a PDF
+    ST.toActivePlan = null;
+  }
+  saveSt();
+  render();
+}
+
+// Delete a saved take-off — wipes calculator data AND the linked PDF (if any)
+function toDeleteSaved(pid, typeId) {
+  const meta = TAKEOFF_TYPES.find(t => t.id === typeId);
+  const label = meta ? meta.label : typeId;
+  if (!confirm(`Delete saved "${label}" take-off?\n\n• All entered quantities will be removed\n• The PDF uploaded specifically for this take-off (if any) will be removed\n• Plans uploaded under Plan Sets are NOT affected`)) return;
+
+  // Remove calculator state
+  if (ST.toCalculator) delete ST.toCalculator[`${pid}::${typeId}`];
+
+  // Remove linked plan (only the one that was uploaded via the take-off wizard)
+  const e = getEstProj(pid);
+  if (e.plans) {
+    const before = e.plans.length;
+    e.plans = e.plans.filter(pl => !(pl.takeoffType === typeId));
+    if (before !== e.plans.length && typeof invalidatePlanRenderCache === 'function') {
+      // Best-effort cache invalidation across removed plans
+      // (the cache is keyed by planId so it self-expires when not used)
+    }
+  }
+
+  // If this is the currently-open take-off, also clear active state
+  if (ST.toTakeoffType === typeId && ST.toActivePlan?.pid === pid) {
+    ST.toActivePlan = null;
+    _TO.pdfDoc = null;
+    _TO.mounted = false;
+  }
+
+  saveSt(); render();
+  showToast(`"${label}" take-off deleted`, 'success');
+}
+
 function toBuildDetailPanel(p, e) {
   const typeId = ST.toTakeoffType;
   const typeMeta = TAKEOFF_TYPES.find(t => t.id === typeId);
@@ -11387,6 +11591,36 @@ function buildEstTakeoff(p, e) {
 
     if (!chosenType) {
       // STEP 1 — pick take-off type
+      // Compute saved take-offs for THIS project: any (pid, typeId) pair that has data
+      const savedTakeoffs = [];
+      if (ST.toCalculator) {
+        for (const key of Object.keys(ST.toCalculator)) {
+          const [savedPid, savedType] = key.split('::');
+          if (savedPid !== p.id) continue;
+          const calc = ST.toCalculator[key] || {};
+          const hasData = Object.values(calc).some(line => line && line.qty > 0);
+          if (!hasData) continue;
+          const meta = TAKEOFF_TYPES.find(t => t.id === savedType);
+          if (!meta) continue;
+          // Compute total
+          const catalog = getPricingForType(savedType);
+          let total = 0, activeLines = 0;
+          for (const row of catalog) {
+            const cs = calc[row.code];
+            if (cs?.enabled && cs.qty > 0) {
+              total += cs.qty * row.perUnit;
+              activeLines++;
+            }
+          }
+          // Find linked PDF if any
+          const linkedPlan = (e.plans || []).find(pl => pl.takeoffType === savedType);
+          savedTakeoffs.push({
+            typeId: savedType, meta, total, activeLines,
+            planName: linkedPlan?.name || null,
+          });
+        }
+      }
+
       return `<div class="to-wizard">
         <div class="to-wizard-card">
           <div class="to-wizard-step">[ STEP 1 OF 2 ]</div>
@@ -11403,17 +11637,21 @@ function buildEstTakeoff(p, e) {
             `).join('')}
           </div>
 
-          ${allPlans.length > 0 ? `
-            <div class="to-wizard-divider"><span>or pick a plan you already uploaded</span></div>
-            <div class="to-existing-list">
-              ${allPlans.map(pl => `
-                <button class="to-existing-row" ${pl.dataUrl ? '' : 'disabled style="opacity:.4"'}
-                  onclick="ST.toTakeoffType='${pl.takeoffType||'finishes'}';toSelectPlan('${p.id}','${pl.id}')">
-                  <span class="to-existing-disc">${esc(pl.discipline)}</span>
-                  <span class="to-existing-name">${esc(pl.name)}</span>
-                  ${pl.takeoffType ? `<span class="to-existing-type">${esc(pl.takeoffType)}</span>` : ''}
-                  ${pl.dataUrl ? '<span class="to-existing-arrow">→</span>' : '<span class="to-existing-arrow" style="color:var(--text3)">no bin</span>'}
-                </button>
+          ${savedTakeoffs.length > 0 ? `
+            <div class="to-wizard-divider"><span>Saved take-offs for this project · ${savedTakeoffs.length}</span></div>
+            <div class="to-saved-list">
+              ${savedTakeoffs.map(st => `
+                <div class="to-saved-row">
+                  <button class="to-saved-open" onclick="toOpenSaved('${p.id}','${st.typeId}')" title="Open this take-off">
+                    <span class="to-saved-icon">${st.meta.icon}</span>
+                    <div class="to-saved-body">
+                      <div class="to-saved-title">${esc(st.meta.label)}</div>
+                      <div class="to-saved-meta">${st.activeLines} line${st.activeLines===1?'':'s'} · ${st.planName ? esc(st.planName) + ' · ' : ''}${fmt$(st.total)}</div>
+                    </div>
+                    <span class="to-saved-arrow">→</span>
+                  </button>
+                  <button class="to-saved-del" onclick="toDeleteSaved('${p.id}','${st.typeId}')" title="Delete this take-off">✕</button>
+                </div>
               `).join('')}
             </div>
           ` : ''}
@@ -11645,6 +11883,88 @@ const WS_ACCENT_PRESETS = [
   { name: 'Burgundy', hex: '#6e2840' },
 ];
 
+// ============================================================
+// SUBSCRIPTION PLANS + FEATURE FLAGS
+// ────────────────────────────────────────────────────────────
+// The master (you) controls which feature groups each client
+// workspace can access. Plans are presets that pre-fill the
+// feature toggles; the master can still override individually.
+// ============================================================
+
+// Feature groups — the toggleable units of the product.
+// `always` = true means it can never be turned off (branding).
+const FEATURE_GROUPS = [
+  { id: 'today',      label: 'Today Dashboard',   desc: 'Daily priorities, alerts, due-date tracking',                  always: false },
+  { id: 'projects',   label: 'Projects + Bids',   desc: 'Project kanban, subcontractors, RFQs, bid comparison',        always: false },
+  { id: 'estimator',  label: 'Estimator + AI',    desc: 'Estimator, Ask AI with plan vision, Read Plans AI, Take-off', always: false },
+  { id: 'sendcenter', label: 'Send Center + Users',desc: 'Email send center, multiple users per workspace',            always: false },
+  { id: 'branding',   label: 'Workspace Branding', desc: 'Custom logo, accent color, company name',                     always: true  },
+];
+
+// Plans — each defines a price + which feature groups are enabled by default.
+const SUBSCRIPTION_PLANS = [
+  {
+    id: 'starter', name: 'Starter', price: 150,
+    tagline: 'Solo estimators getting organized',
+    features: { today: true, projects: true, estimator: false, sendcenter: false, branding: true },
+  },
+  {
+    id: 'pro', name: 'Pro', price: 200,
+    tagline: 'Full estimating workflow with AI',
+    features: { today: true, projects: true, estimator: true, sendcenter: false, branding: true },
+  },
+  {
+    id: 'enterprise', name: 'Enterprise', price: 300,
+    tagline: 'Teams that send & collaborate',
+    features: { today: true, projects: true, estimator: true, sendcenter: true, branding: true },
+  },
+];
+
+function getPlanById(id) {
+  return SUBSCRIPTION_PLANS.find(p => p.id === id) || SUBSCRIPTION_PLANS[1]; // default Pro
+}
+
+// Resolve the effective feature set for the CURRENT workspace.
+// Master always sees everything. Clients see their workspace's features.
+function getActiveFeatures() {
+  // Master user: full access regardless of workspace
+  if (AUTH.isMaster) {
+    const all = {};
+    FEATURE_GROUPS.forEach(f => all[f.id] = true);
+    return all;
+  }
+  const ws = ST.workspaces?.[ST.activeWorkspace];
+  if (ws && ws.features && typeof ws.features === 'object') {
+    // Ensure branding is always on
+    return { ...ws.features, branding: true };
+  }
+  // No workspace config → default to Pro plan features (safe baseline)
+  return { ...getPlanById('pro').features, branding: true };
+}
+
+// Check if a single feature is enabled for the current user/workspace
+function hasFeature(featureId) {
+  if (AUTH.isMaster) return true;
+  const f = FEATURE_GROUPS.find(g => g.id === featureId);
+  if (f && f.always) return true;
+  const feats = getActiveFeatures();
+  return feats[featureId] !== false;
+}
+
+// Map a UI tab to the feature group that controls it
+const TAB_FEATURE_MAP = {
+  today: 'today',
+  projects: 'projects',
+  subs: 'projects',
+  builder: 'projects',
+  estimator: 'estimator',
+  files: 'sendcenter',
+  insights: 'projects',
+  settings: null,   // settings always available
+  overview: null,
+};
+
+
 // ── State persistence ─────────────────────────────────────────────────────────
 
 const WS_REGISTRY_KEY = 'bidflow_workspaces';
@@ -11770,6 +12090,10 @@ function wsGenId() {
 // Create a new workspace from config
 async function wsCreate(config) {
   const id = wsGenId();
+  const planId = config.planId || 'pro';
+  const plan = getPlanById(planId);
+  // Features: start from plan defaults, apply any explicit overrides from wizard
+  const features = { ...plan.features, ...(config.features || {}), branding: true };
   const ws = {
     id,
     name: config.name || 'Untitled Workspace',
@@ -11779,6 +12103,8 @@ async function wsCreate(config) {
     divisions: Array.isArray(config.divisions) ? config.divisions : WS_DEFAULT_DIVISIONS_GC.slice(),
     jurisdictions: Array.isArray(config.jurisdictions) ? config.jurisdictions : ['LADBS (City of Los Angeles)'],
     rfiTemplates: Array.isArray(config.rfiTemplates) ? config.rfiTemplates : [],
+    plan: planId,
+    features,
     createdAt: new Date().toISOString(),
     lastUsed: new Date().toISOString(),
   };
@@ -11799,6 +12125,8 @@ async function wsCreate(config) {
         divisions: ws.divisions,
         jurisdictions: ws.jurisdictions,
         rfi_templates: ws.rfiTemplates,
+        plan: ws.plan,
+        features: ws.features,
       });
       if (wsErr) throw wsErr;
       // 2) Assign the master user as a member (so they retain visibility)
@@ -12010,7 +12338,7 @@ function buildWsWizard() {
   const close = `<button onclick="ST.wsWizard=null;render()" style="position:absolute;top:14px;right:14px;background:transparent;border:none;color:var(--text3);font-size:22px;cursor:pointer;line-height:1">×</button>`;
   const nav = (canNext, nextLabel) => `
     <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-top:1px solid var(--border)">
-      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.06em">Step ${step} of 4</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.06em">Step ${step} of 5</div>
       <div style="display:flex;gap:8px">
         ${step > 1 ? `<button class="btn btn-ghost" onclick="ST.wsWizard.step=${step-1};render()">← Back</button>` : ''}
         <button class="btn btn-amber" ${canNext?'':'disabled'} onclick="wsWizardNext()">${nextLabel}</button>
@@ -12087,8 +12415,61 @@ function buildWsWizard() {
     `;
   }
 
-  // ── Step 2: BID Divisions ───────────────────────────────────────────────
+  // ── Step 2: Plan & Features ─────────────────────────────────────────────
   if (step === 2) {
+    canNext = true;
+    if (!cfg.planId) cfg.planId = 'pro';
+    const selectedPlan = getPlanById(cfg.planId);
+    // Initialize features from plan if not yet customized
+    if (!cfg.features) cfg.features = { ...selectedPlan.features };
+
+    body = `
+      <div style="padding:24px 24px 0">
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber);margin-bottom:6px">02 · Plan &amp; Features</div>
+        <div style="font-family:var(--sans);font-size:18px;font-weight:600;color:var(--text);margin-bottom:4px">Choose a subscription plan</div>
+        <div style="font-family:var(--sans);font-size:12px;color:var(--text3);margin-bottom:20px;line-height:1.55">The plan sets which features this client can access. You can fine-tune individual features below — handy for custom deals.</div>
+
+        <!-- Plan cards -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:22px">
+          ${SUBSCRIPTION_PLANS.map(plan => {
+            const isSel = cfg.planId === plan.id;
+            return `<button onclick="ST.wsWizard.config.planId='${plan.id}';ST.wsWizard.config.features={...${JSON.stringify(plan.features)}};render()"
+              style="text-align:left;padding:16px 14px;border-radius:8px;cursor:pointer;transition:all .15s;background:${isSel?'var(--amber-bg)':'var(--bg)'};border:2px solid ${isSel?'var(--amber)':'var(--border)'}">
+              <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px">
+                <span style="font-family:var(--sans);font-size:15px;font-weight:700;color:${isSel?'var(--amber)':'var(--text)'}">${esc(plan.name)}</span>
+                ${isSel?'<span style="font-family:var(--mono);font-size:10px;color:var(--amber)">✓</span>':''}
+              </div>
+              <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--text);line-height:1">$${plan.price}<span style="font-size:10px;color:var(--text3);font-weight:400">/mo</span></div>
+              <div style="font-family:var(--sans);font-size:11px;color:var(--text3);margin-top:8px;line-height:1.4">${esc(plan.tagline)}</div>
+            </button>`;
+          }).join('')}
+        </div>
+
+        <!-- Feature toggles -->
+        <div class="modal-label" style="margin-bottom:10px">Features included ${cfg.planId ? `<span style="color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0">· based on ${esc(selectedPlan.name)}, customize as needed</span>` : ''}</div>
+        <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:8px">
+          ${FEATURE_GROUPS.map((f, i) => {
+            const on = f.always ? true : (cfg.features[f.id] !== false);
+            return `<div style="display:flex;align-items:center;gap:12px;padding:12px 14px;${i>0?'border-top:1px solid var(--border);':''}background:${on?'var(--bg)':'var(--bg1)'}">
+              <button ${f.always?'disabled':''} onclick="ST.wsWizard.config.features['${f.id}']=${!on};render()"
+                style="flex-shrink:0;width:40px;height:22px;border-radius:11px;border:none;cursor:${f.always?'not-allowed':'pointer'};position:relative;transition:background .15s;background:${on?'var(--amber)':'var(--border2)'};opacity:${f.always?0.6:1}">
+                <span style="position:absolute;top:2px;left:${on?'20px':'2px'};width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s"></span>
+              </button>
+              <div style="flex:1;min-width:0">
+                <div style="font-family:var(--sans);font-size:13px;font-weight:600;color:var(--text)">${esc(f.label)}${f.always?' <span style="font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.06em;font-weight:400">· ALWAYS ON</span>':''}</div>
+                <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px;letter-spacing:.01em">${esc(f.desc)}</div>
+              </div>
+              <span style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${on?'var(--green)':'var(--text3)'}">${on?'ON':'OFF'}</span>
+            </div>`;
+          }).join('')}
+        </div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.02em;line-height:1.5">Turning features off removes the corresponding tabs and tools from this client's view, including their Settings sub-sections.</div>
+      </div>
+    `;
+  }
+
+  // ── Step 3: BID Divisions ───────────────────────────────────────────────
+  if (step === 3) {
     canNext = (cfg.divisions || []).length > 0;
     if (!cfg.divisions) cfg.divisions = WS_DEFAULT_DIVISIONS_GC.slice();
     if (!cfg.divisionsPreset) cfg.divisionsPreset = 'gc';
@@ -12097,7 +12478,7 @@ function buildWsWizard() {
 
     body = `
       <div style="padding:24px 24px 0">
-        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber);margin-bottom:6px">02 · BID Divisions</div>
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber);margin-bottom:6px">03 · BID Divisions</div>
         <div style="font-family:var(--sans);font-size:18px;font-weight:600;color:var(--text);margin-bottom:4px">Cost breakdown structure</div>
         <div style="font-family:var(--sans);font-size:12px;color:var(--text3);margin-bottom:20px;line-height:1.55">These divisions appear in the Builder when creating estimates. Pick a preset or build a custom list.</div>
 
@@ -12129,14 +12510,14 @@ function buildWsWizard() {
     `;
   }
 
-  // ── Step 3: Jurisdictions ──────────────────────────────────────────────
-  if (step === 3) {
+  // ── Step 4: Jurisdictions ──────────────────────────────────────────────
+  if (step === 4) {
     canNext = (cfg.jurisdictions || []).length > 0;
     if (!cfg.jurisdictions) cfg.jurisdictions = ['LADBS (City of Los Angeles)'];
 
     body = `
       <div style="padding:24px 24px 0">
-        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber);margin-bottom:6px">03 · Jurisdictions</div>
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber);margin-bottom:6px">04 · Jurisdictions</div>
         <div style="font-family:var(--sans);font-size:18px;font-weight:600;color:var(--text);margin-bottom:4px">Default jurisdictions</div>
         <div style="font-family:var(--sans);font-size:12px;color:var(--text3);margin-bottom:20px;line-height:1.55">These appear at the top of dropdowns when filling in Project Setup. The first one is the default selection for new projects.</div>
 
@@ -12175,8 +12556,8 @@ function buildWsWizard() {
     `;
   }
 
-  // ── Step 4: RFI Templates ──────────────────────────────────────────────
-  if (step === 4) {
+  // ── Step 5: RFI Templates ──────────────────────────────────────────────
+  if (step === 5) {
     canNext = true;  // RFI templates are optional
     nextLabel = 'Create workspace ✓';
     if (!cfg.rfiTemplates) cfg.rfiTemplates = [];
@@ -12256,12 +12637,12 @@ function buildWsWizard() {
 async function wsWizardNext() {
   if (!ST.wsWizard) return;
   const step = ST.wsWizard.step || 1;
-  if (step < 4) {
+  if (step < 5) {
     ST.wsWizard.step = step + 1;
     render();
     return;
   }
-  // Step 4 → create workspace
+  // Step 5 → create workspace
   const cfg = ST.wsWizard.config || {};
   if (!cfg.name) { showToast('Name is required', 'warn'); return; }
   const ws = await wsCreate(cfg);
@@ -12352,39 +12733,54 @@ function buildWsSettingsModal() {
           </div>
         </div>
 
-        <!-- Divisions -->
+        <!-- Plan -->
         <div style="margin-bottom:22px">
-          <div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);margin-bottom:10px">02 · BID Divisions <span style="color:var(--text3);font-weight:400;letter-spacing:0">(${(ws.divisions||[]).length})</span></div>
-          <div style="border:1px solid var(--border);border-radius:4px;max-height:200px;overflow-y:auto">
-            ${(ws.divisions||[]).map((d, i) => `
-              <div style="display:grid;grid-template-columns:1fr 40px;gap:6px;padding:5px 12px;border-bottom:1px solid var(--border);align-items:center">
-                <input type="text" value="${esc(d)}" onchange="ST.workspaces['${ws.id}'].divisions[${i}]=this.value;wsSaveRegistry(ST.workspaces)" class="minp" style="font-size:12px;padding:5px 7px">
-                <button onclick="ST.workspaces['${ws.id}'].divisions.splice(${i},1);wsSaveRegistry(ST.workspaces);render()" style="background:transparent;border:1px solid var(--border);color:var(--text3);padding:3px 6px;font-family:var(--mono);font-size:10px;cursor:pointer;border-radius:2px;justify-self:end">✕</button>
-              </div>
-            `).join('')}
+          <div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);margin-bottom:10px">02 · Subscription plan</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+            ${SUBSCRIPTION_PLANS.map(plan => {
+              const isSel = (ws.plan || 'pro') === plan.id;
+              return `<button onclick="wsSetPlan('${ws.id}','${plan.id}')"
+                style="text-align:left;padding:12px 12px;border-radius:6px;cursor:pointer;transition:all .15s;background:${isSel?'var(--amber-bg)':'var(--bg)'};border:2px solid ${isSel?'var(--amber)':'var(--border)'}">
+                <div style="display:flex;align-items:baseline;justify-content:space-between">
+                  <span style="font-family:var(--sans);font-size:13px;font-weight:700;color:${isSel?'var(--amber)':'var(--text)'}">${esc(plan.name)}</span>
+                  ${isSel?'<span style="font-family:var(--mono);font-size:9px;color:var(--amber)">✓</span>':''}
+                </div>
+                <div style="font-family:var(--mono);font-size:16px;font-weight:700;color:var(--text);margin-top:4px">$${plan.price}<span style="font-size:9px;color:var(--text3);font-weight:400">/mo</span></div>
+              </button>`;
+            }).join('')}
           </div>
-          <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="(ST.workspaces['${ws.id}'].divisions=ST.workspaces['${ws.id}'].divisions||[]).push('New division');wsSaveRegistry(ST.workspaces);render()">+ Add division</button>
+          <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:8px;letter-spacing:.02em">Changing the plan resets the feature toggles below to that plan's defaults.</div>
         </div>
 
-        <!-- Jurisdictions -->
+        <!-- Features (master only) -->
         <div style="margin-bottom:22px">
-          <div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);margin-bottom:10px">03 · Default jurisdictions</div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
-            ${(ws.jurisdictions||[]).map((j, i) => `
-              <span style="background:${i===0?'var(--amber-bg)':'var(--bg2)'};border:1px solid ${i===0?'var(--amber)':'var(--border)'};color:${i===0?'var(--amber)':'var(--text2)'};padding:4px 8px;border-radius:3px;font-family:var(--sans);font-size:11px;display:inline-flex;align-items:center;gap:5px">
-                ${i===0?`<span style="font-family:var(--mono);font-size:8px;letter-spacing:.06em">DEFAULT</span>·`:''}${esc(j)}
-                <button onclick="ST.workspaces['${ws.id}'].jurisdictions.splice(${i},1);wsSaveRegistry(ST.workspaces);render()" style="background:transparent;border:none;color:inherit;padding:0;margin-left:4px;font-family:var(--mono);font-size:11px;cursor:pointer">×</button>
-              </span>
-            `).join('')}
+          <div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);margin-bottom:10px">03 · Features enabled <span style="color:var(--text3);font-weight:400;letter-spacing:0">· master control</span></div>
+          <div style="border:1px solid var(--border);border-radius:6px;overflow:hidden">
+            ${FEATURE_GROUPS.map((f, i) => {
+              const feats = ws.features || getPlanById(ws.plan||'pro').features;
+              const on = f.always ? true : (feats[f.id] !== false);
+              return `<div style="display:flex;align-items:center;gap:12px;padding:11px 14px;${i>0?'border-top:1px solid var(--border);':''}background:${on?'var(--bg)':'var(--bg1)'}">
+                <button ${f.always?'disabled':''} onclick="wsToggleFeature('${ws.id}','${f.id}',${!on})"
+                  style="flex-shrink:0;width:38px;height:21px;border-radius:11px;border:none;cursor:${f.always?'not-allowed':'pointer'};position:relative;transition:background .15s;background:${on?'var(--amber)':'var(--border2)'};opacity:${f.always?0.6:1}">
+                  <span style="position:absolute;top:2px;left:${on?'19px':'2px'};width:17px;height:17px;border-radius:50%;background:#fff;transition:left .15s"></span>
+                </button>
+                <div style="flex:1;min-width:0">
+                  <div style="font-family:var(--sans);font-size:12.5px;font-weight:600;color:var(--text)">${esc(f.label)}${f.always?' <span style="font-family:var(--mono);font-size:8px;color:var(--text3);letter-spacing:.06em;font-weight:400">ALWAYS ON</span>':''}</div>
+                  <div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:1px">${esc(f.desc)}</div>
+                </div>
+                <span style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${on?'var(--green)':'var(--text3)'}">${on?'ON':'OFF'}</span>
+              </div>`;
+            }).join('')}
           </div>
         </div>
 
-        <!-- RFI Templates -->
-        <div style="margin-bottom:22px">
-          <div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);margin-bottom:10px">04 · RFI templates <span style="color:var(--text3);font-weight:400;letter-spacing:0">(${(ws.rfiTemplates||[]).length})</span></div>
-          ${(ws.rfiTemplates||[]).length === 0 ? '<div style="font-family:var(--mono);font-size:11px;color:var(--text3);font-style:italic">No templates yet.</div>' :
-            (ws.rfiTemplates||[]).map((t, i) => `<div style="font-family:var(--mono);font-size:11px;color:var(--text2);padding:4px 0;border-bottom:1px solid var(--border)">${esc(t.title)}</div>`).join('')}
-        </div>
+        <!-- Sync to cloud -->
+        ${(AUTH.session && AUTH.isMaster) ? `
+          <div style="margin-bottom:22px">
+            <button class="btn btn-ghost btn-sm" onclick="wsSyncToCloud('${ws.id}')">☁ Sync changes to cloud</button>
+            <span style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-left:8px">Pushes branding, plan &amp; features to Supabase.</span>
+          </div>
+        ` : ''}
 
         <!-- Danger zone -->
         ${wsList.length > 1 ? `
@@ -12415,6 +12811,53 @@ function wsUpdate(wsId, field, value) {
     wsApplyBrand(ws);
   }
   render();
+}
+
+// Set a workspace's plan and reset its features to that plan's defaults
+function wsSetPlan(wsId, planId) {
+  const ws = ST.workspaces?.[wsId];
+  if (!ws) return;
+  const plan = getPlanById(planId);
+  ws.plan = planId;
+  ws.features = { ...plan.features, branding: true };
+  wsSaveRegistry(ST.workspaces);
+  showToast(`Plan set to ${plan.name} ($${plan.price}/mo). Features reset to defaults.`, 'success');
+  render();
+}
+
+// Toggle one feature on/off for a workspace
+function wsToggleFeature(wsId, featId, value) {
+  const ws = ST.workspaces?.[wsId];
+  if (!ws) return;
+  const fg = FEATURE_GROUPS.find(f => f.id === featId);
+  if (fg && fg.always) { showToast('This feature is always on.', 'info'); return; }
+  if (!ws.features) ws.features = { ...getPlanById(ws.plan||'pro').features };
+  ws.features[featId] = value;
+  ws.features.branding = true;
+  wsSaveRegistry(ST.workspaces);
+  render();
+}
+
+// Push branding + plan + features to Supabase
+async function wsSyncToCloud(wsId) {
+  const ws = ST.workspaces?.[wsId];
+  if (!ws) return;
+  if (!AUTH.session || !AUTH.isMaster) { showToast('Only the master can sync workspaces.', 'warn'); return; }
+  try {
+    const { error } = await sb.from('workspaces').update({
+      name: ws.name,
+      wordmark: ws.wordmark,
+      accent_color: ws.accentColor,
+      logo_data: ws.logoData || null,
+      plan: ws.plan,
+      features: ws.features,
+    }).eq('id', wsId);
+    if (error) throw error;
+    showToast('Workspace synced to cloud.', 'success');
+  } catch (e) {
+    console.error('Sync failed:', e);
+    showToast('Sync failed: ' + e.message, 'error');
+  }
 }
 
 function wsHandleLogoEdit(ev, wsId) {
@@ -15817,6 +16260,12 @@ function setTab(t) {
   // canvas re-initializes properly on next entry.
   if (ST.tab === 'estimator' && ST.estimatorTab === 'takeoff' && t !== 'estimator') {
     if (typeof _toMountReset === 'function') _toMountReset();
+  }
+  // Feature gate: block navigation to tabs the workspace's plan doesn't include
+  const featId = TAB_FEATURE_MAP[t];
+  if (featId && !hasFeature(featId)) {
+    showToast('That feature is not included in this workspace plan.', 'warn');
+    return;
   }
   ST.dropdown = null; ST.tab = t; render();
 }
