@@ -9586,7 +9586,7 @@ function estToggleFlag(pid, flag) {
   render();
 }
 
-function estAddPlan(pid) {
+async function estAddPlan(pid) {
   const discSel = document.getElementById('est-plan-disc');
   const inp = document.getElementById('est-plan-file');
   if (!inp || !inp.files || !inp.files[0]) { showToast('Pick a PDF first.', 'warn'); return; }
@@ -9595,6 +9595,21 @@ function estAddPlan(pid) {
     showToast('Only PDF files are accepted.', 'error');
     return;
   }
+
+  // Hard 15-page limit — read page count before accepting
+  if (window.pdfjsLib) {
+    try {
+      const buf = await f.arrayBuffer();
+      const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+      if (doc.numPages > 15) {
+        showToast(`This PDF has ${doc.numPages} pages. Bidflow accepts max 15 per file — split it into architectural, structural, MEP, etc. and upload each separately.`, 'error');
+        return;
+      }
+    } catch (err) {
+      console.warn('Could not read page count, accepting anyway:', err);
+    }
+  }
+
   const e = getEstProj(pid);
   const disc = discSel?.value || 'A';
   const meta = {
@@ -9644,6 +9659,8 @@ function estRemovePlan(pid, planId) {
   showConfirm('Remove this plan set entry?', () => {
     const e = getEstProj(pid);
     e.plans = e.plans.filter(p => p.id !== planId);
+    // Invalidate render cache for this plan (frees memory)
+    if (typeof invalidatePlanRenderCache === 'function') invalidatePlanRenderCache(planId);
     saveSt(); render();
   }, { danger: true });
 }
@@ -9786,6 +9803,38 @@ async function estSendMessage(pid) {
   chat.push({ role: 'assistant', content: '', ts: Date.now(), streaming: true });
   saveSt(); render(); estScrollChat();
 
+  // ── Render uploaded plans to images (in-memory cache) ──────────────────────
+  // If no plans uploaded with binaries, skip — AI runs in metadata-only mode.
+  let planImages = [];
+  try {
+    const e = getEstProj(pid);
+    const hasUploaded = (e.plans || []).some(pl => pl.dataUrl);
+    if (hasUploaded) {
+      // Stream the progress into the assistant message placeholder so the user
+      // sees "Reading X of Y pages…" before tokens arrive.
+      const setStatus = (s) => {
+        chat[assistantIdx].content = s;
+        const el = document.getElementById('est-chat-stream-target');
+        if (el) el.textContent = s;
+        estScrollChat();
+      };
+      setStatus('🔍 Reading uploaded plans…');
+      const { images, totalPages } = await renderAllProjectPlans(pid, ({ done, total, cur }) => {
+        setStatus(`🔍 Reading ${done} of ${total} pages…${cur ? ' (' + cur + ')' : ''}`);
+      });
+      planImages = images;
+      setStatus(`🔍 Read ${totalPages} pages — asking Claude…`);
+    }
+  } catch (err) {
+    console.warn('Plan render failed, continuing without vision:', err);
+    chat[assistantIdx].content = '';
+  }
+
+  // Reset content for streaming
+  chat[assistantIdx].content = '';
+  const streamEl = document.getElementById('est-chat-stream-target');
+  if (streamEl) streamEl.textContent = '';
+
   // Build messages array (only role + content for the API)
   const messages = chat.slice(0, assistantIdx).map(m => ({
     role: m.role, content: m.content,
@@ -9803,6 +9852,7 @@ async function estSendMessage(pid) {
       body: JSON.stringify({
         projectContext: estBuildContext(pid),
         messages,
+        planImages,
       }),
     });
 
@@ -14941,6 +14991,84 @@ async function toUploadAndOpen(pid, typeId) {
 
 
 
+
+// ============================================================
+// PLAN VISION — Ask AI scans uploaded PDFs page-by-page
+// ────────────────────────────────────────────────────────────
+// In-memory cache only. Wiped on tab close.
+// Cache shape: { [planId + '::' + pageNum]: base64 string }
+// ============================================================
+
+const _PLAN_RENDER_CACHE = {};
+
+// Get total page count across all plans of a project that have a stored binary
+async function getProjectPlanPageInfo(pid) {
+  const e = getEstProj(pid);
+  if (!e?.plans) return { totalPages: 0, plans: [] };
+  if (!window.pdfjsLib) return { totalPages: 0, plans: [] };
+  const list = [];
+  let totalPages = 0;
+  for (const pl of e.plans) {
+    if (!pl.dataUrl) continue;
+    try {
+      const data = atob(pl.dataUrl.split(',')[1]);
+      const doc = await pdfjsLib.getDocument({ data }).promise;
+      list.push({ planId: pl.id, name: pl.name, discipline: pl.discipline, pages: doc.numPages, dataUrl: pl.dataUrl });
+      totalPages += doc.numPages;
+    } catch (err) {
+      console.warn('Could not read plan page count:', pl.name, err);
+    }
+  }
+  return { totalPages, plans: list };
+}
+
+// Render a single page of a PDF to JPEG base64 (cached in memory)
+async function renderPlanPage(planId, pageNum, dataUrl) {
+  const key = planId + '::' + pageNum;
+  if (_PLAN_RENDER_CACHE[key]) return _PLAN_RENDER_CACHE[key];
+  if (!window.pdfjsLib) throw new Error('PDF.js not loaded');
+  const data = atob(dataUrl.split(',')[1]);
+  const doc = await pdfjsLib.getDocument({ data }).promise;
+  const page = await doc.getPage(pageNum);
+  // 1.5x is a good balance — sheet text is readable, JPEG stays small
+  const viewport = page.getViewport({ scale: 1.5 });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  const dataUrlJpeg = canvas.toDataURL('image/jpeg', 0.78);
+  const base64 = dataUrlJpeg.split(',')[1];
+  _PLAN_RENDER_CACHE[key] = base64;
+  return base64;
+}
+
+// Render all pages of all plans in a project, with progress callback
+async function renderAllProjectPlans(pid, onProgress) {
+  const { totalPages, plans } = await getProjectPlanPageInfo(pid);
+  const result = [];
+  let done = 0;
+  for (const pl of plans) {
+    for (let pg = 1; pg <= pl.pages; pg++) {
+      const key = pl.planId + '::' + pg;
+      const cached = !!_PLAN_RENDER_CACHE[key];
+      const base64 = await renderPlanPage(pl.planId, pg, pl.dataUrl);
+      result.push({ discipline: pl.discipline, name: pl.name, pageNum: pg, base64 });
+      done++;
+      if (onProgress) onProgress({ done, total: totalPages, cached, cur: pl.name + ' p.' + pg });
+    }
+  }
+  return { images: result, totalPages };
+}
+
+// Clear cache for a specific plan (called when a plan is removed/re-uploaded)
+function invalidatePlanRenderCache(planId) {
+  for (const k of Object.keys(_PLAN_RENDER_CACHE)) {
+    if (k.startsWith(planId + '::')) delete _PLAN_RENDER_CACHE[k];
+  }
+}
+
+
+
 // ============================================================
 // READ PLANS — Auto-fill Setup + Code Compliance from cover sheet
 // ────────────────────────────────────────────────────────────
@@ -15437,7 +15565,7 @@ function buildEstPlans(p, e, activeDiscIds) {
         <button class="btn btn-amber" onclick="estAddPlan('${p.id}')">+ Add to project</button>
       </div>
       <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:10px;font-style:italic;line-height:1.5">
-        Files ≤ 5 MB are stored in-browser so you can download them back later. Larger files record metadata only — when Supabase Storage is wired in, the full binary will upload to <code>plan-sets/${p.id}/&lt;plan_id&gt;.pdf</code>.
+        Files ≤ 5 MB are stored in-browser so you can download them back later. <strong style="color:var(--amber);font-style:normal">Max 15 pages per file</strong> — if your set is larger, upload architectural, structural, MEP, etc. as separate PDFs (each ≤ 15 pages).
       </div>
     </div>
 
