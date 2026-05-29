@@ -12677,31 +12677,51 @@ function schedCloseTaskModal() {
 
 function schedSaveTask() {
   const m = ST.scheduleTaskModal;
-  if (!m) return;
-  const sched = schedGet(m.pid);
-  const name = document.getElementById('sched-task-name')?.value.trim();
-  const start = document.getElementById('sched-task-start')?.value;
-  const end = document.getElementById('sched-task-end')?.value;
+  if (!m) { console.warn('schedSaveTask: no modal state'); return; }
+  if (!m.pid) { showToast('No project selected for this task.', 'error'); return; }
+
+  const nameEl = document.getElementById('sched-task-name');
+  const startEl = document.getElementById('sched-task-start');
+  const endEl = document.getElementById('sched-task-end');
+  if (!nameEl || !startEl || !endEl) {
+    console.error('schedSaveTask: inputs not found in DOM', { nameEl, startEl, endEl });
+    showToast('Could not read the form. Try reopening the task.', 'error');
+    return;
+  }
+
+  const name = (nameEl.value || '').trim();
+  const start = startEl.value;
+  const end = endEl.value;
   const phaseId = document.getElementById('sched-task-phase')?.value || '';
-  const assignee = document.getElementById('sched-task-assignee')?.value.trim() || '';
+  const assignee = (document.getElementById('sched-task-assignee')?.value || '').trim();
   const progress = parseInt(document.getElementById('sched-task-progress')?.value) || 0;
   const depSelect = document.getElementById('sched-task-dep');
-  const deps = depSelect ? Array.from(depSelect.selectedOptions).map(o => o.value).filter(Boolean) : [];
+  const deps = (depSelect && depSelect.selectedOptions)
+    ? Array.from(depSelect.selectedOptions).map(o => o.value).filter(Boolean)
+    : [];
 
-  if (!name) { showToast('Task name is required.', 'warn'); return; }
+  if (!name) { showToast('Task name is required.', 'warn'); nameEl.focus(); return; }
   if (!start || !end) { showToast('Start and end dates are required.', 'warn'); return; }
   if (schedParseDate(end) < schedParseDate(start)) { showToast('End date must be on or after start date.', 'warn'); return; }
 
+  // Ensure the schedule object exists and is the SAME reference stored in ST
+  if (!ST.schedule) ST.schedule = {};
+  if (!ST.schedule[m.pid]) ST.schedule[m.pid] = { tasks: [], phases: [] };
+  const sched = ST.schedule[m.pid];
+  if (!Array.isArray(sched.tasks)) sched.tasks = [];
+
   if (m.taskId) {
-    const t = sched.tasks.find(x => x.id === m.taskId);
-    if (t) { Object.assign(t, { name, start, end, phaseId, assignee, progress, deps }); }
+    const tk = sched.tasks.find(x => x.id === m.taskId);
+    if (tk) Object.assign(tk, { name, start, end, phaseId, assignee, progress, deps });
   } else {
-    sched.tasks.push({
-      id: schedGenId('task'), name, start, end, phaseId, assignee, progress, deps,
-    });
+    sched.tasks.push({ id: schedGenId('task'), name, start, end, phaseId, assignee, progress, deps });
   }
-  saveSt();
+
+  // Close modal FIRST, then persist + render so the UI reflects the new task
   ST.scheduleTaskModal = null;
+  // Make sure the Schedule tab shows the project we just edited
+  ST.scheduleSelProj = m.pid;
+  saveSt();
   render();
   showToast('Task saved.', 'success');
 }
@@ -13987,21 +14007,20 @@ async function wsDelete(wsId) {
   showConfirm(`Permanently delete "${ws.name}"?`, async () => {
     const deletingActive = (wsId === ST.activeWorkspace);
 
-    // ── Delete from Supabase FIRST (so a reload doesn't bring it back) ──
+    // ── Try to delete from Supabase (best-effort). We do NOT abort the whole
+    // delete if the cloud part fails — otherwise a Storage/RLS hiccup makes it
+    // look like "delete doesn't work". We surface the real error instead. ──
+    let cloudError = null;
     if (AUTH.session && AUTH.isMaster) {
       try {
-        // Remove member rows for this workspace
         const { error: memErr } = await sb.from('workspace_members').delete().eq('workspace_id', wsId);
         if (memErr) throw memErr;
-        // Remove any app_state rows scoped to this workspace
         try { await sb.from('app_state').delete().eq('workspace_id', wsId); } catch(e) { console.warn('app_state cleanup:', e); }
-        // Remove the workspace row itself
         const { error: wsErr } = await sb.from('workspaces').delete().eq('id', wsId);
         if (wsErr) throw wsErr;
       } catch(e) {
-        console.error('Failed to delete workspace from cloud:', e);
-        showToast('Could not delete from cloud: ' + e.message + ' — nothing was removed.', 'error');
-        return; // Abort — don't delete locally if cloud delete failed
+        cloudError = e;
+        console.error('Cloud delete failed (continuing with local delete):', e);
       }
     }
 
@@ -14009,7 +14028,6 @@ async function wsDelete(wsId) {
     if (deletingActive) {
       const next = Object.keys(ST.workspaces).find(id => id !== wsId);
       if (next) {
-        // Switch WITHOUT re-saving the doomed workspace's data
         ST.activeWorkspace = next;
         wsSetActiveId(next);
         wsLoadWorkspaceData(next);
@@ -14019,14 +14037,20 @@ async function wsDelete(wsId) {
       }
     }
 
-    // ── Delete locally ──
+    // ── Delete locally (this is what the user sees immediately) ──
     delete ST.workspaces[wsId];
     try { localStorage.removeItem(WS_STATE_PREFIX + wsId); } catch {}
     wsSaveRegistry(ST.workspaces);
     ST.wsSettingsModal = null;
-    showToast(`Workspace "${ws.name}" deleted.`, 'success');
     render();
-  }, { danger: true, detail: 'All projects, subs, files, and estimates inside it will be erased — locally and in the cloud.' });
+
+    if (cloudError) {
+      const msg = (cloudError.message || String(cloudError));
+      showToast(`Removed locally, but the cloud copy may remain (${msg}). It will not reappear on this device.`, 'warn');
+    } else {
+      showToast(`Workspace "${ws.name}" deleted.`, 'success');
+    }
+  }, { danger: true, detail: 'All projects, subs, files, and estimates inside it will be erased.' });
 }
 
 
@@ -15822,9 +15846,13 @@ function logError(category, error, context) {
   };
   ERROR_LOG.unshift(entry);
   if (ERROR_LOG.length > ERROR_LOG_MAX) ERROR_LOG.length = ERROR_LOG_MAX;
-  // Don't console.error in production — too noisy. Console.warn is okay.
   if (typeof console !== 'undefined' && console.warn) {
     console.warn('[BidFlow]', category, error);
+  }
+  // Surface genuine runtime errors (not render-boundary ones) so the user can
+  // tell us what broke instead of silently doing nothing.
+  if ((category === 'window.error' || category === 'unhandled-promise') && typeof showToast === 'function') {
+    try { showToast('Error: ' + entry.message, 'error'); } catch(e) {}
   }
   return entry;
 }
