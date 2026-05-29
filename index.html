@@ -3571,6 +3571,146 @@ a:hover{opacity:.7}
   /* keep pill for status dots only — we don't change those */
 }
 
+/* ════════════════ SCHEDULE / GANTT ════════════════ */
+.sched-wrap{display:flex;flex-direction:column;height:100%;flex:1;min-height:0;min-width:0;background:var(--bg)}
+.sched-topbar{
+  display:flex;align-items:center;gap:10px;
+  padding:12px 18px;border-bottom:1px solid var(--border);
+  flex-shrink:0;background:var(--bg1);flex-wrap:wrap;
+}
+.sched-projsel{display:flex;align-items:center;gap:8px}
+.sched-projsel-kicker{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--text3)}
+.sched-projsel-input{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--r);
+  padding:6px 10px;font-family:var(--sans);font-size:13px;color:var(--text);
+  font-weight:600;cursor:pointer;outline:none;max-width:280px;
+}
+.sched-viewtog{display:flex;border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
+.sched-viewbtn{
+  background:var(--bg);border:none;padding:6px 14px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--text3);cursor:pointer;transition:all .12s;
+}
+.sched-viewbtn.on{background:var(--amber);color:#fff}
+.sched-empty{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  text-align:center;padding:60px 20px;
+}
+.gantt-scroll{flex:1;overflow:auto;min-height:0;position:relative}
+.gantt-inner{position:relative}
+.gantt-header{position:sticky;top:0;z-index:5;background:var(--bg1);border-bottom:1px solid var(--border2);display:flex}
+.gantt-header-corner{
+  position:sticky;left:0;z-index:6;background:var(--bg1);
+  display:flex;align-items:center;padding:0 14px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);
+  border-right:1px solid var(--border2);flex-shrink:0;
+}
+.gantt-header-timeline{position:absolute;top:0;height:100%}
+.gantt-month-tick{
+  position:absolute;top:0;height:100%;border-left:1px solid var(--border);
+  display:flex;align-items:center;padding-left:6px;
+}
+.gantt-month-tick span{font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.04em;white-space:nowrap}
+.gantt-body{position:relative}
+.gantt-today-line{position:absolute;top:0;width:2px;background:var(--amber);opacity:.6;z-index:3}
+.gantt-phase-row{
+  position:absolute;left:0;height:28px;display:flex;align-items:center;gap:8px;
+  padding:0 14px;background:var(--bg2);border-top:1px solid var(--border);border-bottom:1px solid var(--border);
+  z-index:2;
+}
+.gantt-phase-dot{width:9px;height:9px;border-radius:2px;flex-shrink:0}
+.gantt-phase-name{font-family:var(--sans);font-size:12px;font-weight:700;color:var(--text);letter-spacing:-.01em}
+.gantt-phase-del{background:transparent;border:none;color:var(--text3);cursor:pointer;font-size:11px;font-family:var(--mono);margin-left:6px;opacity:.5}
+.gantt-phase-del:hover{opacity:1;color:var(--red)}
+.gantt-label{
+  position:absolute;left:0;z-index:4;background:var(--bg);
+  display:flex;flex-direction:column;justify-content:center;gap:1px;
+  padding:0 14px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);
+  cursor:pointer;
+}
+.gantt-label:hover{background:var(--bg1)}
+.gantt-label-name{font-family:var(--sans);font-size:12px;color:var(--text);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gantt-label-assignee{font-family:var(--mono);font-size:9px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gantt-bar-track{position:absolute;border-bottom:1px solid var(--border)}
+.gantt-bar{
+  position:absolute;top:7px;height:24px;border-radius:5px;border:1.5px solid;
+  display:flex;align-items:center;cursor:pointer;overflow:hidden;
+  transition:filter .12s;
+}
+.gantt-bar:hover{filter:brightness(1.08)}
+.gantt-bar-fill{position:absolute;left:0;top:0;height:100%;opacity:.55;border-radius:3px 0 0 3px}
+.gantt-bar-label{position:relative;z-index:1;font-family:var(--mono);font-size:9px;font-weight:700;color:var(--text);padding:0 6px;white-space:nowrap}
+.sched-list{flex:1;overflow-y:auto;padding:14px 18px;min-height:0}
+.sched-list-phase{display:flex;align-items:center;gap:8px;padding:10px 4px 8px;margin-top:8px}
+.sched-list-row{
+  display:flex;align-items:center;gap:14px;padding:11px 14px;
+  background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);margin-bottom:6px;cursor:pointer;
+  transition:border-color .12s, transform .12s;
+}
+.sched-list-row:hover{border-color:var(--amber-border);transform:translateX(2px)}
+.sched-list-main{flex:1;min-width:0}
+.sched-list-name{font-family:var(--sans);font-size:13px;font-weight:600;color:var(--text)}
+.sched-list-meta{font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px}
+.sched-list-prog{display:flex;align-items:center;gap:8px;flex-shrink:0;width:140px}
+.sched-list-prog-bar{flex:1;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden}
+.sched-list-prog-bar > div{height:100%;border-radius:3px;transition:width .2s}
+.sched-list-prog-pct{font-family:var(--mono);font-size:10px;color:var(--text2);font-variant-numeric:tabular-nums;width:34px;text-align:right}
+.sched-list-del{background:transparent;border:1px solid var(--border);border-radius:var(--r);color:var(--text3);padding:4px 8px;font-family:var(--mono);font-size:11px;cursor:pointer;flex-shrink:0}
+.sched-list-del:hover{border-color:var(--red);color:var(--red)}
+
+/* ════════════════ DAILY LOGS ════════════════ */
+.dlog-wrap{display:flex;flex-direction:column;height:100%;flex:1;min-height:0;min-width:0;background:var(--bg)}
+.dlog-topbar{
+  display:flex;align-items:center;gap:10px;
+  padding:12px 18px;border-bottom:1px solid var(--border);
+  flex-shrink:0;background:var(--bg1);flex-wrap:wrap;
+}
+.dlog-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:60px 20px}
+.dlog-feed{flex:1;overflow-y:auto;padding:18px;min-height:0;max-width:780px;width:100%;margin:0 auto}
+.dlog-card{
+  background:var(--bg1);border:1px solid var(--border);border-radius:var(--r2);
+  padding:16px 18px;margin-bottom:14px;
+}
+.dlog-card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
+.dlog-card-date{font-family:var(--sans);font-size:15px;font-weight:700;color:var(--text);letter-spacing:-.01em}
+.dlog-card-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.dlog-tag{
+  font-family:var(--mono);font-size:10px;color:var(--text2);
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
+  padding:2px 8px;letter-spacing:.02em;
+}
+.dlog-icon-btn{
+  background:transparent;border:1px solid var(--border);border-radius:var(--r);
+  color:var(--text3);width:28px;height:28px;cursor:pointer;font-size:12px;
+  display:flex;align-items:center;justify-content:center;transition:all .12s;
+}
+.dlog-icon-btn:hover{border-color:var(--amber-border);color:var(--amber)}
+.dlog-section{margin-bottom:10px}
+.dlog-section-label{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:3px}
+.dlog-section-body{font-family:var(--sans);font-size:13px;color:var(--text);line-height:1.5;white-space:pre-wrap}
+.dlog-photos{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.dlog-photo{
+  width:120px;height:90px;object-fit:cover;border-radius:var(--r);
+  border:1px solid var(--border);cursor:pointer;transition:transform .12s;
+}
+.dlog-photo:hover{transform:scale(1.03)}
+
+/* Photo editor in modal */
+.dlog-photo-edit{display:flex;gap:8px;flex-wrap:wrap}
+.dlog-photo-thumb{position:relative;width:80px;height:80px}
+.dlog-photo-thumb img{width:100%;height:100%;object-fit:cover;border-radius:var(--r);border:1px solid var(--border)}
+.dlog-photo-rm{
+  position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;
+  background:var(--red);color:#fff;border:none;cursor:pointer;font-size:10px;
+  display:flex;align-items:center;justify-content:center;line-height:1;
+}
+.dlog-photo-add{
+  width:80px;height:80px;border:1.5px dashed var(--border2);border-radius:var(--r);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  color:var(--text3);cursor:pointer;transition:all .12s;
+}
+.dlog-photo-add:hover{border-color:var(--amber);color:var(--amber)}
+
 </style>
 
 <!-- External libraries -->
@@ -3956,6 +4096,15 @@ let ST = {
   toCalculator: {},          // {[pid]: { [code]: { enabled: bool, qty: number } }} — manual budget calculator state
   readPlansStatus: null,     // {pid, running, page, total, lastResult, error} — Read Plans AI progress
   masterSeeAll: false,       // master-only: reveal all features regardless of active workspace plan
+  schedule: {},              // { [pid]: { tasks: [...], phases: [...] } } — Gantt scheduling
+  scheduleSelProj: null,     // currently selected project in Schedule tab
+  scheduleView: 'gantt',     // 'gantt' | 'list'
+  scheduleTaskModal: null,   // {pid, taskId|null} when editing/creating a task
+  dailyLogs: {},             // { [pid]: [ {id, date, weather, tempF, crew, hours, work, issues, notes, photos:[base64]} ] }
+  dailyLogSelProj: null,     // currently selected project in Daily Log tab
+  dailyLogModal: null,       // {pid, logId|null} when editing/creating an entry
+  dailyLogDraftPhotos: [],   // temp photo buffer while editing an entry
+  dailyLogLightbox: null,    // base64 of photo being viewed full-screen
   toScanResult: null,        // last scan result from analyze-plan?mode=scan  // {[accId]: true|false} — open/close state for Plan Sets sub-accordions
   estimatorSuggestDismissed: {},    // {[pid]: [suggestionKey...]} — heuristics already declined
   emailTemplates: null,     // {rfp:{subject,body}, followup:{subject,body}} — loaded from app_state
@@ -3981,6 +4130,8 @@ window.BYPASS_LOGIN = false;
 // ============================================================
 const SUPABASE_URL = 'https://gvpsxsqloeklghcaxudg.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd2cHN4c3Fsb2VrbGdoY2F4dWRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk2MjM1ODcsImV4cCI6MjA5NTE5OTU4N30.KyhbD-ZEg-OG9PXAKlodBQRqgLK1_P_AkQMtJptp_VI';
+// Storage bucket for bid PDFs — change here if your bucket has a different name
+const BID_PDF_BUCKET = 'bid-pdfs';
 
 // ============================================================
 // SUBSCRIPTION CONFIG  — EDIT HERE WHEN YOU HAVE YOUR PAYMENT LINK
@@ -4311,6 +4462,8 @@ async function loadSt() {
     ST.estimator = state.estimator || {};
     ST.bidStages = state.bidStages || {};
     ST.toCalculator = state.toCalculator || {};
+    ST.schedule = state.schedule || {};
+    ST.dailyLogs = state.dailyLogs || {};
     ST.toSpaces = state.toSpaces || [];
     // aiChat lives inside ST.estimator[pid].aiChat — persisted as part of the
     // estimator blob. Clear streaming flags on load (in case of hard reload mid-stream).
@@ -4351,7 +4504,7 @@ async function loadSt() {
       } catch(e) { console.warn('Could not persist pricing_wipe_v2 flag:', e); }
       // Best-effort orphan PDF cleanup (non-blocking).
       if (orphanPdfs.length) {
-        sb.storage.from('bid-pdfs').remove(orphanPdfs)
+        sb.storage.from(BID_PDF_BUCKET).remove(orphanPdfs)
           .then(()=>console.log('Removed ' + orphanPdfs.length + ' orphan PDFs from storage'))
           .catch(e=>console.warn('Orphan PDF cleanup failed:', e));
       }
@@ -4405,7 +4558,7 @@ async function saveSt() {
     if (window.BYPASS_LOGIN) { saveStLocal(); setSaveStatus('saved'); }
     return;
   }
-  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator','bidStages','toCalculator']
+  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator','bidStages','toCalculator','schedule','dailyLogs']
     .forEach(k => SAVE_STATE.pendingKeys.add(k));
   if (SAVE_STATE.debounceTimer) clearTimeout(SAVE_STATE.debounceTimer);
   SAVE_STATE.debounceTimer = setTimeout(flushSave, 400);
@@ -4462,6 +4615,8 @@ async function flushSave() {
     else if (k === 'estimator') v = ST.estimator;
     else if (k === 'bidStages') v = ST.bidStages;
     else if (k === 'toCalculator') v = ST.toCalculator;
+    else if (k === 'schedule') v = ST.schedule;
+    else if (k === 'dailyLogs') v = ST.dailyLogs;
 
     // Critical: app_state.value is NOT NULL. Substitute appropriate empty default.
     if (v === undefined || v === null) {
@@ -6532,8 +6687,8 @@ async function subPortalSubmit() {
   try {
     if (AUTH.session) {
       const fname = tok.pid + '/' + tok.cat + '/' + v.pickedSid + '/' + Date.now() + '_' + file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
-      const { data, error } = await sb.storage.from('bid-pdfs').upload(fname, file);
-      if (error) throw error;
+      const { data, error } = await sb.storage.from(BID_PDF_BUCKET).upload(fname, file, { contentType: 'application/pdf', upsert: true });
+      if (error) { await diagnoseStorageError(error, BID_PDF_BUCKET); if (statusEl) statusEl.textContent=''; return; }
       pdfPath = data.path;
     } else {
       pdfPath = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
@@ -7893,6 +8048,8 @@ function buildSidebar() {
     { id:'projects', label:'Projects',       icon:'home',         count: cProjects },
     { id:'subs',     label:'Subcontractors', icon:'users',        count: cSubs },
     { id:'estimator',label:'Estimator',      icon:'ruler',        count: '' },
+    { id:'schedule', label:'Schedule',       icon:'calendar-range',count: '' },
+    { id:'dailylog', label:'Daily Log',      icon:'clipboard-list',count: '' },
     { id:'files',    label:'Files',          icon:'folder',       count: '' },
     { id:'overview', label:'Overview',       icon:'gauge',        count: '' },
     { id:'builder',  label:'Builder',        icon:'hammer',       count: '' },
@@ -8015,9 +8172,14 @@ function buildApp() {
           ST.tab==='settings' ? buildSettingsTab() :
           ST.tab==='insights' ? buildInsightsTab() :
           ST.tab==='estimator' ? buildEstimatorTab() :
+          ST.tab==='schedule' ? buildScheduleTab() :
+          ST.tab==='dailylog' ? buildDailyLogTab() :
           buildOverviewTab()}
       </div>
       </main>
+      ${ST.scheduleTaskModal ? buildScheduleTaskModal() : ''}
+      ${ST.dailyLogModal ? buildDailyLogModal() : ''}
+      ${ST.dailyLogLightbox ? buildDailyLogLightbox() : ''}
       ${ST.sendDialog ? buildSendDialog() : ''}
       ${ST.sentHistoryView ? buildSentHistoryModal() : ''}
       ${ST.builderEditItem ? buildBuilderItemModal() : ''}
@@ -8999,7 +9161,7 @@ async function compareAddBid(sid, projName, cat) {
   // Fetch signed URL async if there's a PDF.
   if (bid.pdfPath) {
     try {
-      const { data, error } = await sb.storage.from('bid-pdfs').createSignedUrl(bid.pdfPath, 3600);
+      const { data, error } = await sb.storage.from(BID_PDF_BUCKET).createSignedUrl(bid.pdfPath, 3600);
       if (error) throw error;
       const stillThere = ST.compareView.find(v => v.sid === sid && v.key === key);
       if (stillThere) {
@@ -9108,7 +9270,7 @@ async function confirmDeleteProject(pid) {
 
   // Best-effort PDF storage cleanup
   if (pdfsToDelete.length) {
-    sb.storage.from('bid-pdfs').remove(pdfsToDelete)
+    sb.storage.from(BID_PDF_BUCKET).remove(pdfsToDelete)
       .then(() => console.log('Deleted', pdfsToDelete.length, 'PDFs for project', proj.name))
       .catch(e => console.warn('PDF cleanup failed:', e));
   }
@@ -9147,7 +9309,7 @@ async function confirmDeleteSub(sid) {
   delete ST.subOverrides?.[sid]?.bids;
 
   if (pdfsToDelete.length) {
-    sb.storage.from('bid-pdfs').remove(pdfsToDelete)
+    sb.storage.from(BID_PDF_BUCKET).remove(pdfsToDelete)
       .then(() => console.log('Deleted', pdfsToDelete.length, 'PDFs for sub', sub.company))
       .catch(e => console.warn('PDF cleanup failed:', e));
   }
@@ -9457,7 +9619,7 @@ async function bidsModalToggleCompare(sid, key) {
   m.compareSel.push(entry);
   render();
   try {
-    const { data, error } = await sb.storage.from('bid-pdfs').createSignedUrl(bid.pdfPath, 3600);
+    const { data, error } = await sb.storage.from(BID_PDF_BUCKET).createSignedUrl(bid.pdfPath, 3600);
     if (error) throw error;
     const e = (ST.bidsModal?.compareSel || []).find(c => c.sid === sid && c.key === key);
     if (e) { e.signedUrl = data.signedUrl; render(); }
@@ -12088,6 +12250,7 @@ const FEATURE_GROUPS = [
   { id: 'today',      label: 'Today Dashboard',   desc: 'Daily priorities, alerts, due-date tracking',                  always: false },
   { id: 'projects',   label: 'Projects + Bids',   desc: 'Project kanban, subcontractors, RFQs, bid comparison',        always: false },
   { id: 'estimator',  label: 'Estimator + AI',    desc: 'Estimator, Ask AI with plan vision, Read Plans AI, Take-off', always: false },
+  { id: 'fieldops',   label: 'Field Ops',         desc: 'Project scheduling (Gantt) + daily field logs',              always: false },
   { id: 'sendcenter', label: 'Send Center + Users',desc: 'Email send center, multiple users per workspace',            always: false },
   { id: 'branding',   label: 'Workspace Branding', desc: 'Custom logo, accent color, company name',                     always: true  },
 ];
@@ -12097,17 +12260,17 @@ const SUBSCRIPTION_PLANS = [
   {
     id: 'starter', name: 'Starter', price: 150,
     tagline: 'Solo estimators getting organized',
-    features: { today: true, projects: true, estimator: false, sendcenter: false, branding: true },
+    features: { today: true, projects: true, estimator: false, fieldops: false, sendcenter: false, branding: true },
   },
   {
     id: 'pro', name: 'Pro', price: 200,
     tagline: 'Full estimating workflow with AI',
-    features: { today: true, projects: true, estimator: true, sendcenter: false, branding: true },
+    features: { today: true, projects: true, estimator: true, fieldops: true, sendcenter: false, branding: true },
   },
   {
     id: 'enterprise', name: 'Enterprise', price: 300,
     tagline: 'Teams that send & collaborate',
-    features: { today: true, projects: true, estimator: true, sendcenter: true, branding: true },
+    features: { today: true, projects: true, estimator: true, fieldops: true, sendcenter: true, branding: true },
   },
 ];
 
@@ -12144,6 +12307,726 @@ function hasFeature(featureId) {
   return feats[featureId] !== false;
 }
 
+
+
+// ============================================================
+// DAILY LOGS  (Field Ops)
+// ────────────────────────────────────────────────────────────
+// ST.dailyLogs[pid] = [ { id, date, weather, tempF, crew, hours,
+//                         work, issues, notes, photos:[base64] } ]
+// Photos stored as compressed base64 (max 3 per entry).
+// ============================================================
+
+const DLOG_WEATHER = ['Clear','Partly cloudy','Overcast','Rain','Heavy rain','Wind','Snow','Fog','Hot','Cold'];
+const DLOG_MAX_PHOTOS = 3;
+
+function dlogGet(pid) {
+  if (!ST.dailyLogs) ST.dailyLogs = {};
+  if (!ST.dailyLogs[pid]) ST.dailyLogs[pid] = [];
+  return ST.dailyLogs[pid];
+}
+function dlogGenId() { return 'dlog_' + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+
+function dlogActiveProject() {
+  const projs = allProjects();
+  if (projs.length === 0) return null;
+  let pid = ST.dailyLogSelProj;
+  if (!pid || !projs.find(p => p.id === pid)) { pid = projs[0].id; ST.dailyLogSelProj = pid; }
+  return projs.find(p => p.id === pid);
+}
+
+function dlogTodayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function dlogFmtDate(iso) {
+  if (!iso) return '—';
+  const parts = String(iso).split('-').map(Number);
+  const d = new Date(parts[0], parts[1]-1, parts[2]);
+  return d.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric', year:'numeric' });
+}
+
+// ── Modal open/close ─────────────────────────────────────────────────────────
+function dlogOpenModal(pid, logId) {
+  ST.dailyLogModal = { pid, logId: logId || null };
+  // Seed draft photos from existing entry
+  if (logId) {
+    const entry = dlogGet(pid).find(l => l.id === logId);
+    ST.dailyLogDraftPhotos = entry?.photos ? entry.photos.slice() : [];
+  } else {
+    ST.dailyLogDraftPhotos = [];
+  }
+  render();
+}
+function dlogCloseModal() {
+  ST.dailyLogModal = null;
+  ST.dailyLogDraftPhotos = [];
+  render();
+}
+
+// ── Photo handling: compress to ~1000px wide JPEG base64 ─────────────────────
+function dlogHandlePhotoUpload(ev) {
+  const files = Array.from(ev.target.files || []);
+  if (!files.length) return;
+  const remaining = DLOG_MAX_PHOTOS - (ST.dailyLogDraftPhotos?.length || 0);
+  if (remaining <= 0) { showToast(`Max ${DLOG_MAX_PHOTOS} photos per entry.`, 'warn'); return; }
+  const toProcess = files.slice(0, remaining);
+  let done = 0;
+  toProcess.forEach(file => {
+    if (!/^image\//.test(file.type)) { done++; return; }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 1000;
+        const scale = Math.min(1, maxW / img.width);
+        const cw = Math.round(img.width * scale), ch = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = cw; canvas.height = ch;
+        canvas.getContext('2d').drawImage(img, 0, 0, cw, ch);
+        const b64 = canvas.toDataURL('image/jpeg', 0.7);
+        ST.dailyLogDraftPhotos = ST.dailyLogDraftPhotos || [];
+        if (ST.dailyLogDraftPhotos.length < DLOG_MAX_PHOTOS) ST.dailyLogDraftPhotos.push(b64);
+        done++;
+        if (done === toProcess.length) render();
+      };
+      img.onerror = () => { done++; if (done === toProcess.length) render(); };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+function dlogRemoveDraftPhoto(idx) {
+  if (!ST.dailyLogDraftPhotos) return;
+  ST.dailyLogDraftPhotos.splice(idx, 1);
+  render();
+}
+
+// ── Save / delete ────────────────────────────────────────────────────────────
+function dlogSaveEntry() {
+  const m = ST.dailyLogModal;
+  if (!m) return;
+  const logs = dlogGet(m.pid);
+  const date = document.getElementById('dlog-date')?.value;
+  const weather = document.getElementById('dlog-weather')?.value || '';
+  const tempF = document.getElementById('dlog-temp')?.value || '';
+  const crew = parseInt(document.getElementById('dlog-crew')?.value) || 0;
+  const hours = parseFloat(document.getElementById('dlog-hours')?.value) || 0;
+  const work = document.getElementById('dlog-work')?.value.trim() || '';
+  const issues = document.getElementById('dlog-issues')?.value.trim() || '';
+  const notes = document.getElementById('dlog-notes')?.value.trim() || '';
+
+  if (!date) { showToast('Date is required.', 'warn'); return; }
+  if (!work && !notes && !issues) { showToast('Add at least some work, issues, or notes.', 'warn'); return; }
+
+  const photos = (ST.dailyLogDraftPhotos || []).slice();
+
+  if (m.logId) {
+    const entry = logs.find(l => l.id === m.logId);
+    if (entry) Object.assign(entry, { date, weather, tempF, crew, hours, work, issues, notes, photos });
+  } else {
+    logs.push({ id: dlogGenId(), date, weather, tempF, crew, hours, work, issues, notes, photos });
+  }
+  saveSt();
+  ST.dailyLogModal = null;
+  ST.dailyLogDraftPhotos = [];
+  render();
+  showToast('Daily log saved.', 'success');
+}
+
+function dlogDeleteEntry(pid, logId) {
+  if (!confirm('Delete this daily log entry?')) return;
+  ST.dailyLogs[pid] = dlogGet(pid).filter(l => l.id !== logId);
+  saveSt();
+  render();
+  showToast('Entry deleted.', 'info');
+}
+
+// ── Main tab ─────────────────────────────────────────────────────────────────
+function buildDailyLogTab() {
+  const projs = allProjects();
+  if (projs.length === 0) {
+    return `<div class="dlog-wrap"><div class="dlog-empty">
+      <div style="font-size:34px;opacity:.5;margin-bottom:12px">📋</div>
+      <div style="font-family:var(--sans);font-size:16px;font-weight:600;color:var(--text);margin-bottom:6px">No projects yet</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text3)">Add a project first, then log daily field activity here.</div>
+    </div></div>`;
+  }
+  const p = dlogActiveProject();
+  const logs = dlogGet(p.id).slice().sort((a,b) => (b.date||'').localeCompare(a.date||''));
+
+  return `<div class="dlog-wrap">
+    <div class="dlog-topbar">
+      <div class="sched-projsel">
+        <span class="sched-projsel-kicker">Project</span>
+        <select class="sched-projsel-input" onchange="ST.dailyLogSelProj=this.value;render()">
+          ${projs.map(pp => `<option value="${pp.id}"${pp.id===p.id?' selected':''}>${esc(pp.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div style="flex:1"></div>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">${logs.length} ${logs.length===1?'entry':'entries'}</span>
+      <button class="btn btn-amber btn-sm" onclick="dlogOpenModal('${p.id}',null)">+ New entry</button>
+    </div>
+
+    ${logs.length === 0
+      ? `<div class="dlog-empty">
+          <div style="font-size:34px;opacity:.5;margin-bottom:12px">📋</div>
+          <div style="font-family:var(--sans);font-size:16px;font-weight:600;color:var(--text);margin-bottom:6px">No log entries yet</div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:16px">Record weather, crew, work performed, and site photos each day.</div>
+          <button class="btn btn-amber btn-sm" onclick="dlogOpenModal('${p.id}',null)">+ Log today's work</button>
+        </div>`
+      : `<div class="dlog-feed">
+          ${logs.map(l => dlogRenderCard(p.id, l)).join('')}
+        </div>`}
+  </div>`;
+}
+
+function dlogRenderCard(pid, l) {
+  const photos = l.photos || [];
+  return `<div class="dlog-card">
+    <div class="dlog-card-head">
+      <div>
+        <div class="dlog-card-date">${dlogFmtDate(l.date)}</div>
+        <div class="dlog-card-tags">
+          ${l.weather ? `<span class="dlog-tag">☁ ${esc(l.weather)}${l.tempF?` · ${esc(l.tempF)}°F`:''}</span>` : ''}
+          ${l.crew ? `<span class="dlog-tag">👷 ${l.crew} crew</span>` : ''}
+          ${l.hours ? `<span class="dlog-tag">⏱ ${l.hours} hrs</span>` : ''}
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="dlog-icon-btn" onclick="dlogOpenModal('${pid}','${l.id}')" title="Edit">✎</button>
+        <button class="dlog-icon-btn" onclick="dlogDeleteEntry('${pid}','${l.id}')" title="Delete">✕</button>
+      </div>
+    </div>
+    ${l.work ? `<div class="dlog-section"><div class="dlog-section-label">Work performed</div><div class="dlog-section-body">${esc(l.work)}</div></div>` : ''}
+    ${l.issues ? `<div class="dlog-section"><div class="dlog-section-label" style="color:var(--red)">Delays / issues</div><div class="dlog-section-body">${esc(l.issues)}</div></div>` : ''}
+    ${l.notes ? `<div class="dlog-section"><div class="dlog-section-label">Notes</div><div class="dlog-section-body">${esc(l.notes)}</div></div>` : ''}
+    ${photos.length ? `<div class="dlog-photos">${photos.map((src,i) => `<img src="${src}" class="dlog-photo" onclick="dlogViewPhoto('${pid}','${l.id}',${i})" alt="site photo">`).join('')}</div>` : ''}
+  </div>`;
+}
+
+// Lightbox view (reuses a simple overlay)
+function dlogViewPhoto(pid, logId, idx) {
+  const entry = dlogGet(pid).find(l => l.id === logId);
+  if (!entry || !entry.photos || !entry.photos[idx]) return;
+  ST.dailyLogLightbox = entry.photos[idx];
+  render();
+}
+function dlogCloseLightbox() { ST.dailyLogLightbox = null; render(); }
+
+// ── Entry modal ──────────────────────────────────────────────────────────────
+function buildDailyLogModal() {
+  const m = ST.dailyLogModal;
+  if (!m) return '';
+  const logs = dlogGet(m.pid);
+  const editing = m.logId ? logs.find(l => l.id === m.logId) : null;
+  const l = editing || { date: dlogTodayISO(), weather: '', tempF: '', crew: '', hours: '', work: '', issues: '', notes: '' };
+  const photos = ST.dailyLogDraftPhotos || [];
+  const canAddPhoto = photos.length < DLOG_MAX_PHOTOS;
+
+  return `<div class="backdrop" onclick="if(event.target===this)dlogCloseModal()">
+    <div class="modal" style="max-width:540px" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div class="modal-title">${editing ? 'Edit daily log' : 'New daily log'}</div>
+        <button class="btn btn-ghost btn-sm" onclick="dlogCloseModal()">✕</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1.2fr 1fr 0.8fr;gap:10px;margin-bottom:12px">
+        <div>
+          <label class="modal-label">Date</label>
+          <input id="dlog-date" type="date" class="minp" style="width:100%" value="${esc(l.date)}">
+        </div>
+        <div>
+          <label class="modal-label">Weather</label>
+          <select id="dlog-weather" class="minp" style="width:100%">
+            <option value="">—</option>
+            ${DLOG_WEATHER.map(w => `<option value="${w}"${l.weather===w?' selected':''}>${w}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label class="modal-label">Temp °F</label>
+          <input id="dlog-temp" type="number" class="minp" style="width:100%" placeholder="72" value="${esc(l.tempF||'')}">
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        <div>
+          <label class="modal-label">Crew on site</label>
+          <input id="dlog-crew" type="number" class="minp" style="width:100%" placeholder="e.g. 6" value="${esc(l.crew||'')}">
+        </div>
+        <div>
+          <label class="modal-label">Total man-hours</label>
+          <input id="dlog-hours" type="number" step="0.5" class="minp" style="width:100%" placeholder="e.g. 48" value="${esc(l.hours||'')}">
+        </div>
+      </div>
+
+      <label class="modal-label">Work performed</label>
+      <textarea id="dlog-work" class="minp" style="width:100%;min-height:64px;resize:vertical;margin-bottom:12px" placeholder="What got done today…">${esc(l.work||'')}</textarea>
+
+      <label class="modal-label">Delays / issues</label>
+      <textarea id="dlog-issues" class="minp" style="width:100%;min-height:44px;resize:vertical;margin-bottom:12px" placeholder="Weather delays, missing materials, RFIs…">${esc(l.issues||'')}</textarea>
+
+      <label class="modal-label">Notes</label>
+      <textarea id="dlog-notes" class="minp" style="width:100%;min-height:44px;resize:vertical;margin-bottom:12px" placeholder="Anything else worth recording…">${esc(l.notes||'')}</textarea>
+
+      <label class="modal-label">Photos · ${photos.length}/${DLOG_MAX_PHOTOS}</label>
+      <div class="dlog-photo-edit">
+        ${photos.map((src,i) => `
+          <div class="dlog-photo-thumb">
+            <img src="${src}" alt="photo ${i+1}">
+            <button class="dlog-photo-rm" onclick="dlogRemoveDraftPhoto(${i})" title="Remove">✕</button>
+          </div>`).join('')}
+        ${canAddPhoto ? `
+          <label class="dlog-photo-add">
+            <input type="file" accept="image/*" multiple style="display:none" onchange="dlogHandlePhotoUpload(event)">
+            <span style="font-size:22px;line-height:1">+</span>
+            <span style="font-family:var(--mono);font-size:9px">Add photo</span>
+          </label>` : ''}
+      </div>
+      <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin:6px 0 14px">Photos are compressed and stored with the entry. Max ${DLOG_MAX_PHOTOS}.</div>
+
+      <div style="display:flex;gap:8px">
+        ${editing ? `<button class="btn btn-ghost btn-sm" style="margin-right:auto;color:var(--red)" onclick="dlogCloseModal();dlogDeleteEntry('${m.pid}','${m.logId}')">Delete</button>` : ''}
+        <button class="btn btn-ghost" onclick="dlogCloseModal()">Cancel</button>
+        <button class="btn btn-amber" onclick="dlogSaveEntry()">${editing ? 'Save' : 'Add entry'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildDailyLogLightbox() {
+  if (!ST.dailyLogLightbox) return '';
+  return `<div class="backdrop" style="z-index:200" onclick="dlogCloseLightbox()">
+    <img src="${ST.dailyLogLightbox}" style="max-width:90vw;max-height:90vh;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.5)" alt="photo">
+  </div>`;
+}
+
+
+// ============================================================
+// SCHEDULING / GANTT  (Field Ops)
+// ────────────────────────────────────────────────────────────
+// ST.schedule[pid] = { tasks: [...], phases: [...] }
+// Task = { id, name, phaseId, start (ISO date), end (ISO date),
+//          progress (0-100), assignee, deps: [taskId], color }
+// Phase = { id, name, color }
+// ============================================================
+
+const SCHEDULE_PHASE_COLORS = ['#c8780f','#3d6e4a','#3b4a7a','#8b2c2c','#2e6e6e','#6e2840','#a85f30','#525f6e'];
+
+function schedGet(pid) {
+  if (!ST.schedule) ST.schedule = {};
+  if (!ST.schedule[pid]) ST.schedule[pid] = { tasks: [], phases: [] };
+  return ST.schedule[pid];
+}
+
+function schedGenId(prefix) {
+  return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+// ── Date helpers ─────────────────────────────────────────────────────────────
+function schedToday() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+function schedParseDate(iso) {
+  if (!iso) return null;
+  const parts = String(iso).split('-').map(Number);
+  if (parts.length !== 3) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+function schedFmtISO(d) {
+  if (!d) return '';
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function schedDaysBetween(a, b) {
+  if (!a || !b) return 0;
+  return Math.round((b - a) / 86400000);
+}
+function schedAddDays(d, n) {
+  const r = new Date(d);
+  r.setDate(r.getDate() + n);
+  return r;
+}
+function schedFmtShort(d) {
+  if (!d) return '—';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+// ── Project selector helper ──────────────────────────────────────────────────
+function schedActiveProject() {
+  const projs = allProjects();
+  if (projs.length === 0) return null;
+  let pid = ST.scheduleSelProj;
+  if (!pid || !projs.find(p => p.id === pid)) {
+    pid = projs[0].id;
+    ST.scheduleSelProj = pid;
+  }
+  return projs.find(p => p.id === pid);
+}
+
+// ── CRUD ─────────────────────────────────────────────────────────────────────
+function schedOpenTaskModal(pid, taskId) {
+  ST.scheduleTaskModal = { pid, taskId: taskId || null };
+  render();
+}
+function schedCloseTaskModal() {
+  ST.scheduleTaskModal = null;
+  render();
+}
+
+function schedSaveTask() {
+  const m = ST.scheduleTaskModal;
+  if (!m) return;
+  const sched = schedGet(m.pid);
+  const name = document.getElementById('sched-task-name')?.value.trim();
+  const start = document.getElementById('sched-task-start')?.value;
+  const end = document.getElementById('sched-task-end')?.value;
+  const phaseId = document.getElementById('sched-task-phase')?.value || '';
+  const assignee = document.getElementById('sched-task-assignee')?.value.trim() || '';
+  const progress = parseInt(document.getElementById('sched-task-progress')?.value) || 0;
+  const depSelect = document.getElementById('sched-task-dep');
+  const deps = depSelect ? Array.from(depSelect.selectedOptions).map(o => o.value).filter(Boolean) : [];
+
+  if (!name) { showToast('Task name is required.', 'warn'); return; }
+  if (!start || !end) { showToast('Start and end dates are required.', 'warn'); return; }
+  if (schedParseDate(end) < schedParseDate(start)) { showToast('End date must be on or after start date.', 'warn'); return; }
+
+  if (m.taskId) {
+    const t = sched.tasks.find(x => x.id === m.taskId);
+    if (t) { Object.assign(t, { name, start, end, phaseId, assignee, progress, deps }); }
+  } else {
+    sched.tasks.push({
+      id: schedGenId('task'), name, start, end, phaseId, assignee, progress, deps,
+    });
+  }
+  saveSt();
+  ST.scheduleTaskModal = null;
+  render();
+  showToast('Task saved.', 'success');
+}
+
+function schedDeleteTask(pid, taskId) {
+  if (!confirm('Delete this task?')) return;
+  const sched = schedGet(pid);
+  sched.tasks = sched.tasks.filter(t => t.id !== taskId);
+  // Clean up dependencies referencing it
+  sched.tasks.forEach(t => { if (t.deps) t.deps = t.deps.filter(d => d !== taskId); });
+  saveSt();
+  render();
+  showToast('Task deleted.', 'info');
+}
+
+function schedQuickProgress(pid, taskId, val) {
+  const sched = schedGet(pid);
+  const t = sched.tasks.find(x => x.id === taskId);
+  if (t) { t.progress = Math.max(0, Math.min(100, val)); saveSt(); render(); }
+}
+
+// ── Phases ───────────────────────────────────────────────────────────────────
+function schedAddPhase(pid) {
+  const name = prompt('Phase name (e.g. "Foundation", "Framing", "Finishes"):');
+  if (!name || !name.trim()) return;
+  const sched = schedGet(pid);
+  const color = SCHEDULE_PHASE_COLORS[sched.phases.length % SCHEDULE_PHASE_COLORS.length];
+  sched.phases.push({ id: schedGenId('phase'), name: name.trim(), color });
+  saveSt();
+  render();
+}
+function schedDeletePhase(pid, phaseId) {
+  if (!confirm('Delete this phase? Tasks in it will become "Unphased".')) return;
+  const sched = schedGet(pid);
+  sched.phases = sched.phases.filter(p => p.id !== phaseId);
+  sched.tasks.forEach(t => { if (t.phaseId === phaseId) t.phaseId = ''; });
+  saveSt();
+  render();
+}
+
+// ── Dependency resolution: shift a task to start after its deps end ───────────
+function schedApplyDependencies(pid) {
+  const sched = schedGet(pid);
+  let changed = false;
+  // Simple forward pass (a few iterations to settle chains)
+  for (let iter = 0; iter < 5; iter++) {
+    for (const t of sched.tasks) {
+      if (!t.deps || t.deps.length === 0) continue;
+      let latestEnd = null;
+      for (const depId of t.deps) {
+        const dep = sched.tasks.find(x => x.id === depId);
+        if (!dep) continue;
+        const depEnd = schedParseDate(dep.end);
+        if (depEnd && (!latestEnd || depEnd > latestEnd)) latestEnd = depEnd;
+      }
+      if (latestEnd) {
+        const newStart = schedAddDays(latestEnd, 1);
+        const curStart = schedParseDate(t.start);
+        if (curStart && newStart > curStart) {
+          const dur = schedDaysBetween(curStart, schedParseDate(t.end));
+          t.start = schedFmtISO(newStart);
+          t.end = schedFmtISO(schedAddDays(newStart, dur));
+          changed = true;
+        }
+      }
+    }
+  }
+  if (changed) { saveSt(); render(); showToast('Tasks shifted to respect dependencies.', 'success'); }
+  else showToast('All dependencies already satisfied.', 'info');
+}
+
+// ── Compute schedule date range ──────────────────────────────────────────────
+function schedDateRange(sched) {
+  let min = null, max = null;
+  for (const t of sched.tasks) {
+    const s = schedParseDate(t.start), e = schedParseDate(t.end);
+    if (s && (!min || s < min)) min = s;
+    if (e && (!max || e > max)) max = e;
+  }
+  if (!min || !max) {
+    const today = schedToday();
+    min = today;
+    max = schedAddDays(today, 30);
+  }
+  // Pad a few days each side
+  min = schedAddDays(min, -2);
+  max = schedAddDays(max, 2);
+  return { min, max };
+}
+
+// ── Main tab ─────────────────────────────────────────────────────────────────
+function buildScheduleTab() {
+  const projs = allProjects();
+  if (projs.length === 0) {
+    return `<div class="sched-wrap"><div class="sched-empty">
+      <div style="font-size:34px;opacity:.5;margin-bottom:12px">📅</div>
+      <div style="font-family:var(--sans);font-size:16px;font-weight:600;color:var(--text);margin-bottom:6px">No projects yet</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text3)">Add a project first, then build its schedule here.</div>
+    </div></div>`;
+  }
+
+  const p = schedActiveProject();
+  const sched = schedGet(p.id);
+  const view = ST.scheduleView || 'gantt';
+
+  return `<div class="sched-wrap">
+    <div class="sched-topbar">
+      <div class="sched-projsel">
+        <span class="sched-projsel-kicker">Project</span>
+        <select class="sched-projsel-input" onchange="ST.scheduleSelProj=this.value;render()">
+          ${projs.map(pp => `<option value="${pp.id}"${pp.id===p.id?' selected':''}>${esc(pp.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div style="flex:1"></div>
+      <div class="sched-viewtog">
+        <button class="sched-viewbtn${view==='gantt'?' on':''}" onclick="ST.scheduleView='gantt';render()">Gantt</button>
+        <button class="sched-viewbtn${view==='list'?' on':''}" onclick="ST.scheduleView='list';render()">List</button>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="schedAddPhase('${p.id}')">+ Phase</button>
+      ${sched.tasks.some(t=>t.deps&&t.deps.length) ? `<button class="btn btn-ghost btn-sm" onclick="schedApplyDependencies('${p.id}')" title="Shift tasks so they start after their dependencies finish">↳ Resolve deps</button>` : ''}
+      <button class="btn btn-amber btn-sm" onclick="schedOpenTaskModal('${p.id}',null)">+ Task</button>
+    </div>
+
+    ${sched.tasks.length === 0
+      ? `<div class="sched-empty">
+          <div style="font-size:34px;opacity:.5;margin-bottom:12px">📅</div>
+          <div style="font-family:var(--sans);font-size:16px;font-weight:600;color:var(--text);margin-bottom:6px">No tasks scheduled</div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:16px">Start by adding phases (Foundation, Framing…) and tasks.</div>
+          <button class="btn btn-amber btn-sm" onclick="schedOpenTaskModal('${p.id}',null)">+ Add first task</button>
+        </div>`
+      : view === 'gantt' ? buildScheduleGantt(p, sched) : buildScheduleList(p, sched)}
+  </div>`;
+}
+
+// ── Gantt view ─────────────────────────────────────────────────────────────
+function buildScheduleGantt(p, sched) {
+  const { min, max } = schedDateRange(sched);
+  const totalDays = Math.max(1, schedDaysBetween(min, max));
+  const DAY_W = totalDays > 120 ? 4 : totalDays > 60 ? 7 : totalDays > 30 ? 14 : 26;
+  const chartW = totalDays * DAY_W;
+  const today = schedToday();
+  const todayX = schedDaysBetween(min, today) * DAY_W;
+
+  // Group tasks by phase (phases in order, then unphased)
+  const groups = [];
+  for (const ph of sched.phases) {
+    const tasks = sched.tasks.filter(t => t.phaseId === ph.id);
+    if (tasks.length) groups.push({ phase: ph, tasks });
+  }
+  const unphased = sched.tasks.filter(t => !t.phaseId || !sched.phases.find(ph => ph.id === t.phaseId));
+  if (unphased.length) groups.push({ phase: null, tasks: unphased });
+
+  // Build month header ticks
+  const monthTicks = [];
+  let cur = new Date(min);
+  while (cur <= max) {
+    const x = schedDaysBetween(min, cur) * DAY_W;
+    monthTicks.push({ x, label: cur.toLocaleDateString(undefined, { month: 'short', year: '2-digit' }) });
+    cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+  }
+
+  const ROW_H = 38, LABEL_W = 240;
+
+  let rowsHtml = '', y = 0;
+  for (const g of groups) {
+    // Phase header row
+    const phName = g.phase ? g.phase.name : 'Unphased';
+    const phColor = g.phase ? g.phase.color : '#888';
+    rowsHtml += `<div class="gantt-phase-row" style="top:${y}px;width:${LABEL_W + chartW}px">
+      <span class="gantt-phase-dot" style="background:${phColor}"></span>
+      <span class="gantt-phase-name">${esc(phName)}</span>
+      ${g.phase ? `<button class="gantt-phase-del" onclick="schedDeletePhase('${p.id}','${g.phase.id}')" title="Delete phase">✕</button>` : ''}
+    </div>`;
+    y += 28;
+    for (const t of g.tasks) {
+      const s = schedParseDate(t.start), e = schedParseDate(t.end);
+      const x = schedDaysBetween(min, s) * DAY_W;
+      const w = Math.max(DAY_W, (schedDaysBetween(s, e) + 1) * DAY_W);
+      const pct = Math.max(0, Math.min(100, t.progress || 0));
+      rowsHtml += `
+        <div class="gantt-label" style="top:${y}px;height:${ROW_H}px;width:${LABEL_W}px" onclick="schedOpenTaskModal('${p.id}','${t.id}')" title="${esc(t.name)}">
+          <span class="gantt-label-name">${esc(t.name)}</span>
+          ${t.assignee ? `<span class="gantt-label-assignee">${esc(t.assignee)}</span>` : ''}
+        </div>
+        <div class="gantt-bar-track" style="top:${y}px;height:${ROW_H}px;left:${LABEL_W}px;width:${chartW}px">
+          <div class="gantt-bar" style="left:${x}px;width:${w}px;background:${phColor}22;border-color:${phColor}"
+               onclick="schedOpenTaskModal('${p.id}','${t.id}')" title="${esc(t.name)} · ${schedFmtShort(s)}–${schedFmtShort(e)} · ${pct}%">
+            <div class="gantt-bar-fill" style="width:${pct}%;background:${phColor}"></div>
+            <span class="gantt-bar-label">${pct}%</span>
+          </div>
+        </div>`;
+      y += ROW_H;
+    }
+  }
+  const totalH = y + 10;
+
+  return `
+    <div class="gantt-scroll">
+      <div class="gantt-inner" style="width:${LABEL_W + chartW}px;height:${totalH + 30}px">
+        <!-- Month header -->
+        <div class="gantt-header" style="height:30px;width:${LABEL_W + chartW}px">
+          <div class="gantt-header-corner" style="width:${LABEL_W}px">Task</div>
+          <div class="gantt-header-timeline" style="left:${LABEL_W}px;width:${chartW}px">
+            ${monthTicks.map(mt => `<div class="gantt-month-tick" style="left:${mt.x}px"><span>${mt.label}</span></div>`).join('')}
+          </div>
+        </div>
+        <!-- Body -->
+        <div class="gantt-body" style="height:${totalH}px;width:${LABEL_W + chartW}px">
+          ${(todayX >= 0 && todayX <= chartW) ? `<div class="gantt-today-line" style="left:${LABEL_W + todayX}px;height:${totalH}px" title="Today"></div>` : ''}
+          ${rowsHtml}
+        </div>
+      </div>
+    </div>`;
+}
+
+// ── List view ────────────────────────────────────────────────────────────────
+function buildScheduleList(p, sched) {
+  const groups = [];
+  for (const ph of sched.phases) {
+    const tasks = sched.tasks.filter(t => t.phaseId === ph.id);
+    if (tasks.length) groups.push({ phase: ph, tasks });
+  }
+  const unphased = sched.tasks.filter(t => !t.phaseId || !sched.phases.find(ph => ph.id === t.phaseId));
+  if (unphased.length) groups.push({ phase: null, tasks: unphased });
+
+  return `<div class="sched-list">
+    ${groups.map(g => {
+      const phName = g.phase ? g.phase.name : 'Unphased';
+      const phColor = g.phase ? g.phase.color : '#888';
+      return `
+        <div class="sched-list-phase">
+          <span class="gantt-phase-dot" style="background:${phColor}"></span>
+          <span class="gantt-phase-name">${esc(phName)}</span>
+          <span style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-left:auto">${g.tasks.length} task${g.tasks.length===1?'':'s'}</span>
+        </div>
+        ${g.tasks.map(t => {
+          const s = schedParseDate(t.start), e = schedParseDate(t.end);
+          const pct = Math.max(0, Math.min(100, t.progress || 0));
+          const dur = schedDaysBetween(s, e) + 1;
+          return `
+            <div class="sched-list-row" onclick="schedOpenTaskModal('${p.id}','${t.id}')">
+              <div class="sched-list-main">
+                <div class="sched-list-name">${esc(t.name)}</div>
+                <div class="sched-list-meta">${schedFmtShort(s)} → ${schedFmtShort(e)} · ${dur}d${t.assignee ? ' · ' + esc(t.assignee) : ''}${t.deps&&t.deps.length ? ' · ↳ '+t.deps.length+' dep' : ''}</div>
+              </div>
+              <div class="sched-list-prog">
+                <div class="sched-list-prog-bar"><div style="width:${pct}%;background:${phColor}"></div></div>
+                <span class="sched-list-prog-pct">${pct}%</span>
+              </div>
+              <button class="sched-list-del" onclick="event.stopPropagation();schedDeleteTask('${p.id}','${t.id}')" title="Delete">✕</button>
+            </div>`;
+        }).join('')}
+      `;
+    }).join('')}
+  </div>`;
+}
+
+// ── Task modal ───────────────────────────────────────────────────────────────
+function buildScheduleTaskModal() {
+  const m = ST.scheduleTaskModal;
+  if (!m) return '';
+  const sched = schedGet(m.pid);
+  const editing = m.taskId ? sched.tasks.find(t => t.id === m.taskId) : null;
+  const today = schedFmtISO(schedToday());
+  const t = editing || { name: '', start: today, end: schedFmtISO(schedAddDays(schedToday(), 7)), phaseId: '', assignee: '', progress: 0, deps: [] };
+  const otherTasks = sched.tasks.filter(x => x.id !== m.taskId);
+
+  return `<div class="backdrop" onclick="if(event.target===this)schedCloseTaskModal()">
+    <div class="modal" style="max-width:480px" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div class="modal-title">${editing ? 'Edit task' : 'New task'}</div>
+        <button class="btn btn-ghost btn-sm" onclick="schedCloseTaskModal()">✕</button>
+      </div>
+
+      <label class="modal-label">Task name</label>
+      <input id="sched-task-name" class="minp" style="width:100%;margin-bottom:12px" placeholder="e.g. Pour foundation" value="${esc(t.name)}">
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        <div>
+          <label class="modal-label">Start</label>
+          <input id="sched-task-start" type="date" class="minp" style="width:100%" value="${esc(t.start)}">
+        </div>
+        <div>
+          <label class="modal-label">End</label>
+          <input id="sched-task-end" type="date" class="minp" style="width:100%" value="${esc(t.end)}">
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        <div>
+          <label class="modal-label">Phase</label>
+          <select id="sched-task-phase" class="minp" style="width:100%">
+            <option value="">— Unphased —</option>
+            ${sched.phases.map(ph => `<option value="${ph.id}"${t.phaseId===ph.id?' selected':''}>${esc(ph.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label class="modal-label">Assignee</label>
+          <input id="sched-task-assignee" class="minp" style="width:100%" placeholder="e.g. ABC Concrete" value="${esc(t.assignee||'')}">
+        </div>
+      </div>
+
+      <label class="modal-label">Progress · <span id="sched-prog-val">${t.progress||0}</span>%</label>
+      <input id="sched-task-progress" type="range" min="0" max="100" step="5" value="${t.progress||0}"
+        oninput="document.getElementById('sched-prog-val').textContent=this.value"
+        style="width:100%;margin-bottom:12px;accent-color:var(--amber)">
+
+      ${otherTasks.length ? `
+        <label class="modal-label">Depends on (starts after these finish)</label>
+        <select id="sched-task-dep" multiple size="${Math.min(4, otherTasks.length)}" class="minp" style="width:100%;margin-bottom:6px">
+          ${otherTasks.map(x => `<option value="${x.id}"${(t.deps||[]).includes(x.id)?' selected':''}>${esc(x.name)}</option>`).join('')}
+        </select>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:12px">Hold Ctrl/Cmd to select multiple. Use "Resolve deps" to auto-shift dates.</div>
+      ` : '<input type="hidden" id="sched-task-dep">'}
+
+      <div style="display:flex;gap:8px;margin-top:8px">
+        ${editing ? `<button class="btn btn-ghost btn-sm" style="margin-right:auto;color:var(--red)" onclick="schedCloseTaskModal();schedDeleteTask('${m.pid}','${m.taskId}')">Delete</button>` : ''}
+        <button class="btn btn-ghost" onclick="schedCloseTaskModal()">Cancel</button>
+        <button class="btn btn-amber" onclick="schedSaveTask()">${editing ? 'Save' : 'Add task'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+
 // Map a UI tab to the feature group that controls it
 const TAB_FEATURE_MAP = {
   today: 'today',
@@ -12151,6 +13034,8 @@ const TAB_FEATURE_MAP = {
   subs: 'projects',
   builder: 'projects',
   estimator: 'estimator',
+  schedule: 'fieldops',
+  dailylog: 'fieldops',
   files: 'sendcenter',
   insights: 'projects',
   settings: null,   // settings always available
@@ -16689,15 +17574,16 @@ function confirmEditSub(sid) {
 // ============================================================
 // PDF STORAGE HELPERS
 // ============================================================
+
 // Upload a PDF to Supabase Storage. Returns {path, name} or null on error/no file.
 async function uploadBidPdf(file, sid, projName, cat) {
   if (!file) return null;
-  if (file.type !== 'application/pdf') {
-    alert('Solo se permiten archivos PDF');
+  if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
+    alert('Only PDF files are allowed.');
     return null;
   }
   if (file.size > 10 * 1024 * 1024) {
-    alert('El archivo no puede pesar más de 10 MB');
+    alert('File cannot exceed 10 MB.');
     return null;
   }
   // Build a unique path: sid/projName/cat/timestamp_filename.pdf
@@ -16707,35 +17593,70 @@ async function uploadBidPdf(file, sid, projName, cat) {
   const safeName = file.name.replace(/[^a-z0-9._-]/gi,'_').slice(-60);
   const path = `${sid}/${safeProj}/${safeCat}/${ts}_${safeName}`;
 
-  const { error } = await sb.storage.from('bid-pdfs').upload(path, file, {
+  const { error } = await sb.storage.from(BID_PDF_BUCKET).upload(path, file, {
     contentType: 'application/pdf',
-    upsert: false
+    upsert: true,
   });
   if (error) {
     console.error('PDF upload failed:', error);
-    alert('PDF upload error: ' + error.message);
+    await diagnoseStorageError(error, BID_PDF_BUCKET);
     return null;
   }
   return { path, name: file.name };
 }
 
+// When a storage call fails, figure out WHY and show a useful message.
+// "Bucket not found" is often actually an RLS/policy problem, so we list the
+// buckets the client can see and explain the likely fix.
+async function diagnoseStorageError(error, bucketName) {
+  const msg = (error?.message || String(error)).toLowerCase();
+  let detail = error?.message || String(error);
+
+  // Try to list buckets to see what's actually visible to this client/session
+  let visibleBuckets = null;
+  try {
+    const { data: buckets, error: listErr } = await sb.storage.listBuckets();
+    if (!listErr && Array.isArray(buckets)) {
+      visibleBuckets = buckets.map(b => b.name);
+    }
+  } catch(e) { /* ignore */ }
+
+  if (msg.includes('bucket not found') || msg.includes('not found')) {
+    if (visibleBuckets && visibleBuckets.length === 0) {
+      detail = `The bucket "${bucketName}" can't be reached. The client sees no buckets at all — this is almost always a Storage policy (RLS) issue, not a missing bucket.\n\nFix in Supabase → Storage → "${bucketName}" → Policies: add a policy allowing INSERT (and SELECT) for authenticated users.`;
+    } else if (visibleBuckets && !visibleBuckets.includes(bucketName)) {
+      detail = `The bucket "${bucketName}" was not found. Buckets the app can see: ${visibleBuckets.map(b=>`"${b}"`).join(', ') || '(none)'}.\n\nEither rename your bucket to "${bucketName}", or tell me the real name so I can update the code.`;
+    } else if (visibleBuckets && visibleBuckets.includes(bucketName)) {
+      detail = `The bucket "${bucketName}" exists but the upload was rejected — this is a Storage policy (RLS) problem.\n\nFix in Supabase → Storage → "${bucketName}" → Policies: add an INSERT policy for authenticated users (and SELECT so files can be opened later).`;
+    }
+  } else if (msg.includes('row-level security') || msg.includes('policy') || msg.includes('unauthorized') || msg.includes('403')) {
+    detail = `Upload blocked by a Storage policy on "${bucketName}".\n\nFix in Supabase → Storage → "${bucketName}" → Policies: allow INSERT + SELECT for authenticated users.`;
+  } else if (msg.includes('mime') || msg.includes('content type')) {
+    detail = `The bucket "${bucketName}" rejects this file type. In Supabase → Storage → "${bucketName}" → Settings, allow application/pdf (or set Allowed MIME types to empty for any type).`;
+  }
+
+  alert('PDF upload error:\n\n' + detail);
+}
+
 // Open a PDF in a new tab using a signed URL (1 hour expiry)
 async function openBidPdf(path) {
   if (!path) return;
+  // If it's a data URL (offline mode), open directly
+  if (String(path).startsWith('data:')) { window.open(path, '_blank', 'noopener'); return; }
   try {
-    const { data, error } = await sb.storage.from('bid-pdfs').createSignedUrl(path, 3600);
+    const { data, error } = await sb.storage.from(BID_PDF_BUCKET).createSignedUrl(path, 3600);
     if (error) throw error;
     window.open(data.signedUrl, '_blank', 'noopener');
   } catch(e) {
-    alert('No se pudo abrir el PDF: ' + e.message);
+    alert('Could not open the PDF: ' + e.message);
   }
 }
 
 // Delete a PDF from storage (called when removing or replacing)
 async function deleteBidPdf(path) {
-  if (!path) return;
+  if (!path || String(path).startsWith('data:')) return;
   try {
-    await sb.storage.from('bid-pdfs').remove([path]);
+    await sb.storage.from(BID_PDF_BUCKET).remove([path]);
   } catch(e) {
     console.warn('Could not delete old PDF:', e);
   }
