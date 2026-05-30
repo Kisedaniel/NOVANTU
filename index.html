@@ -4107,6 +4107,8 @@ let ST = {
   dailyLogModal: null,       // {pid, logId|null} when editing/creating an entry
   dailyLogDraftPhotos: [],   // temp photo buffer while editing an entry
   dailyLogLightbox: null,    // base64 of photo being viewed full-screen
+  clientUpdate: null,        // {pid, status, days, result:{subject,body}, error} — weekly client update (in-memory)
+  gmailStatus: {},           // {[wsId]: {checked, connected, email, checking}} — Gmail connection status (in-memory)
   toScanResult: null,        // last scan result from analyze-plan?mode=scan  // {[accId]: true|false} — open/close state for Plan Sets sub-accordions
   estimatorSuggestDismissed: {},    // {[pid]: [suggestionKey...]} — heuristics already declined
   emailTemplates: null,     // {rfp:{subject,body}, followup:{subject,body}} — loaded from app_state
@@ -4466,6 +4468,11 @@ async function loadSt() {
     ST.toCalculator = state.toCalculator || {};
     ST.schedule = state.schedule || {};
     ST.dailyLogs = state.dailyLogs || {};
+    ST.bidLeveling = state.bidLeveling || {};
+    ST.planDiff = state.planDiff || {};
+    // Clear any stale "running" states left over from a reload mid-analysis
+    Object.keys(ST.bidLeveling).forEach(k => { if (ST.bidLeveling[k]?.status === 'running') delete ST.bidLeveling[k]; });
+    Object.keys(ST.planDiff).forEach(k => { if (ST.planDiff[k]?.status === 'running') delete ST.planDiff[k]; });
     ST.toSpaces = state.toSpaces || [];
     // aiChat lives inside ST.estimator[pid].aiChat — persisted as part of the
     // estimator blob. Clear streaming flags on load (in case of hard reload mid-stream).
@@ -4560,7 +4567,7 @@ async function saveSt() {
     if (window.BYPASS_LOGIN) { saveStLocal(); setSaveStatus('saved'); }
     return;
   }
-  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator','bidStages','toCalculator','schedule','dailyLogs']
+  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator','bidStages','toCalculator','schedule','dailyLogs','bidLeveling','planDiff']
     .forEach(k => SAVE_STATE.pendingKeys.add(k));
   if (SAVE_STATE.debounceTimer) clearTimeout(SAVE_STATE.debounceTimer);
   SAVE_STATE.debounceTimer = setTimeout(flushSave, 400);
@@ -4619,6 +4626,8 @@ async function flushSave() {
     else if (k === 'toCalculator') v = ST.toCalculator;
     else if (k === 'schedule') v = ST.schedule;
     else if (k === 'dailyLogs') v = ST.dailyLogs;
+    else if (k === 'bidLeveling') v = ST.bidLeveling;
+    else if (k === 'planDiff') v = ST.planDiff;
 
     // Critical: app_state.value is NOT NULL. Substitute appropriate empty default.
     if (v === undefined || v === null) {
@@ -8182,6 +8191,7 @@ function buildApp() {
       ${ST.scheduleTaskModal ? buildScheduleTaskModal() : ''}
       ${ST.dailyLogModal ? buildDailyLogModal() : ''}
       ${ST.dailyLogLightbox ? buildDailyLogLightbox() : ''}
+      ${ST.clientUpdate ? buildClientUpdateModal() : ''}
       ${ST.sendDialog ? buildSendDialog() : ''}
       ${ST.sentHistoryView ? buildSentHistoryModal() : ''}
       ${ST.builderEditItem ? buildBuilderItemModal() : ''}
@@ -9697,6 +9707,7 @@ async function runBidLeveling(pid, projName, cat) {
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
 
     ST.bidLeveling[key] = { status:'done', result:data, error:null, ts:Date.now() };
+    saveSt();
     render();
   } catch (e) {
     console.error('runBidLeveling:', e);
@@ -12712,6 +12723,7 @@ function buildDailyLogTab() {
       </div>
       <div style="flex:1"></div>
       <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">${logs.length} ${logs.length===1?'entry':'entries'}</span>
+      <button class="btn btn-ghost btn-sm" onclick="clientUpdateOpen('${p.id}')" title="AI drafts a client-friendly progress update from this week's logs + schedule">📧 Client update</button>
       <button class="btn btn-amber btn-sm" onclick="dlogOpenModal('${p.id}',null)">+ New entry</button>
     </div>
 
@@ -12846,6 +12858,245 @@ function buildDailyLogLightbox() {
   return `<div class="backdrop" style="z-index:200" onclick="dlogCloseLightbox()">
     <img src="${ST.dailyLogLightbox}" style="max-width:90vw;max-height:90vh;border-radius:8px;box-shadow:0 8px 40px rgba(0,0,0,.5)" alt="photo">
   </div>`;
+}
+
+// ============================================================
+// WEEKLY CLIENT UPDATE (AI)
+// ============================================================
+// ST.clientUpdate = { pid, status, days, result:{subject,body}, error }
+
+function clientUpdateOpen(pid) {
+  ST.clientUpdate = { pid, status:'idle', days:7, result:null, error:null };
+  render();
+  runClientUpdate(pid, 7);
+}
+function clientUpdateClose() { ST.clientUpdate = null; render(); }
+
+function clientUpdateRangeLabel(days) {
+  const end = new Date();
+  const start = new Date(); start.setDate(start.getDate() - (days-1));
+  const opt = { month:'short', day:'numeric' };
+  const sameYear = start.getFullYear() === end.getFullYear();
+  return `${start.toLocaleDateString(undefined,opt)}–${end.toLocaleDateString(undefined, sameYear?opt:{...opt,year:'numeric'})}, ${end.getFullYear()}`;
+}
+
+async function runClientUpdate(pid, days) {
+  days = days || 7;
+  const proj = allProjects().find(p => p.id === pid);
+  const projName = proj?.name || 'Project';
+
+  // Gather daily logs within the window
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days); cutoff.setHours(0,0,0,0);
+  const logs = (typeof dlogGet === 'function' ? dlogGet(pid) : []).filter(l => {
+    if (!l.date) return false;
+    const parts = String(l.date).split('-').map(Number);
+    const d = new Date(parts[0], parts[1]-1, parts[2]);
+    return d >= cutoff;
+  }).map(l => ({ date:l.date, weather:l.weather, tempF:l.tempF, crew:l.crew, hours:l.hours, work:l.work, issues:l.issues, notes:l.notes }));
+
+  // Gather schedule tasks
+  const sched = (typeof schedGet === 'function') ? schedGet(pid) : { tasks:[], phases:[] };
+  const phaseName = {};
+  (sched.phases||[]).forEach(ph => phaseName[ph.id] = ph.name);
+  const tasks = (sched.tasks||[]).map(t => ({ name:t.name, phase:phaseName[t.phaseId]||'', start:t.start, end:t.end, progress:t.progress||0 }));
+
+  const wsName = (ST.workspaces?.[ST.activeWorkspace]?.name) || (getSettings().brand?.wordmark) || '';
+
+  ST.clientUpdate = { pid, status:'running', days, result:null, error:null };
+  render();
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/client-update`, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON_KEY}` },
+      body: JSON.stringify({
+        projectName: projName,
+        companyName: wsName,
+        rangeLabel: clientUpdateRangeLabel(days),
+        dailyLogs: logs,
+        scheduleTasks: tasks,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    ST.clientUpdate = { pid, status:'done', days, result:{ subject:data.subject||'', body:data.body||'' }, error:null };
+    render();
+  } catch (e) {
+    console.error('runClientUpdate:', e);
+    ST.clientUpdate = { pid, status:'error', days, result:null, error:(e.message||String(e)) };
+    render();
+  }
+}
+
+function clientUpdateCopy() {
+  const cu = ST.clientUpdate;
+  if (!cu?.result) return;
+  const subjEl = document.getElementById('cu-subject');
+  const bodyEl = document.getElementById('cu-body');
+  const subject = subjEl ? subjEl.value : cu.result.subject;
+  const body = bodyEl ? bodyEl.value : cu.result.body;
+  const full = `Subject: ${subject}\n\n${body}`;
+  navigator.clipboard?.writeText(full).then(
+    () => showToast('Update copied to clipboard.', 'success'),
+    () => showToast('Could not copy — select and copy manually.', 'warn')
+  );
+}
+
+function clientUpdateEmail() {
+  const cu = ST.clientUpdate;
+  if (!cu?.result) return;
+  const subjEl = document.getElementById('cu-subject');
+  const bodyEl = document.getElementById('cu-body');
+  const subject = encodeURIComponent(subjEl ? subjEl.value : cu.result.subject);
+  const body = encodeURIComponent(bodyEl ? bodyEl.value : cu.result.body);
+  window.open(`mailto:?subject=${subject}&body=${body}`, '_blank');
+}
+
+function buildClientUpdateModal() {
+  const cu = ST.clientUpdate;
+  if (!cu) return '';
+  const proj = allProjects().find(p => p.id === cu.pid);
+  const projName = proj?.name || 'Project';
+
+  let inner;
+  if (cu.status === 'running') {
+    inner = `<div style="text-align:center;padding:50px 20px">
+      <div class="rp-spinner" style="margin:0 auto 16px;width:22px;height:22px;border-width:3px"></div>
+      <div style="font-family:var(--sans);font-size:14px;color:var(--text);font-weight:500">Drafting the update…</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:4px">Summarizing this period's logs + schedule.</div>
+    </div>`;
+  } else if (cu.status === 'error') {
+    inner = `<div style="padding:30px 20px;text-align:center">
+      <div style="font-family:var(--mono);font-size:11px;color:var(--red);margin-bottom:14px">Could not generate: ${esc(cu.error||'unknown')}</div>
+      <button class="btn btn-amber btn-sm" onclick="runClientUpdate('${cu.pid}',${cu.days})">Retry</button>
+    </div>`;
+  } else if (cu.status === 'done' && cu.result) {
+    inner = `
+      <label class="modal-label">Subject</label>
+      <input id="cu-subject" class="minp" style="width:100%;margin-bottom:12px" value="${esc(cu.result.subject)}">
+      <label class="modal-label">Message</label>
+      <textarea id="cu-body" class="minp" style="width:100%;min-height:280px;resize:vertical;line-height:1.5;font-family:var(--sans)">${esc(cu.result.body)}</textarea>
+      <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:8px">AI-drafted from your daily logs + schedule. Review and edit before sending — it only uses data you've logged.</div>`;
+  } else {
+    inner = `<div style="padding:30px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--text3)">Preparing…</div>`;
+  }
+
+  const ranges = [7, 14, 30];
+
+  return `<div class="backdrop" onclick="if(event.target===this)clientUpdateClose()">
+    <div class="modal" style="max-width:600px" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+        <div>
+          <div class="modal-title">📧 Client update</div>
+          <div class="modal-sub">${esc(projName)} · ${esc(clientUpdateRangeLabel(cu.days))}</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="clientUpdateClose()">✕</button>
+      </div>
+
+      <div style="display:flex;gap:6px;margin:10px 0 16px">
+        <span style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);align-self:center">Period:</span>
+        ${ranges.map(d => `<button class="btn ${cu.days===d?'btn-amber':'btn-ghost'} btn-sm" onclick="runClientUpdate('${cu.pid}',${d})" ${cu.status==='running'?'disabled':''}>${d===7?'1 week':d===14?'2 weeks':'1 month'}</button>`).join('')}
+      </div>
+
+      ${inner}
+
+      ${cu.status==='done' ? `
+        <div class="modal-btns" style="margin-top:16px">
+          <button class="btn btn-ghost btn-sm" onclick="runClientUpdate('${cu.pid}',${cu.days})">↻ Regenerate</button>
+          <button class="btn btn-ghost" onclick="clientUpdateCopy()">Copy</button>
+          <button class="btn btn-amber" onclick="clientUpdateEmail()">Open in email</button>
+        </div>` : ''}
+    </div>
+  </div>`;
+}
+
+
+// ============================================================
+// GMAIL CONNECTION (per-workspace email sending)
+// ============================================================
+// Refresh tokens live server-side only. The frontend just opens the OAuth
+// popup and checks connection status via the 'gmail' edge function.
+
+function buildGmailConnectSection(wsId) {
+  const st = (ST.gmailStatus && ST.gmailStatus[wsId]) || {};
+  // Auto-check once when the section first appears (deferred so render stays sync)
+  if (!st.checked && !st.checking) {
+    setTimeout(() => { if (!(ST.gmailStatus?.[wsId]?.checked)) gmailCheckStatus(wsId); }, 50);
+  }
+  let statusLine;
+  if (st.checking) {
+    statusLine = `<span style="font-family:var(--mono);font-size:10px;color:var(--text3)">Checking…</span>`;
+  } else if (!st.checked) {
+    statusLine = `<span style="font-family:var(--mono);font-size:10px;color:var(--text3)">Status unknown — click Check.</span>`;
+  } else if (st.connected) {
+    statusLine = `<span style="font-family:var(--mono);font-size:10px;color:var(--green)">● Connected${st.email ? ' as ' + esc(st.email) : ''}</span>`;
+  } else {
+    statusLine = `<span style="font-family:var(--mono);font-size:10px;color:var(--text3)">○ Not connected</span>`;
+  }
+
+  return `
+    <div style="margin-bottom:22px">
+      <div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);margin-bottom:10px">04 · Email sending (Gmail)</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);line-height:1.5;margin-bottom:10px">
+        Connect this workspace's Gmail so BidFlow can send emails (RFQs, follow-ups) automatically from that account. The connection is stored securely on the server.
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        ${statusLine}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-amber btn-sm" onclick="gmailConnect('${wsId}')">${st.connected ? 'Reconnect Gmail' : 'Connect Gmail'}</button>
+        <button class="btn btn-ghost btn-sm" onclick="gmailCheckStatus('${wsId}')">Check status</button>
+        ${st.connected ? `<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="gmailDisconnect('${wsId}')">Disconnect</button>` : ''}
+      </div>
+    </div>`;
+}
+
+function gmailConnect(wsId) {
+  const w = 520, h = 660;
+  const left = (screen.width - w) / 2, top = (screen.height - h) / 2;
+  window.open(
+    `${SUPABASE_URL}/functions/v1/gmail/start?ws=${encodeURIComponent(wsId)}`,
+    'gmailconnect',
+    `width=${w},height=${h},left=${left},top=${top}`
+  );
+  showToast('Finish the Google sign-in in the popup, then click "Check status".', 'info');
+}
+
+async function gmailCheckStatus(wsId) {
+  if (!ST.gmailStatus) ST.gmailStatus = {};
+  ST.gmailStatus[wsId] = { ...(ST.gmailStatus[wsId] || {}), checking: true };
+  render();
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/gmail/status?ws=${encodeURIComponent(wsId)}`, {
+      headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+    });
+    const data = await res.json();
+    ST.gmailStatus[wsId] = { checked: true, checking: false, connected: !!data.connected, email: data.email || '' };
+  } catch (e) {
+    console.error('gmailCheckStatus:', e);
+    ST.gmailStatus[wsId] = { checked: true, checking: false, connected: false, email: '', error: e.message };
+    showToast('Could not check Gmail status: ' + e.message, 'error');
+  }
+  render();
+}
+
+async function gmailDisconnect(wsId) {
+  if (!confirm('Disconnect Gmail from this workspace? Automatic emails will stop until you reconnect.')) return;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/gmail/disconnect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify({ workspaceId: wsId }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    ST.gmailStatus[wsId] = { checked: true, checking: false, connected: false, email: '' };
+    showToast('Gmail disconnected.', 'success');
+    render();
+  } catch (e) {
+    console.error('gmailDisconnect:', e);
+    showToast('Could not disconnect: ' + e.message, 'error');
+  }
 }
 
 
@@ -14146,6 +14397,9 @@ function buildWsSettingsModal() {
             <span style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-left:8px">Pushes branding, plan &amp; features to Supabase.</span>
           </div>
         ` : ''}
+
+        <!-- Email sending (Gmail) -->
+        ${(AUTH.session && AUTH.isMaster) ? buildGmailConnectSection(ws.id) : ''}
 
         <!-- Danger zone -->
         ${wsList.length > 1 ? `
@@ -17139,6 +17393,7 @@ async function runPlanDiff(pid) {
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
 
     ST.planDiff[pid] = { status:'done', result:data, error:null, oldId, newId, ts:Date.now() };
+    saveSt();
     render();
   } catch (e2) {
     console.error('runPlanDiff:', e2);
