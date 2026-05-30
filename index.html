@@ -5619,6 +5619,7 @@ function sendDialogPickTemplate(tid) {
 
 async function sendDialogConfirm() {
   const d = ST.sendDialog; if (!d) return;
+  if (d.sending) return; // guard against double-click
   const subs = allSubs();
   const proj = allProjects().find(p => p.id === d.pid);
   const tpl = (ST.emailTemplates || DEFAULT_TEMPLATES)[d.templateId];
@@ -5635,8 +5636,7 @@ async function sendDialogConfirm() {
   const subPortalLink = window.location.origin + window.location.pathname + '#sub/' + token;
   ST.subPortalTokens[token] = { pid: d.pid, cat: d.cat, sentTs: new Date().toISOString(), recipientSids: recipients.map(r => r.sid) };
 
-  // Render once per recipient for snapshot (use the first as the "header"
-  // subject/body, store per-recipient rendered list)
+  // Render subject/body per recipient
   const rendered = recipients.map(r => {
     const sub = subs.find(x => x.id === r.sid);
     const ctx = {
@@ -5649,7 +5649,57 @@ async function sendDialogConfirm() {
     return { sid: r.sid, subject: renderTokens(tpl.subject, ctx), body: renderTokens(tpl.body, ctx) };
   });
 
-  // Persist
+  // ── Send for real via the workspace's connected Gmail ──
+  const wsId = ST.activeWorkspace;
+  let gmailConnected = false;
+  try {
+    const stz = await fetch(`${SUPABASE_URL}/functions/v1/gmail/status?ws=${encodeURIComponent(wsId)}`, {
+      headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+    });
+    const sd = await stz.json();
+    gmailConnected = !!sd.connected;
+  } catch (e) { console.warn('gmail status check failed', e); }
+
+  let deliveryResults = [];   // [{sid, ok, error}]
+  let sentCount = 0, failCount = 0;
+
+  if (gmailConnected) {
+    d.sending = true;
+    d.sendProgress = `Sending 0 / ${recipients.length}…`;
+    render();
+
+    for (let i = 0; i < recipients.length; i++) {
+      const r = recipients[i];
+      const rend = rendered.find(x => x.sid === r.sid);
+      d.sendProgress = `Sending ${i+1} / ${recipients.length}…`;
+      render();
+      if (!r.email) { deliveryResults.push({ sid:r.sid, ok:false, error:'no email' }); failCount++; continue; }
+      try {
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/gmail/send`, {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+          body: JSON.stringify({
+            workspaceId: wsId,
+            to: r.email,
+            subject: rend?.subject || tpl.subject,
+            body: rend?.body || tpl.body,
+            replyTo: userEmail || undefined,
+            fromName: (ST.workspaces?.[wsId]?.name) || userName || undefined,
+          }),
+        });
+        const out = await res.json();
+        if (!res.ok || out.error) throw new Error(out.error || `HTTP ${res.status}`);
+        deliveryResults.push({ sid:r.sid, ok:true });
+        sentCount++;
+      } catch (e) {
+        console.error('send to', r.email, e);
+        deliveryResults.push({ sid:r.sid, ok:false, error:(e.message||String(e)) });
+        failCount++;
+      }
+    }
+  }
+
+  // Persist the send record (with delivery status)
   if (!ST.sentHistory[d.pid]) ST.sentHistory[d.pid] = {};
   if (!ST.sentHistory[d.pid][d.cat]) ST.sentHistory[d.pid][d.cat] = [];
   const entry = {
@@ -5660,7 +5710,10 @@ async function sendDialogConfirm() {
     rendered,
     subjectSample: rendered[0]?.subject || tpl.subject,
     bodySample: rendered[0]?.body || tpl.body,
-    token, subPortalLink
+    token, subPortalLink,
+    delivery: gmailConnected ? 'gmail' : 'manual',
+    deliveryResults,
+    sentCount, failCount,
   };
   ST.sentHistory[d.pid][d.cat].push(entry);
 
@@ -5668,7 +5721,7 @@ async function sendDialogConfirm() {
   if (!ST.threadNotes[tk]) ST.threadNotes[tk] = {};
   for (const r of recipients) if (!ST.threadNotes[tk][r.sid]) ST.threadNotes[tk][r.sid] = 'pending';
 
-  // Also flip the legacy "sent" cell to Y so the green check shows
+  // Flip the "sent" cell to Y so the green check shows
   if (!ST.overrides[d.pid]) ST.overrides[d.pid] = {};
   if (!ST.overrides[d.pid][d.cat]) ST.overrides[d.pid][d.cat] = {};
   ST.overrides[d.pid][d.cat].sent = 'Y';
@@ -5677,6 +5730,17 @@ async function sendDialogConfirm() {
   saveSt();
   ST.sendDialog = null;
   render();
+
+  // Feedback
+  if (!gmailConnected) {
+    showToast('Recorded as sent (manual). Connect Gmail in Workspace settings to auto-send.', 'info');
+  } else if (failCount === 0) {
+    showToast(`Sent ${sentCount} email${sentCount===1?'':'s'} via Gmail ✓`, 'success');
+  } else if (sentCount === 0) {
+    showToast(`All ${failCount} sends failed. Check the Gmail connection.`, 'error');
+  } else {
+    showToast(`Sent ${sentCount}, ${failCount} failed. See sent history for details.`, 'warn');
+  }
 }
 
 function openSentHistory(pid, cat) {
@@ -5774,10 +5838,10 @@ function buildSendDialog() {
         <div style="padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg1);font-family:var(--mono);font-size:11px;color:var(--ink-900)"><b style="color:var(--text3);font-weight:500">SUBJECT:</b> ${esc(renderedSubj)}</div>
         <pre style="margin:0;padding:14px;font-family:var(--mono);font-size:12px;color:var(--ink-900);line-height:1.6;white-space:pre-wrap">${esc(renderedBody)}</pre>
       </div>
-      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:10px">Sending records the event (date · user · template · recipients · rendered body). Email is not actually delivered yet — Gmail integration comes later.</div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:10px;line-height:1.5">Each recipient gets their own rendered version. Emails send from this workspace's connected Gmail (with reply-to your address). If Gmail isn't connected, the send is just recorded.</div>
       <div class="modal-btns">
-        <button class="btn btn-ghost" onclick="sendDialogBack()">← Back</button>
-        <button class="btn btn-green" onclick="sendDialogConfirm()">Send ✓</button>
+        <button class="btn btn-ghost" ${d.sending?'disabled':''} onclick="sendDialogBack()">← Back</button>
+        <button class="btn btn-green" ${d.sending?'disabled':''} onclick="sendDialogConfirm()">${d.sending ? esc(d.sendProgress||'Sending…') : `Send to ${d.selectedSids.length} ✓`}</button>
       </div>`;
   }
 
@@ -5796,12 +5860,24 @@ function buildSentHistoryModal() {
   const item = ST.sentHistoryItem !== null && ST.sentHistoryItem ? list[ST.sentHistoryItem.idx] : null;
 
   if (item) {
+    const dr = item.deliveryResults || [];
+    const byId = {}; dr.forEach(x => byId[x.sid] = x);
+    const deliveryBadge = item.delivery === 'gmail'
+      ? `<span style="font-family:var(--mono);font-size:9px;color:var(--green);border:1px solid var(--green);border-radius:8px;padding:1px 7px">SENT VIA GMAIL · ${item.sentCount||0} ok${item.failCount?` · ${item.failCount} failed`:''}</span>`
+      : `<span style="font-family:var(--mono);font-size:9px;color:var(--text3);border:1px solid var(--border);border-radius:8px;padding:1px 7px">RECORDED (MANUAL)</span>`;
     return `<div class="backdrop" onclick="if(event.target===this){ST.sentHistoryItem=null;render()}">
       <div class="modal modal-wide">
         <div class="modal-title">Sent · ${fmtDate(item.ts)}</div>
         <div class="modal-sub">${esc(proj?.name||'')} · ${esc(v.cat)} · ${item.recipients.length} recipients · by ${esc(item.user?.name||'?')}</div>
+        <div style="margin:10px 0">${deliveryBadge}</div>
         <div style="font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;margin:14px 0 6px">Recipients</div>
-        <div style="font-family:var(--mono);font-size:11px;color:var(--text2);padding:8px 10px;border:1px solid var(--border);background:var(--bg1);max-height:120px;overflow-y:auto">${item.recipients.map(r=>esc(r.email)).join(', ')}</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--text2);padding:8px 10px;border:1px solid var(--border);background:var(--bg1);max-height:140px;overflow-y:auto">
+          ${item.recipients.map(r=>{
+            const res = byId[r.sid];
+            const mark = !res ? '' : res.ok ? ' <span style="color:var(--green)">✓</span>' : ` <span style="color:var(--red)" title="${esc(res.error||'failed')}">✕ failed</span>`;
+            return `${esc(r.email)}${mark}`;
+          }).join('<br>')}
+        </div>
         <div style="font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;margin:14px 0 6px">Subject</div>
         <div style="font-family:var(--mono);font-size:12px;color:var(--ink-900);padding:8px 10px;border:1px solid var(--border);background:var(--bg1)">${esc(item.subjectSample||'')}</div>
         <div style="font-family:var(--mono);font-size:10px;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;margin:14px 0 6px">Body</div>
