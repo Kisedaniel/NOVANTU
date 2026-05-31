@@ -2537,7 +2537,7 @@ body[data-theme="hc"] {
   font-family:inherit;
 }
 .to-type-card:hover{border-color:var(--amber);background:var(--amber-bg);transform:translateY(-1px)}
-.to-type-icon{font-size:24px;line-height:1}
+.to-type-icon{font-size:24px;line-height:1;display:inline-flex;align-items:center;justify-content:center;color:var(--ink-900)}
 .to-type-label{font-family:var(--sans);font-size:15px;font-weight:600;color:var(--ink-900);letter-spacing:-.005em}
 .to-type-desc{font-family:var(--mono);font-size:10.5px;color:var(--text3);letter-spacing:.02em;line-height:1.4}
 
@@ -2614,7 +2614,7 @@ body[data-theme="hc"] {
   width:34px;height:34px;
   display:flex;align-items:center;justify-content:center;
   background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);
-  flex-shrink:0;
+  flex-shrink:0;color:var(--ink-900);
 }
 .to-saved-body{flex:1;min-width:0}
 .to-saved-title{
@@ -6972,7 +6972,7 @@ function buildSettingsTab() {
           return `
             <details style="border-bottom:1px solid var(--border)" ${ST.settingsPricingOpen===t.id?'open':''}>
               <summary style="padding:12px 18px;cursor:pointer;display:flex;align-items:center;gap:10px;user-select:none;background:var(--bg1)">
-                <span style="font-size:16px">${t.icon}</span>
+                <span style="display:inline-flex;color:var(--ink-900)">${takeoffIcon(t.id, 20)}</span>
                 <span style="font-family:var(--sans);font-size:13px;font-weight:600;color:var(--ink-900)">${esc(t.label)}</span>
                 <span style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-left:auto">${items.length} line items</span>
               </summary>
@@ -12055,7 +12055,7 @@ function toBuildSidebar(p, e) {
       <div class="to-sidebar-section">
         <div class="to-sidebar-label">Trade</div>
         <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r2)">
-          <span style="font-size:18px;line-height:1">${typeMeta.icon}</span>
+          <span style="display:inline-flex;line-height:1;color:var(--ink-900)">${takeoffIcon(typeMeta.id, 22)}</span>
           <div style="flex:1;min-width:0">
             <div style="font-family:var(--sans);font-size:13px;font-weight:600;color:var(--ink-900)">${esc(typeMeta.label)}</div>
             <div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);letter-spacing:.02em">${esc(typeMeta.desc)}</div>
@@ -12452,7 +12452,7 @@ function buildEstTakeoff(p, e) {
           <div class="to-type-grid">
             ${TAKEOFF_TYPES.map(t => `
               <button class="to-type-card" onclick="ST.toTakeoffType='${t.id}';render()">
-                <div class="to-type-icon">${t.icon}</div>
+                <div class="to-type-icon">${takeoffIcon(t.id, 30)}</div>
                 <div class="to-type-label">${esc(t.label)}</div>
                 <div class="to-type-desc">${esc(t.desc)}</div>
               </button>
@@ -12465,7 +12465,7 @@ function buildEstTakeoff(p, e) {
               ${savedTakeoffs.map(st => `
                 <div class="to-saved-row">
                   <button class="to-saved-open" onclick="toOpenSaved('${p.id}','${st.typeId}')" title="Open this take-off">
-                    <span class="to-saved-icon">${st.meta.icon}</span>
+                    <span class="to-saved-icon">${takeoffIcon(st.typeId, 20)}</span>
                     <div class="to-saved-body">
                       <div class="to-saved-title">${esc(st.meta.label)}</div>
                       <div class="to-saved-meta">${st.activeLines} line${st.activeLines===1?'':'s'} · ${st.planName ? esc(st.planName) + ' · ' : ''}${fmt$(st.total)}</div>
@@ -12489,7 +12489,7 @@ function buildEstTakeoff(p, e) {
         <div class="to-wizard-sub">A single-sheet PDF works best. You'll see it next to the budget calculator.</div>
 
         <div class="to-wizard-typebadge">
-          <span class="to-type-icon" style="font-size:18px">${typeMeta.icon}</span>
+          <span class="to-type-icon" style="display:inline-flex">${takeoffIcon(typeMeta.id, 22)}</span>
           <span>${esc(typeMeta.label)} · ${esc(typeMeta.desc)}</span>
           <button class="to-type-change" onclick="ST.toTakeoffType=null;render()">change</button>
         </div>
@@ -17540,6 +17540,82 @@ async function pdfCleanupOrphans() {
 //   - User edits unit prices in Settings; quantities come from AI extraction
 //   - Pricing math: qty × unitPrice = lineTotal (no AI needed for math)
 // ============================================================
+
+// ============================================================
+// TAKE-OFF CATEGORY ICONS (custom SVG, line-art, follow currentColor)
+// Recreated to match the user's reference image. Each returns an inline
+// <svg> sized to `px` (default 22). Stroke uses currentColor so they adapt
+// to the theme (light/dark/sepia).
+// ============================================================
+function takeoffIcon(id, px) {
+  const s = px || 22;
+  const open = `<svg width="${s}" height="${s}" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">`;
+  const close = `</svg>`;
+  const ic = {
+    // Tile — diamond grid (rotated checker of 4 tiles)
+    tile: `
+      <rect x="9" y="9" width="30" height="30" rx="1.5" transform="rotate(45 24 24)"/>
+      <line x1="24" y1="3.6" x2="24" y2="44.4"/>
+      <line x1="3.6" y1="24" x2="44.4" y2="24"/>`,
+    // Hardwood — vertical plank with grain
+    hardwood: `
+      <rect x="10" y="7" width="28" height="34" rx="2"/>
+      <path d="M19 12 C16 18, 22 24, 19 30 C17 34, 21 37, 19 39"/>
+      <path d="M29 11 C26 17, 32 23, 29 30 C27 35, 31 37, 29 40"/>`,
+    // Countertop — thick slab in perspective
+    countertop: `
+      <path d="M6 24 L30 14 L44 19 L20 29 Z"/>
+      <path d="M6 24 L6 29 L20 34 L20 29"/>
+      <path d="M20 29 L20 34 L44 24 L44 19"/>`,
+    // Facade — classical building (pediment + columns)
+    facade: `
+      <path d="M6 16 L24 7 L42 16 Z"/>
+      <line x1="7" y1="16" x2="41" y2="16"/>
+      <line x1="12" y1="20" x2="12" y2="36"/>
+      <line x1="19" y1="20" x2="19" y2="36"/>
+      <line x1="29" y1="20" x2="29" y2="36"/>
+      <line x1="36" y1="20" x2="36" y2="36"/>
+      <line x1="8" y1="40" x2="40" y2="40"/>`,
+    // Roofing — gable roof peak (filled wedge look via stroke)
+    roofing: `
+      <path d="M5 34 L24 14 L43 34"/>
+      <path d="M14 34 L24 23 L34 34"/>`,
+    // Gypsum Board — square panel with light grid
+    gypsum: `
+      <rect x="8" y="8" width="32" height="32" rx="1.5"/>
+      <line x1="8" y1="18" x2="40" y2="18" stroke-width="1"/>
+      <line x1="8" y1="28" x2="40" y2="28" stroke-width="1"/>
+      <line x1="18" y1="8" x2="18" y2="40" stroke-width="1"/>
+      <line x1="28" y1="8" x2="28" y2="40" stroke-width="1"/>`,
+    // Railing — balusters between rails
+    railing: `
+      <line x1="7" y1="14" x2="41" y2="14"/>
+      <line x1="7" y1="38" x2="41" y2="38"/>
+      <line x1="12" y1="14" x2="12" y2="38"/>
+      <line x1="19" y1="14" x2="19" y2="38"/>
+      <line x1="24" y1="14" x2="24" y2="38"/>
+      <line x1="29" y1="14" x2="29" y2="38"/>
+      <line x1="36" y1="14" x2="36" y2="38"/>`,
+    // Paint — bucket with brush
+    paint: `
+      <path d="M11 20 L13 39 a2 2 0 0 0 2 2 h12 a2 2 0 0 0 2 -2 L33 20"/>
+      <ellipse cx="22" cy="20" rx="11" ry="4"/>
+      <path d="M27 18 L37 9"/>
+      <path d="M34 6 l5 5 -3 4 -5 -5 z"/>`,
+    // Doors — open door in frame
+    doors: `
+      <rect x="14" y="7" width="20" height="34"/>
+      <path d="M14 11 L26 8 L26 40 L14 41"/>
+      <circle cx="22" cy="25" r="1.2" fill="currentColor"/>`,
+    // General — toolbox
+    general: `
+      <rect x="7" y="17" width="34" height="20" rx="2"/>
+      <path d="M17 17 v-3 a2 2 0 0 1 2 -2 h10 a2 2 0 0 1 2 2 v3"/>
+      <line x1="7" y1="25" x2="41" y2="25"/>
+      <rect x="20" y="22" width="8" height="6" rx="1"/>`,
+  };
+  return open + (ic[id] || ic.general) + close;
+}
 
 const TAKEOFF_TYPES = [
   { id: 'tile',       label: 'Tile',          desc: 'Floor & wall tile install + material', icon: '◫' },
