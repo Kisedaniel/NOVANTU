@@ -3711,6 +3711,31 @@ a:hover{opacity:.7}
 }
 .dlog-photo-add:hover{border-color:var(--amber);color:var(--amber)}
 
+/* ════════════════ RFIs ════════════════ */
+.rfi-wrap{display:flex;flex-direction:column;height:100%;flex:1;min-height:0;min-width:0;background:var(--bg);overflow-y:auto}
+.rfi-topbar{display:flex;align-items:center;gap:10px;padding:18px 22px 14px;flex-wrap:wrap}
+.rfi-filters{display:flex;gap:6px;padding:0 22px 14px;flex-wrap:wrap;border-bottom:1px solid var(--border)}
+.rfi-filter{
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--r);
+  padding:5px 12px;font-family:var(--mono);font-size:10px;letter-spacing:.04em;
+  color:var(--text2);cursor:pointer;transition:all .12s;
+}
+.rfi-filter:hover{border-color:var(--amber-border)}
+.rfi-filter.on{background:var(--amber);color:#fff;border-color:var(--amber)}
+.rfi-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:60px 20px}
+.rfi-list{padding:14px 22px;max-width:920px;width:100%}
+.rfi-row{
+  display:flex;align-items:center;gap:14px;padding:13px 16px;
+  background:var(--bg1);border:1px solid var(--border);border-radius:var(--r2);margin-bottom:8px;cursor:pointer;
+  transition:border-color .12s, transform .12s;
+}
+.rfi-row:hover{border-color:var(--amber-border);transform:translateX(2px)}
+.rfi-row-status{flex-shrink:0;width:84px}
+.rfi-row-main{flex:1;min-width:0}
+.rfi-row-title{font-family:var(--sans);font-size:13.5px;font-weight:600;color:var(--ink-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rfi-row-meta{font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rfi-row-date{flex-shrink:0;font-family:var(--mono);font-size:10px;color:var(--text3)}
+
 </style>
 
 <!-- External libraries -->
@@ -4108,7 +4133,13 @@ let ST = {
   dailyLogDraftPhotos: [],   // temp photo buffer while editing an entry
   dailyLogLightbox: null,    // base64 of photo being viewed full-screen
   clientUpdate: null,        // {pid, status, days, result:{subject,body}, error} — weekly client update (in-memory)
-  gmailStatus: {},           // {[wsId]: {checked, connected, email, checking}} — Gmail connection status (in-memory)
+  gmailStatus: {},           // {[userId]: {checked, connected, email, checking}} — per-user Gmail status (in-memory)
+  rfis: {},                  // {[pid]: [ {id, projectId, title, question, discipline, status, assignedToUserId, assignedToName, assignedToEmail, createdBy, createdByName, createdAt, dueDate, answer, answeredBy, answeredAt, thread:[]} ]}
+  rfiModal: null,            // {pid, rfiId|null} — create/view RFI
+  rfiSelProj: null,          // selected project in RFI tab
+  rfiFilter: 'all',          // 'all' | 'mine' | 'open' | 'answered' | 'closed'
+  wsMembers: null,           // cached list of {user_id, email, display_name, role} for assignment
+  wsMembersLoading: false,
   toScanResult: null,        // last scan result from analyze-plan?mode=scan  // {[accId]: true|false} — open/close state for Plan Sets sub-accordions
   estimatorSuggestDismissed: {},    // {[pid]: [suggestionKey...]} — heuristics already declined
   emailTemplates: null,     // {rfp:{subject,body}, followup:{subject,body}} — loaded from app_state
@@ -4470,6 +4501,7 @@ async function loadSt() {
     ST.dailyLogs = state.dailyLogs || {};
     ST.bidLeveling = state.bidLeveling || {};
     ST.planDiff = state.planDiff || {};
+    ST.rfis = state.rfis || {};
     // Clear any stale "running" states left over from a reload mid-analysis
     Object.keys(ST.bidLeveling).forEach(k => { if (ST.bidLeveling[k]?.status === 'running') delete ST.bidLeveling[k]; });
     Object.keys(ST.planDiff).forEach(k => { if (ST.planDiff[k]?.status === 'running') delete ST.planDiff[k]; });
@@ -4567,7 +4599,7 @@ async function saveSt() {
     if (window.BYPASS_LOGIN) { saveStLocal(); setSaveStatus('saved'); }
     return;
   }
-  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator','bidStages','toCalculator','schedule','dailyLogs','bidLeveling','planDiff']
+  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator','bidStages','toCalculator','schedule','dailyLogs','bidLeveling','planDiff','rfis']
     .forEach(k => SAVE_STATE.pendingKeys.add(k));
   if (SAVE_STATE.debounceTimer) clearTimeout(SAVE_STATE.debounceTimer);
   SAVE_STATE.debounceTimer = setTimeout(flushSave, 400);
@@ -4628,6 +4660,7 @@ async function flushSave() {
     else if (k === 'dailyLogs') v = ST.dailyLogs;
     else if (k === 'bidLeveling') v = ST.bidLeveling;
     else if (k === 'planDiff') v = ST.planDiff;
+    else if (k === 'rfis') v = ST.rfis;
 
     // Critical: app_state.value is NOT NULL. Substitute appropriate empty default.
     if (v === undefined || v === null) {
@@ -5649,15 +5682,18 @@ async function sendDialogConfirm() {
     return { sid: r.sid, subject: renderTokens(tpl.subject, ctx), body: renderTokens(tpl.body, ctx) };
   });
 
-  // ── Send for real via the workspace's connected Gmail ──
+  // ── Send for real via the SENDER's connected Gmail (per-user) ──
   const wsId = ST.activeWorkspace;
+  const uid = AUTH.user?.id;
   let gmailConnected = false;
   try {
-    const stz = await fetch(`${SUPABASE_URL}/functions/v1/gmail/status?ws=${encodeURIComponent(wsId)}`, {
-      headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
-    });
-    const sd = await stz.json();
-    gmailConnected = !!sd.connected;
+    if (uid) {
+      const stz = await fetch(`${SUPABASE_URL}/functions/v1/gmail/status?uid=${encodeURIComponent(uid)}`, {
+        headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+      });
+      const sd = await stz.json();
+      gmailConnected = !!sd.connected;
+    }
   } catch (e) { console.warn('gmail status check failed', e); }
 
   let deliveryResults = [];   // [{sid, ok, error}]
@@ -5679,7 +5715,7 @@ async function sendDialogConfirm() {
           method:'POST',
           headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
           body: JSON.stringify({
-            workspaceId: wsId,
+            userId: uid,
             to: r.email,
             subject: rend?.subject || tpl.subject,
             body: rend?.body || tpl.body,
@@ -5733,7 +5769,7 @@ async function sendDialogConfirm() {
 
   // Feedback
   if (!gmailConnected) {
-    showToast('Recorded as sent (manual). Connect Gmail in Workspace settings to auto-send.', 'info');
+    showToast('Recorded as sent (manual). Connect your Gmail in Settings → Email to auto-send.', 'info');
   } else if (failCount === 0) {
     showToast(`Sent ${sentCount} email${sentCount===1?'':'s'} via Gmail ✓`, 'success');
   } else if (sentCount === 0) {
@@ -6820,6 +6856,15 @@ function buildSettingsTab() {
         <div><div class="modal-label">Theme</div><select class="msel" onchange="settingsSet('theme', this.value)">${THEMES.map(([c,l]) => `<option value="${c}"${s.theme===c?' selected':''}>${l}</option>`).join('')}</select></div>
         <div><div class="modal-label">Currency</div><select class="msel" onchange="settingsSet('currency', this.value)">${CURRENCIES.map(([c,l]) => `<option value="${c}"${s.currency===c?' selected':''}>${l}</option>`).join('')}</select></div>
         <div><div class="modal-label">Number/date format</div><select class="msel" onchange="settingsSet('dateFormat', this.value)">${LOCALES.map(([c,l]) => `<option value="${c}"${s.dateFormat===c?' selected':''}>${l}</option>`).join('')}</select></div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Email · Send from your Gmail</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Your own connection — emails you send go out from your account.</div></div>
+      <div style="border:1px solid var(--border);background:var(--bg);padding:18px 22px">
+        <div style="font-family:var(--mono);font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:14px">
+          Connect your Gmail so that when you send RFQs, follow-ups, or client updates from BidFlow, they're delivered from your own address (with replies coming back to you). Your connection is private to your account and stored securely on the server.
+        </div>
+        ${buildGmailConnectSection()}
       </div>
     </div>
 
@@ -8130,6 +8175,18 @@ function buildSidebar() {
     }
   }
 
+  // RFIs assigned to me and still open (badge count)
+  let cRFI = 0;
+  const myUid = AUTH.user?.id;
+  if (myUid && ST.rfis) {
+    for (const pid of Object.keys(ST.rfis)) {
+      for (const r of (ST.rfis[pid] || [])) {
+        if (r.assignedToUserId === myUid && r.status === 'open') cRFI++;
+      }
+    }
+  }
+  cRFI = cRFI || '';
+
   const allItems = [
     { id:'today',    label:'Today',          icon:'sun',          count: '' },
     { id:'projects', label:'Projects',       icon:'home',         count: cProjects },
@@ -8137,6 +8194,7 @@ function buildSidebar() {
     { id:'estimator',label:'Estimator',      icon:'ruler',        count: '' },
     { id:'schedule', label:'Schedule',       icon:'calendar-range',count: '' },
     { id:'dailylog', label:'Daily Log',      icon:'clipboard-list',count: '' },
+    { id:'rfis',     label:'RFIs',           icon:'help-circle',   count: cRFI },
     { id:'files',    label:'Files',          icon:'folder',       count: '' },
     { id:'overview', label:'Overview',       icon:'gauge',        count: '' },
     { id:'builder',  label:'Builder',        icon:'hammer',       count: '' },
@@ -8261,9 +8319,11 @@ function buildApp() {
           ST.tab==='estimator' ? buildEstimatorTab() :
           ST.tab==='schedule' ? buildScheduleTab() :
           ST.tab==='dailylog' ? buildDailyLogTab() :
+          ST.tab==='rfis' ? buildRfiTab() :
           buildOverviewTab()}
       </div>
       </main>
+      ${ST.rfiModal ? buildRfiModal() : ''}
       ${ST.scheduleTaskModal ? buildScheduleTaskModal() : ''}
       ${ST.dailyLogModal ? buildDailyLogModal() : ''}
       ${ST.dailyLogLightbox ? buildDailyLogLightbox() : ''}
@@ -13093,86 +13153,547 @@ function buildClientUpdateModal() {
 // Refresh tokens live server-side only. The frontend just opens the OAuth
 // popup and checks connection status via the 'gmail' edge function.
 
-function buildGmailConnectSection(wsId) {
-  const st = (ST.gmailStatus && ST.gmailStatus[wsId]) || {};
+function buildGmailConnectSection() {
+  const uid = AUTH.user?.id;
+  const st = (uid && ST.gmailStatus && ST.gmailStatus[uid]) || {};
+  if (!uid) {
+    return `<div style="font-family:var(--mono);font-size:10px;color:var(--text3)">Sign in to connect Gmail.</div>`;
+  }
   // Auto-check once when the section first appears (deferred so render stays sync)
   if (!st.checked && !st.checking) {
-    setTimeout(() => { if (!(ST.gmailStatus?.[wsId]?.checked)) gmailCheckStatus(wsId); }, 50);
+    setTimeout(() => { if (!(ST.gmailStatus?.[uid]?.checked)) gmailCheckStatus(); }, 50);
   }
   let statusLine;
   if (st.checking) {
-    statusLine = `<span style="font-family:var(--mono);font-size:10px;color:var(--text3)">Checking…</span>`;
+    statusLine = `<span style="font-family:var(--mono);font-size:11px;color:var(--text3)">Checking…</span>`;
   } else if (!st.checked) {
-    statusLine = `<span style="font-family:var(--mono);font-size:10px;color:var(--text3)">Status unknown — click Check.</span>`;
+    statusLine = `<span style="font-family:var(--mono);font-size:11px;color:var(--text3)">Status unknown — click Check.</span>`;
   } else if (st.connected) {
-    statusLine = `<span style="font-family:var(--mono);font-size:10px;color:var(--green)">● Connected${st.email ? ' as ' + esc(st.email) : ''}</span>`;
+    statusLine = `<span style="font-family:var(--mono);font-size:11px;color:var(--green)">● Connected${st.email ? ' as ' + esc(st.email) : ''}</span>`;
   } else {
-    statusLine = `<span style="font-family:var(--mono);font-size:10px;color:var(--text3)">○ Not connected</span>`;
+    statusLine = `<span style="font-family:var(--mono);font-size:11px;color:var(--text3)">○ Not connected</span>`;
   }
 
   return `
-    <div style="margin-bottom:22px">
-      <div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);margin-bottom:10px">04 · Email sending (Gmail)</div>
-      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);line-height:1.5;margin-bottom:10px">
-        Connect this workspace's Gmail so BidFlow can send emails (RFQs, follow-ups) automatically from that account. The connection is stored securely on the server.
-      </div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
-        ${statusLine}
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-amber btn-sm" onclick="gmailConnect('${wsId}')">${st.connected ? 'Reconnect Gmail' : 'Connect Gmail'}</button>
-        <button class="btn btn-ghost btn-sm" onclick="gmailCheckStatus('${wsId}')">Check status</button>
-        ${st.connected ? `<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="gmailDisconnect('${wsId}')">Disconnect</button>` : ''}
-      </div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      ${statusLine}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-amber btn-sm" onclick="gmailConnect()">${st.connected ? 'Reconnect Gmail' : 'Connect Gmail'}</button>
+      <button class="btn btn-ghost btn-sm" onclick="gmailCheckStatus()">Check status</button>
+      ${st.connected ? `<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="gmailDisconnect()">Disconnect</button>` : ''}
     </div>`;
 }
 
-function gmailConnect(wsId) {
+function gmailConnect() {
+  const uid = AUTH.user?.id;
+  if (!uid) { showToast('Sign in first.', 'warn'); return; }
   const w = 520, h = 660;
   const left = (screen.width - w) / 2, top = (screen.height - h) / 2;
   window.open(
-    `${SUPABASE_URL}/functions/v1/gmail/start?ws=${encodeURIComponent(wsId)}`,
+    `${SUPABASE_URL}/functions/v1/gmail/start?uid=${encodeURIComponent(uid)}`,
     'gmailconnect',
     `width=${w},height=${h},left=${left},top=${top}`
   );
   showToast('Finish the Google sign-in in the popup, then click "Check status".', 'info');
 }
 
-async function gmailCheckStatus(wsId) {
+async function gmailCheckStatus() {
+  const uid = AUTH.user?.id;
+  if (!uid) return;
   if (!ST.gmailStatus) ST.gmailStatus = {};
-  ST.gmailStatus[wsId] = { ...(ST.gmailStatus[wsId] || {}), checking: true };
+  ST.gmailStatus[uid] = { ...(ST.gmailStatus[uid] || {}), checking: true };
   render();
   try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/gmail/status?ws=${encodeURIComponent(wsId)}`, {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/gmail/status?uid=${encodeURIComponent(uid)}`, {
       headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
     });
     const data = await res.json();
-    ST.gmailStatus[wsId] = { checked: true, checking: false, connected: !!data.connected, email: data.email || '' };
+    ST.gmailStatus[uid] = { checked: true, checking: false, connected: !!data.connected, email: data.email || '' };
   } catch (e) {
     console.error('gmailCheckStatus:', e);
-    ST.gmailStatus[wsId] = { checked: true, checking: false, connected: false, email: '', error: e.message };
+    ST.gmailStatus[uid] = { checked: true, checking: false, connected: false, email: '', error: e.message };
     showToast('Could not check Gmail status: ' + e.message, 'error');
   }
   render();
 }
 
-async function gmailDisconnect(wsId) {
-  if (!confirm('Disconnect Gmail from this workspace? Automatic emails will stop until you reconnect.')) return;
+async function gmailDisconnect() {
+  const uid = AUTH.user?.id;
+  if (!uid) return;
+  if (!confirm('Disconnect your Gmail? You will not be able to send emails until you reconnect.')) return;
   try {
     const res = await fetch(`${SUPABASE_URL}/functions/v1/gmail/disconnect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
-      body: JSON.stringify({ workspaceId: wsId }),
+      body: JSON.stringify({ userId: uid }),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-    ST.gmailStatus[wsId] = { checked: true, checking: false, connected: false, email: '' };
+    ST.gmailStatus[uid] = { checked: true, checking: false, connected: false, email: '' };
     showToast('Gmail disconnected.', 'success');
     render();
   } catch (e) {
     console.error('gmailDisconnect:', e);
     showToast('Could not disconnect: ' + e.message, 'error');
   }
+}
+
+
+
+// ============================================================
+// RFIs — Requests for Information (internal, assignable)
+// ────────────────────────────────────────────────────────────
+// ST.rfis[pid] = [ {
+//   id, projectId, title, question, discipline, status:'open'|'answered'|'closed',
+//   assignedToUserId, assignedToName, assignedToEmail,
+//   createdBy, createdByName, createdAt, dueDate,
+//   answer, answeredBy, answeredAt,
+//   thread: [ {by, byName, ts, text} ]
+// } ]
+// RFIs are stored in app_state (synced per workspace), so everyone in the
+// office sees the same list and assignments.
+// ============================================================
+
+const RFI_DISCIPLINES = ['Architectural','Structural','MEP','Civil','Landscape','Interiors','Other'];
+
+function rfiGet(pid) {
+  if (!ST.rfis) ST.rfis = {};
+  if (!ST.rfis[pid]) ST.rfis[pid] = [];
+  return ST.rfis[pid];
+}
+function rfiGenId() { return 'rfi_' + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
+
+function rfiAllForWorkspace() {
+  // Flatten all RFIs across projects, attaching the project for display
+  const out = [];
+  const projs = allProjects();
+  const projById = {}; projs.forEach(p => projById[p.id] = p);
+  for (const pid of Object.keys(ST.rfis || {})) {
+    for (const r of (ST.rfis[pid] || [])) {
+      out.push({ ...r, _proj: projById[pid] || { id: pid, name: '(unknown project)' } });
+    }
+  }
+  // newest first
+  out.sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||''));
+  return out;
+}
+
+// ── Load workspace members for the assignee picker ───────────────────────────
+async function rfiLoadMembers() {
+  if (ST.wsMembers || ST.wsMembersLoading) return;
+  ST.wsMembersLoading = true;
+  try {
+    const wsId = ST.activeWorkspace;
+    const { data, error } = await sb
+      .from('workspace_members')
+      .select('user_id, email, display_name, role')
+      .eq('workspace_id', wsId);
+    if (error) throw error;
+    ST.wsMembers = (data || []).filter(m => m.user_id); // skip rows without a linked account
+  } catch (e) {
+    console.error('rfiLoadMembers:', e);
+    ST.wsMembers = [];
+  }
+  ST.wsMembersLoading = false;
+  render();
+}
+
+function rfiMemberName(uid) {
+  const m = (ST.wsMembers || []).find(x => x.user_id === uid);
+  return m ? (m.display_name || m.email) : '';
+}
+
+// ── Modal open/close ─────────────────────────────────────────────────────────
+function rfiOpenModal(pid, rfiId) {
+  ST.rfiModal = { pid, rfiId: rfiId || null };
+  // Make sure we have the member list for assignment
+  if (!ST.wsMembers) rfiLoadMembers();
+  render();
+}
+function rfiCloseModal() { ST.rfiModal = null; render(); }
+
+// ── Create / update ──────────────────────────────────────────────────────────
+function rfiSave() {
+  const m = ST.rfiModal; if (!m) return;
+  const pid = m.pid;
+  const title = document.getElementById('rfi-title')?.value.trim();
+  const question = document.getElementById('rfi-question')?.value.trim();
+  const discipline = document.getElementById('rfi-discipline')?.value || '';
+  const assignTo = document.getElementById('rfi-assignee')?.value || '';
+  const dueDate = document.getElementById('rfi-due')?.value || '';
+
+  if (!title) { showToast('Give the RFI a title.', 'warn'); return; }
+  if (!question) { showToast('Describe the question.', 'warn'); return; }
+
+  const assignee = (ST.wsMembers || []).find(x => x.user_id === assignTo);
+  const list = rfiGet(pid);
+
+  if (m.rfiId) {
+    const r = list.find(x => x.id === m.rfiId);
+    if (r) {
+      r.title = title; r.question = question; r.discipline = discipline; r.dueDate = dueDate;
+      r.assignedToUserId = assignTo || null;
+      r.assignedToName = assignee ? (assignee.display_name || assignee.email) : '';
+      r.assignedToEmail = assignee ? assignee.email : '';
+    }
+  } else {
+    list.push({
+      id: rfiGenId(),
+      projectId: pid,
+      title, question, discipline, dueDate,
+      status: 'open',
+      assignedToUserId: assignTo || null,
+      assignedToName: assignee ? (assignee.display_name || assignee.email) : '',
+      assignedToEmail: assignee ? assignee.email : '',
+      createdBy: AUTH.user?.id || null,
+      createdByName: AUTH.user?.user_metadata?.display_name || AUTH.user?.email?.split('@')[0] || 'Someone',
+      createdAt: new Date().toISOString(),
+      answer: '', answeredBy: null, answeredAt: null,
+      thread: [],
+    });
+  }
+  saveSt();
+  // Keep modal open on the (now-saved) RFI so they can notify; if new, find it
+  if (!m.rfiId) {
+    const just = list[list.length - 1];
+    ST.rfiModal = { pid, rfiId: just.id };
+  }
+  render();
+  showToast('RFI saved.', 'success');
+}
+
+function rfiDelete(pid, rfiId) {
+  if (!confirm('Delete this RFI? This cannot be undone.')) return;
+  ST.rfis[pid] = rfiGet(pid).filter(r => r.id !== rfiId);
+  saveSt();
+  ST.rfiModal = null;
+  render();
+  showToast('RFI deleted.', 'info');
+}
+
+// ── Answer / status ──────────────────────────────────────────────────────────
+function rfiPostReply(pid, rfiId) {
+  const r = rfiGet(pid).find(x => x.id === rfiId);
+  if (!r) return;
+  const el = document.getElementById('rfi-reply');
+  const text = el?.value.trim();
+  if (!text) { showToast('Write a reply first.', 'warn'); return; }
+  if (!r.thread) r.thread = [];
+  r.thread.push({
+    by: AUTH.user?.id || null,
+    byName: AUTH.user?.user_metadata?.display_name || AUTH.user?.email?.split('@')[0] || 'Someone',
+    ts: new Date().toISOString(),
+    text,
+  });
+  // First substantive reply from the assignee marks it answered
+  if (r.status === 'open') {
+    r.status = 'answered';
+    r.answer = text;
+    r.answeredBy = AUTH.user?.id || null;
+    r.answeredAt = new Date().toISOString();
+  }
+  saveSt();
+  if (el) el.value = '';
+  render();
+  showToast('Reply posted.', 'success');
+}
+
+function rfiSetStatus(pid, rfiId, status) {
+  const r = rfiGet(pid).find(x => x.id === rfiId);
+  if (!r) return;
+  r.status = status;
+  if (status === 'answered' && !r.answeredAt) { r.answeredAt = new Date().toISOString(); r.answeredBy = AUTH.user?.id; }
+  saveSt();
+  render();
+}
+
+// ── Notify the assignee by email (uses the sender's connected Gmail) ──────────
+async function rfiNotifyAssignee(pid, rfiId) {
+  const r = rfiGet(pid).find(x => x.id === rfiId);
+  if (!r) return;
+  if (!r.assignedToEmail) { showToast('Assign this RFI to someone first.', 'warn'); return; }
+
+  const uid = AUTH.user?.id;
+  // Check the sender has Gmail connected
+  let connected = false;
+  try {
+    const stz = await fetch(`${SUPABASE_URL}/functions/v1/gmail/status?uid=${encodeURIComponent(uid)}`, {
+      headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+    });
+    connected = !!(await stz.json()).connected;
+  } catch (e) { /* ignore */ }
+
+  if (!connected) {
+    showToast('Connect your Gmail in Settings → Email to send the notification.', 'warn');
+    return;
+  }
+
+  const proj = allProjects().find(p => p.id === pid);
+  const appUrl = window.location.origin + window.location.pathname;
+  const senderName = AUTH.user?.user_metadata?.display_name || AUTH.user?.email?.split('@')[0] || 'A colleague';
+  const subject = `[RFI] ${r.title} — ${proj?.name || 'Project'}`;
+  const body =
+`Hi ${r.assignedToName || 'there'},
+
+${senderName} assigned you an RFI on ${proj?.name || 'a project'}.
+
+RFI: ${r.title}
+${r.discipline ? 'Discipline: ' + r.discipline + '\n' : ''}${r.dueDate ? 'Needed by: ' + r.dueDate + '\n' : ''}
+Question:
+${r.question}
+
+Open BidFlow to answer and keep the thread in one place:
+${appUrl}
+
+(You'll find it under RFIs → assigned to me.)
+
+Thanks,
+${senderName}`;
+
+  ST.rfiModal._notifying = true; render();
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/gmail/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify({
+        userId: uid,
+        to: r.assignedToEmail,
+        subject,
+        body,
+        replyTo: AUTH.user?.email || undefined,
+        fromName: (ST.workspaces?.[ST.activeWorkspace]?.name) || senderName,
+      }),
+    });
+    const out = await res.json();
+    if (!res.ok || out.error) throw new Error(out.error || `HTTP ${res.status}`);
+    r.notifiedAt = new Date().toISOString();
+    saveSt();
+    showToast(`Notification sent to ${r.assignedToEmail}`, 'success');
+  } catch (e) {
+    console.error('rfiNotifyAssignee:', e);
+    showToast('Could not send notification: ' + e.message, 'error');
+  }
+  if (ST.rfiModal) ST.rfiModal._notifying = false;
+  render();
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function rfiStatusBadge(status) {
+  const map = {
+    open:     ['Open', 'var(--amber)', 'var(--amber-bg)', 'var(--amber-border)'],
+    answered: ['Answered', 'var(--green)', 'var(--green-bg)', 'var(--green)'],
+    closed:   ['Closed', 'var(--text3)', 'var(--bg2)', 'var(--border)'],
+  };
+  const [label, color, bg, border] = map[status] || map.open;
+  return `<span style="font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:${color};background:${bg};border:1px solid ${border};padding:2px 8px;border-radius:10px">${label}</span>`;
+}
+function rfiFmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month:'short', day:'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit' });
+}
+
+// ── Main tab ─────────────────────────────────────────────────────────────────
+function buildRfiTab() {
+  if (!ST.wsMembers && !ST.wsMembersLoading) rfiLoadMembers();
+  const projs = allProjects();
+  const myUid = AUTH.user?.id;
+  let all = rfiAllForWorkspace();
+
+  // Filter
+  const filter = ST.rfiFilter || 'all';
+  if (filter === 'mine') all = all.filter(r => r.assignedToUserId === myUid);
+  else if (filter === 'open') all = all.filter(r => r.status === 'open');
+  else if (filter === 'answered') all = all.filter(r => r.status === 'answered');
+  else if (filter === 'closed') all = all.filter(r => r.status === 'closed');
+
+  const counts = {
+    all: rfiAllForWorkspace().length,
+    mine: rfiAllForWorkspace().filter(r => r.assignedToUserId === myUid).length,
+    open: rfiAllForWorkspace().filter(r => r.status === 'open').length,
+  };
+
+  const filterBtn = (key, label, n) =>
+    `<button class="rfi-filter${filter===key?' on':''}" onclick="ST.rfiFilter='${key}';render()">${label}${n!=null?` <span style="opacity:.6">${n}</span>`:''}</button>`;
+
+  return `<div class="rfi-wrap">
+    <div class="rfi-topbar">
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:2px">[ RFIs ]</div>
+        <div style="font-family:var(--sans);font-size:20px;font-weight:600;color:var(--ink-900);letter-spacing:-.02em">Requests for Information</div>
+      </div>
+      <div style="flex:1"></div>
+      <button class="btn btn-amber btn-sm" onclick="rfiStartNew()">+ New RFI</button>
+    </div>
+
+    <div class="rfi-filters">
+      ${filterBtn('all','All',counts.all)}
+      ${filterBtn('mine','Assigned to me',counts.mine)}
+      ${filterBtn('open','Open',counts.open)}
+      ${filterBtn('answered','Answered')}
+      ${filterBtn('closed','Closed')}
+    </div>
+
+    ${all.length === 0
+      ? `<div class="rfi-empty">
+          <div style="font-size:32px;opacity:.5;margin-bottom:12px">❓</div>
+          <div style="font-family:var(--sans);font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px">${filter==='all'?'No RFIs yet':'Nothing here'}</div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-bottom:16px">${filter==='all'?'Create an RFI and assign it to someone in the office.':'Try a different filter.'}</div>
+          ${filter==='all'?`<button class="btn btn-amber btn-sm" onclick="rfiStartNew()">+ New RFI</button>`:''}
+        </div>`
+      : `<div class="rfi-list">
+          ${all.map(r => rfiRenderRow(r)).join('')}
+        </div>`}
+  </div>`;
+}
+
+function rfiStartNew() {
+  const projs = allProjects();
+  if (projs.length === 0) { showToast('Add a project first.', 'warn'); return; }
+  const pid = ST.rfiSelProj && projs.find(p=>p.id===ST.rfiSelProj) ? ST.rfiSelProj : projs[0].id;
+  rfiOpenModal(pid, null);
+}
+
+function rfiRenderRow(r) {
+  const myUid = AUTH.user?.id;
+  const mine = r.assignedToUserId === myUid;
+  const overdue = r.dueDate && r.status === 'open' && new Date(r.dueDate) < new Date(new Date().toDateString());
+  return `<div class="rfi-row" onclick="rfiOpenModal('${r.projectId}','${r.id}')">
+    <div class="rfi-row-status">${rfiStatusBadge(r.status)}</div>
+    <div class="rfi-row-main">
+      <div class="rfi-row-title">${esc(r.title)}${mine && r.status==='open' ? ' <span style="font-family:var(--mono);font-size:9px;color:var(--amber)">• you</span>' : ''}</div>
+      <div class="rfi-row-meta">
+        ${esc(r._proj?.name||'')}${r.discipline?` · ${esc(r.discipline)}`:''}
+        ${r.assignedToName?` · → ${esc(r.assignedToName)}`:' · <span style="color:var(--amber)">unassigned</span>'}
+        ${r.dueDate?` · due ${esc(r.dueDate)}`:''}
+        ${overdue?' · <span style="color:var(--red)">overdue</span>':''}
+        ${(r.thread&&r.thread.length)?` · 💬 ${r.thread.length}`:''}
+      </div>
+    </div>
+    <div class="rfi-row-date">${rfiFmtDate(r.createdAt)}</div>
+  </div>`;
+}
+
+// ── RFI modal (create + view/answer) ─────────────────────────────────────────
+function buildRfiModal() {
+  const m = ST.rfiModal; if (!m) return '';
+  const list = rfiGet(m.pid);
+  const r = m.rfiId ? list.find(x => x.id === m.rfiId) : null;
+  const proj = allProjects().find(p => p.id === m.pid);
+  const members = ST.wsMembers || [];
+  const myUid = AUTH.user?.id;
+
+  // ── CREATE / EDIT FORM (no rfiId, or editing an open one via edit button) ──
+  if (!r) {
+    const projs = allProjects();
+    return `<div class="backdrop" onclick="if(event.target===this)rfiCloseModal()">
+      <div class="modal" style="max-width:560px" onclick="event.stopPropagation()">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div class="modal-title">New RFI</div>
+          <button class="btn btn-ghost btn-sm" onclick="rfiCloseModal()">✕</button>
+        </div>
+
+        <label class="modal-label">Project</label>
+        <select id="rfi-project-sel" class="minp" style="width:100%;margin-bottom:12px" onchange="ST.rfiModal.pid=this.value;render()">
+          ${projs.map(p => `<option value="${p.id}"${p.id===m.pid?' selected':''}>${esc(p.name)}</option>`).join('')}
+        </select>
+
+        <label class="modal-label">Title</label>
+        <input id="rfi-title" class="minp" style="width:100%;margin-bottom:12px" placeholder="e.g. Window head height at stair">
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+          <div>
+            <label class="modal-label">Discipline</label>
+            <select id="rfi-discipline" class="minp" style="width:100%">
+              <option value="">—</option>
+              ${RFI_DISCIPLINES.map(d => `<option value="${d}">${d}</option>`).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="modal-label">Needed by (optional)</label>
+            <input id="rfi-due" type="date" class="minp" style="width:100%">
+          </div>
+        </div>
+
+        <label class="modal-label">Assign to ${members.length===0?'<span style="color:var(--text3)">(loading team…)</span>':''}</label>
+        <select id="rfi-assignee" class="minp" style="width:100%;margin-bottom:12px">
+          <option value="">— Unassigned —</option>
+          ${members.map(mm => `<option value="${mm.user_id}">${esc(mm.display_name || mm.email)}${mm.user_id===myUid?' (you)':''}</option>`).join('')}
+        </select>
+
+        <label class="modal-label">Question</label>
+        <textarea id="rfi-question" class="minp" style="width:100%;min-height:100px;resize:vertical;margin-bottom:8px" placeholder="Describe what you need clarified…"></textarea>
+
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:14px">After saving you can notify the assignee by email (sent from your Gmail).</div>
+
+        <div class="modal-btns">
+          <button class="btn btn-ghost" onclick="rfiCloseModal()">Cancel</button>
+          <button class="btn btn-amber" onclick="rfiSave()">Create RFI</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ── VIEW / ANSWER ──
+  const mine = r.assignedToUserId === myUid;
+  const canAnswer = mine || r.createdBy === myUid || AUTH.isMaster;
+  return `<div class="backdrop" onclick="if(event.target===this)rfiCloseModal()">
+    <div class="modal" style="max-width:620px;max-height:90vh;display:flex;flex-direction:column" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:4px">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">${rfiStatusBadge(r.status)}${r.discipline?`<span style="font-family:var(--mono);font-size:9px;color:var(--text3)">${esc(r.discipline)}</span>`:''}</div>
+          <div class="modal-title" style="margin:0">${esc(r.title)}</div>
+          <div class="modal-sub">${esc(proj?.name||'')}</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="rfiCloseModal()">✕</button>
+      </div>
+
+      <div style="flex:1;overflow-y:auto;min-height:0;padding:4px 2px">
+        <!-- meta -->
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 14px;font-family:var(--mono);font-size:10px;color:var(--text2)">
+          <span class="dlog-tag">From ${esc(r.createdByName||'?')}</span>
+          <span class="dlog-tag">${r.assignedToName?`→ ${esc(r.assignedToName)}`:'unassigned'}</span>
+          ${r.dueDate?`<span class="dlog-tag">due ${esc(r.dueDate)}</span>`:''}
+          <span class="dlog-tag">${rfiFmtDate(r.createdAt)}</span>
+        </div>
+
+        <!-- question -->
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">Question</div>
+        <div style="font-family:var(--sans);font-size:13.5px;color:var(--ink-900);line-height:1.55;white-space:pre-wrap;margin-bottom:18px;padding:12px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--r)">${esc(r.question)}</div>
+
+        <!-- thread -->
+        ${(r.thread && r.thread.length) ? `
+          <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:8px">Thread</div>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
+            ${r.thread.map(t => `
+              <div style="padding:10px 12px;background:${t.by===myUid?'var(--amber-bg)':'var(--bg1)'};border:1px solid var(--border);border-radius:var(--r)">
+                <div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:3px">
+                  <span style="font-family:var(--sans);font-size:11px;font-weight:600;color:var(--ink-900)">${esc(t.byName||'?')}</span>
+                  <span style="font-family:var(--mono);font-size:9px;color:var(--text3)">${rfiFmtDate(t.ts)}</span>
+                </div>
+                <div style="font-family:var(--sans);font-size:12.5px;color:var(--ink-900);line-height:1.5;white-space:pre-wrap">${esc(t.text)}</div>
+              </div>`).join('')}
+          </div>` : ''}
+
+        <!-- reply box -->
+        ${r.status !== 'closed' ? `
+          <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">${r.status==='open'?'Answer this RFI':'Add a reply'}</div>
+          <textarea id="rfi-reply" class="minp" style="width:100%;min-height:80px;resize:vertical;margin-bottom:8px" placeholder="${mine?'Write your answer…':'Add a comment or follow-up…'}"></textarea>
+          <button class="btn btn-amber btn-sm" onclick="rfiPostReply('${r.projectId}','${r.id}')">${r.status==='open'?'Post answer':'Post reply'}</button>
+        ` : ''}
+      </div>
+
+      <!-- footer actions -->
+      <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        ${r.assignedToEmail ? `<button class="btn btn-ghost btn-sm" ${m._notifying?'disabled':''} onclick="rfiNotifyAssignee('${r.projectId}','${r.id}')">${m._notifying?'Sending…':(r.notifiedAt?'↻ Re-notify':'📧 Notify assignee')}</button>` : ''}
+        <div style="flex:1"></div>
+        ${r.status==='answered' ? `<button class="btn btn-ghost btn-sm" onclick="rfiSetStatus('${r.projectId}','${r.id}','closed')">Close RFI</button>` : ''}
+        ${r.status==='closed' ? `<button class="btn btn-ghost btn-sm" onclick="rfiSetStatus('${r.projectId}','${r.id}','open')">Reopen</button>` : ''}
+        ${(r.createdBy===myUid||AUTH.isMaster) ? `<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="rfiDelete('${r.projectId}','${r.id}')">Delete</button>` : ''}
+      </div>
+    </div>
+  </div>`;
 }
 
 
@@ -13630,6 +14151,7 @@ const TAB_FEATURE_MAP = {
   estimator: 'estimator',
   schedule: 'fieldops',
   dailylog: 'fieldops',
+  rfis: 'projects',
   files: 'sendcenter',
   insights: 'projects',
   settings: null,   // settings always available
@@ -14473,9 +14995,6 @@ function buildWsSettingsModal() {
             <span style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-left:8px">Pushes branding, plan &amp; features to Supabase.</span>
           </div>
         ` : ''}
-
-        <!-- Email sending (Gmail) -->
-        ${(AUTH.session && AUTH.isMaster) ? buildGmailConnectSection(ws.id) : ''}
 
         <!-- Danger zone -->
         ${wsList.length > 1 ? `
