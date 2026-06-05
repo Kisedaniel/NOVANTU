@@ -6512,23 +6512,36 @@ function buildScopeTemplatesModal() {
 // ============================================================
 function tradeCalcBlankRow(type) {
   if (type === 'volume') return { label: '', L: '', W: '', D: '' };
-  if (type === 'area')   return { label: '', L: '', W: '' };
-  if (type === 'linear') return { label: '', len: '' };
-  return { label: '', Wi: '', Hi: '', qty: '' }; // schedule
+  if (type === 'linear' || type === 'framing') return { label: '', len: '' };
+  if (type === 'schedule') return { label: '', Wi: '', Hi: '', qty: '' };
+  return { label: '', L: '', W: '' }; // area, drywall, paint, tile
 }
-function openTradeCalc(pid) { ST.tradeCalcModal = { pid, type: 'volume', rows: [tradeCalcBlankRow('volume')], waste: '' }; render(); }
-function tradeCalcSetType(t) { const m = ST.tradeCalcModal; if (!m) return; tradeCalcReadInputs(); m.type = t; m.rows = [tradeCalcBlankRow(t)]; render(); }
+function tcDefaultParams(type) {
+  if (type === 'drywall') return { sheet: '32' };
+  if (type === 'paint')   return { cov: '350', coats: '2' };
+  if (type === 'framing') return { spacing: '16' };
+  if (type === 'tile')    return { box: '' };
+  return {};
+}
+function openTradeCalc(pid) { ST.tradeCalcModal = { pid, type: 'volume', rows: [tradeCalcBlankRow('volume')], waste: '', params: {} }; render(); }
+function tradeCalcSetType(t) { const m = ST.tradeCalcModal; if (!m) return; tradeCalcReadInputs(); m.type = t; m.rows = [tradeCalcBlankRow(t)]; m.params = tcDefaultParams(t); render(); }
 function tradeCalcAddRow() { const m = ST.tradeCalcModal; if (!m) return; tradeCalcReadInputs(); m.rows.push(tradeCalcBlankRow(m.type)); render(); }
 function tradeCalcDelRow(i) { const m = ST.tradeCalcModal; if (!m) return; tradeCalcReadInputs(); m.rows.splice(i, 1); if (!m.rows.length) m.rows.push(tradeCalcBlankRow(m.type)); render(); }
 function tradeCalcReadInputs() {
   const m = ST.tradeCalcModal; if (!m) return;
   const val = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+  const t = m.type;
   m.rows.forEach((r, i) => {
-    if (m.type === 'volume') { r.label = val('tc-' + i + '-label'); r.L = val('tc-' + i + '-L'); r.W = val('tc-' + i + '-W'); r.D = val('tc-' + i + '-D'); }
-    else if (m.type === 'area') { r.label = val('tc-' + i + '-label'); r.L = val('tc-' + i + '-L'); r.W = val('tc-' + i + '-W'); }
-    else if (m.type === 'linear') { r.label = val('tc-' + i + '-label'); r.len = val('tc-' + i + '-len'); }
-    else { r.label = val('tc-' + i + '-label'); r.Wi = val('tc-' + i + '-Wi'); r.Hi = val('tc-' + i + '-Hi'); r.qty = val('tc-' + i + '-qty'); }
+    if (t === 'volume') { r.label = val('tc-' + i + '-label'); r.L = val('tc-' + i + '-L'); r.W = val('tc-' + i + '-W'); r.D = val('tc-' + i + '-D'); }
+    else if (t === 'linear' || t === 'framing') { r.label = val('tc-' + i + '-label'); r.len = val('tc-' + i + '-len'); }
+    else if (t === 'schedule') { r.label = val('tc-' + i + '-label'); r.Wi = val('tc-' + i + '-Wi'); r.Hi = val('tc-' + i + '-Hi'); r.qty = val('tc-' + i + '-qty'); }
+    else { r.label = val('tc-' + i + '-label'); r.L = val('tc-' + i + '-L'); r.W = val('tc-' + i + '-W'); }
   });
+  m.params = m.params || {};
+  if (t === 'drywall') m.params.sheet = val('tc-p-sheet') || m.params.sheet || '32';
+  else if (t === 'paint') { m.params.cov = val('tc-p-cov'); m.params.coats = val('tc-p-coats'); }
+  else if (t === 'framing') m.params.spacing = val('tc-p-spacing') || m.params.spacing || '16';
+  else if (t === 'tile') m.params.box = val('tc-p-box');
   const w = document.getElementById('tc-waste'); if (w) m.waste = w.value;
   const d = document.getElementById('tc-desc'); if (d) m._desc = d.value;
   const c = document.getElementById('tc-uc'); if (c) m._uc = c.value;
@@ -6537,12 +6550,19 @@ function tradeCalcReadInputs() {
 function tradeCalcCompute(m) {
   const f = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
   const wf = 1 + (f(m.waste) / 100);
-  if (m.type === 'volume') {
+  const p = m.params || {};
+  const t = m.type;
+  const sumArea = () => { let sf = 0; m.rows.forEach(r => sf += f(r.L) * f(r.W)); return sf; };
+  if (t === 'volume') {
     let cf = 0; m.rows.forEach(r => { cf += f(r.L) * f(r.W) * (f(r.D) / 12); });
     return { qty: +(cf / 27 * wf).toFixed(2), unit: 'cy', extra: cf > 0 ? `${cf.toFixed(1)} cf raw` : '' };
   }
-  if (m.type === 'area')   { let sf = 0; m.rows.forEach(r => { sf += f(r.L) * f(r.W); }); return { qty: +(sf * wf).toFixed(2), unit: 'sf', extra: '' }; }
-  if (m.type === 'linear') { let lf = 0; m.rows.forEach(r => { lf += f(r.len); }); return { qty: +(lf * wf).toFixed(2), unit: 'lf', extra: '' }; }
+  if (t === 'area')   { const sf = sumArea(); return { qty: +(sf * wf).toFixed(2), unit: 'sf', extra: '' }; }
+  if (t === 'linear') { let lf = 0; m.rows.forEach(r => { lf += f(r.len); }); return { qty: +(lf * wf).toFixed(2), unit: 'lf', extra: '' }; }
+  if (t === 'drywall') { const sf = sumArea(); const ss = f(p.sheet) || 32; const sheets = Math.ceil(sf * wf / ss); return { qty: sheets, unit: 'sheets', extra: sf > 0 ? `${sf.toFixed(0)} sf · ${ss === 48 ? '4×12' : '4×8'}` : '' }; }
+  if (t === 'paint')   { const sf = sumArea(); const cov = f(p.cov) || 350; const coats = f(p.coats) || 1; const gal = Math.ceil(sf * coats * wf / cov); return { qty: gal, unit: 'gal', extra: sf > 0 ? `${sf.toFixed(0)} sf · ${coats} coat${coats === 1 ? '' : 's'}` : '' }; }
+  if (t === 'framing') { let studs = 0; m.rows.forEach(r => { const l = f(r.len); if (l > 0) studs += Math.ceil(l * 12 / (f(p.spacing) || 16)) + 1; }); return { qty: studs, unit: 'studs', extra: studs > 0 ? `${f(p.spacing) || 16}" OC + end studs` : '' }; }
+  if (t === 'tile')    { const sf = sumArea() * wf; const box = f(p.box); const boxes = box > 0 ? Math.ceil(sf / box) : 0; return { qty: +sf.toFixed(2), unit: 'sf', extra: boxes > 0 ? `${boxes} box${boxes === 1 ? '' : 'es'}` : '' }; }
   let count = 0, area = 0; m.rows.forEach(r => { const q = f(r.qty); count += q; area += (f(r.Wi) * f(r.Hi) / 144) * q; });
   return { qty: count, unit: 'ea', extra: area > 0 ? `${area.toFixed(1)} sf total opening area` : '' };
 }
@@ -6573,42 +6593,70 @@ function tradeCalcAdd() {
 function buildTradeCalcModal() {
   const m = ST.tradeCalcModal; if (!m) return '';
   const type = m.type;
-  const TYPES = [['volume', '🧱 Concrete volume', 'cy'], ['area', '▦ Area', 'sf'], ['linear', '— Linear', 'lf'], ['schedule', '⊞ Window / door schedule', 'ea']];
+  const GEOM = [['volume', '🧱 Concrete volume'], ['area', '▦ Area / per sf'], ['linear', '— Linear'], ['schedule', '⊞ Window / door schedule']];
+  const TRADE = [['drywall', '▭ Drywall sheets'], ['paint', '🪣 Paint'], ['framing', '‖ Framing studs'], ['tile', '◧ Tile / flooring']];
   const c = tradeCalcCompute(m);
-  const tabBtn = ([k, lbl]) => `<button onclick="tradeCalcSetType('${k}')" style="font-family:var(--mono);font-size:11px;padding:7px 12px;border:1px solid ${type===k?'var(--ink-900)':'var(--border)'};background:${type===k?'var(--ink-950,#181613)':'var(--bg)'};color:${type===k?'var(--bone-50,#faf8f2)':'var(--ink-900)'};cursor:pointer;white-space:nowrap">${lbl}</button>`;
+  const p = m.params || {};
+  const tabBtn = ([k, lbl]) => `<button onclick="tradeCalcSetType('${k}')" style="font-family:var(--mono);font-size:11px;padding:7px 11px;border:1px solid ${type===k?'var(--ink-900)':'var(--border)'};background:${type===k?'var(--ink-950,#181613)':'var(--bg)'};color:${type===k?'var(--bone-50,#faf8f2)':'var(--ink-900)'};cursor:pointer;white-space:nowrap">${lbl}</button>`;
   const lblInput = (i, ph) => `<input id="tc-${i}-label" class="minp" style="margin:0;width:100%" value="${esc(m.rows[i].label||'')}" placeholder="${ph}">`;
   const numInput = (i, key, ph) => `<input id="tc-${i}-${key}" type="number" step="any" class="minp" style="margin:0;width:100%;text-align:right;font-family:var(--mono)" value="${esc(m.rows[i][key]||'')}" placeholder="${ph}" oninput="tradeCalcRecompute()">`;
   const delBtn = (i) => `<button onclick="tradeCalcDelRow(${i})" title="Remove row" style="font-family:var(--mono);font-size:13px;color:var(--red);background:none;border:none;cursor:pointer">✕</button>`;
 
+  // Row shape (area shape shared by area/drywall/paint/tile; linear shape by linear/framing)
+  const shape = (type === 'volume') ? 'vol' : (type === 'linear' || type === 'framing') ? 'lin' : (type === 'schedule') ? 'sch' : 'area';
   let grid, head, rows;
-  if (type === 'volume') {
+  if (shape === 'vol') {
     grid = '1.6fr .9fr .9fr .9fr 28px';
     head = ['Label', 'Length (ft)', 'Width (ft)', 'Depth (in)', ''];
     rows = m.rows.map((r, i) => `${lblInput(i,'e.g. slab A')}${numInput(i,'L','0')}${numInput(i,'W','0')}${numInput(i,'D','0')}${delBtn(i)}`);
-  } else if (type === 'area') {
+  } else if (shape === 'area') {
     grid = '1.8fr 1fr 1fr 28px';
-    head = ['Label', 'Length (ft)', 'Width (ft)', ''];
-    rows = m.rows.map((r, i) => `${lblInput(i,'e.g. roof deck')}${numInput(i,'L','0')}${numInput(i,'W','0')}${delBtn(i)}`);
-  } else if (type === 'linear') {
+    const lblPh = type === 'drywall' ? 'e.g. north wall' : type === 'paint' ? 'e.g. bedroom walls' : type === 'tile' ? 'e.g. kitchen floor' : 'e.g. roof deck';
+    head = ['Label', 'Length (ft)', 'Width / Height (ft)', ''];
+    rows = m.rows.map((r, i) => `${lblInput(i,lblPh)}${numInput(i,'L','0')}${numInput(i,'W','0')}${delBtn(i)}`);
+  } else if (shape === 'lin') {
     grid = '2.4fr 1.2fr 28px';
-    head = ['Label', 'Length (ft)', ''];
-    rows = m.rows.map((r, i) => `${lblInput(i,'e.g. parapet joint')}${numInput(i,'len','0')}${delBtn(i)}`);
+    head = ['Label', type === 'framing' ? 'Wall length (ft)' : 'Length (ft)', ''];
+    rows = m.rows.map((r, i) => `${lblInput(i, type==='framing'?'e.g. wall 1':'e.g. parapet joint')}${numInput(i,'len','0')}${delBtn(i)}`);
   } else {
     grid = '1.6fr .9fr .9fr .8fr 28px';
     head = ['Type / mark', 'Width (in)', 'Height (in)', 'Qty', ''];
     rows = m.rows.map((r, i) => `${lblInput(i,'e.g. W1 fixed')}${numInput(i,'Wi','0')}${numInput(i,'Hi','0')}${numInput(i,'qty','0')}${delBtn(i)}`);
   }
 
+  // Per-trade parameter controls
+  let paramsUI = '';
+  if (type === 'drywall') {
+    paramsUI = `<div style="display:flex;align-items:center;gap:8px;margin-top:14px"><span class="modal-label" style="margin:0">Sheet size</span><select id="tc-p-sheet" class="msel" style="margin:0;max-width:160px" onchange="tradeCalcRecompute()"><option value="32"${(p.sheet||'32')==='32'?' selected':''}>4×8 (32 sf)</option><option value="48"${p.sheet==='48'?' selected':''}>4×12 (48 sf)</option></select></div>`;
+  } else if (type === 'paint') {
+    paramsUI = `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:14px">
+      <div style="display:flex;align-items:center;gap:8px"><span class="modal-label" style="margin:0">Coverage</span><input id="tc-p-cov" type="number" step="any" class="minp" style="margin:0;max-width:90px;text-align:right;font-family:var(--mono)" value="${esc(p.cov||'350')}" placeholder="350" oninput="tradeCalcRecompute()"><span style="font-family:var(--mono);font-size:10px;color:var(--text3)">sf/gal</span></div>
+      <div style="display:flex;align-items:center;gap:8px"><span class="modal-label" style="margin:0">Coats</span><input id="tc-p-coats" type="number" step="any" class="minp" style="margin:0;max-width:70px;text-align:right;font-family:var(--mono)" value="${esc(p.coats||'2')}" placeholder="2" oninput="tradeCalcRecompute()"></div>
+    </div>`;
+  } else if (type === 'framing') {
+    paramsUI = `<div style="display:flex;align-items:center;gap:8px;margin-top:14px"><span class="modal-label" style="margin:0">Stud spacing</span><select id="tc-p-spacing" class="msel" style="margin:0;max-width:140px" onchange="tradeCalcRecompute()"><option value="16"${(p.spacing||'16')==='16'?' selected':''}>16" OC</option><option value="24"${p.spacing==='24'?' selected':''}>24" OC</option></select></div>`;
+  } else if (type === 'tile') {
+    paramsUI = `<div style="display:flex;align-items:center;gap:8px;margin-top:14px"><span class="modal-label" style="margin:0">SF per box</span><input id="tc-p-box" type="number" step="any" class="minp" style="margin:0;max-width:90px;text-align:right;font-family:var(--mono)" value="${esc(p.box||'')}" placeholder="optional" oninput="tradeCalcRecompute()"><span style="font-family:var(--mono);font-size:10px;color:var(--text3)">to also get boxes</span></div>`;
+  }
+
+  const showWaste = (type !== 'schedule' && type !== 'framing');
+
   return `<div class="backdrop" onclick="if(event.target===this){ST.tradeCalcModal=null;render()}"><div class="modal" style="max-width:760px" onclick="event.stopPropagation()">
     <div class="modal-title">🧮 Trade calculators</div>
     <div class="modal-sub">Measure by trade — the math each trade actually does — then drop the quantity straight into your estimate.</div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:16px 0 6px">${TYPES.map(t => tabBtn(t)).join('')}</div>
+    <div style="margin:16px 0 6px">
+      <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">Geometry</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${GEOM.map(t => tabBtn(t)).join('')}</div>
+      <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin:12px 0 6px">By trade</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${TRADE.map(t => tabBtn(t)).join('')}</div>
+    </div>
 
     <div style="padding:16px 18px;background:var(--bg1);border:1px solid var(--border);margin-top:8px">
-      <div style="display:grid;grid-template-columns:${grid};gap:8px;font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">${head.map(h => `<div${h===''?'':' '}>${h}</div>`).join('')}</div>
+      <div style="display:grid;grid-template-columns:${grid};gap:8px;font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">${head.map(h => `<div>${h}</div>`).join('')}</div>
       <div style="display:flex;flex-direction:column;gap:6px">${rows.map(r => `<div style="display:grid;grid-template-columns:${grid};gap:8px;align-items:center">${r}</div>`).join('')}</div>
       <div style="margin-top:10px"><button class="btn btn-ghost btn-sm" onclick="tradeCalcAddRow()">+ Add row</button></div>
-      ${type !== 'schedule' ? `<div style="display:flex;align-items:center;gap:8px;margin-top:14px"><span class="modal-label" style="margin:0">Waste %</span><input id="tc-waste" type="number" step="any" class="minp" style="margin:0;max-width:90px;text-align:right;font-family:var(--mono)" value="${esc(m.waste||'')}" placeholder="0" oninput="tradeCalcRecompute()"><span style="font-family:var(--mono);font-size:10px;color:var(--text3)">added to total</span></div>` : ''}
+      ${paramsUI}
+      ${showWaste ? `<div style="display:flex;align-items:center;gap:8px;margin-top:14px"><span class="modal-label" style="margin:0">Waste %</span><input id="tc-waste" type="number" step="any" class="minp" style="margin:0;max-width:90px;text-align:right;font-family:var(--mono)" value="${esc(m.waste||'')}" placeholder="0" oninput="tradeCalcRecompute()"><span style="font-family:var(--mono);font-size:10px;color:var(--text3)">added to total</span></div>` : ''}
     </div>
 
     <div style="display:flex;align-items:baseline;gap:10px;margin:18px 0;padding:14px 18px;background:var(--ink-950,#181613);color:var(--bone-50,#faf8f2)">
@@ -14283,6 +14331,72 @@ function rfiRenderRow(r) {
 }
 
 // ── RFI modal (create + view/answer) ─────────────────────────────────────────
+// Generic AI text completion via the (already-deployed) ask-ai streaming function.
+async function aiComplete(messages, projectContext) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+    body: JSON.stringify({ projectContext: projectContext || {}, messages }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '', full = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const payload = line.slice(6);
+      if (payload === '[DONE]') continue;
+      try { const obj = JSON.parse(payload); const delta = obj.delta || obj.content || obj.text || ''; if (delta) full += delta; } catch (e) {}
+    }
+  }
+  return full;
+}
+// Strip code fences and pull the first JSON object out of an AI response.
+function aiParseJSON(out) {
+  let txt = (out || '').trim().replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```$/, '').trim();
+  try { return JSON.parse(txt); } catch (e) {}
+  const m = txt.match(/\{[\s\S]*\}/);
+  if (m) { try { return JSON.parse(m[0]); } catch (e) {} }
+  return null;
+}
+
+// AI-draft an RFI from a short brief → fills the title + question fields (no re-render, to preserve other inputs).
+async function rfiAiDraft() {
+  const brief = (document.getElementById('rfi-ai-brief')?.value || '').trim();
+  if (!brief) { showToast('Type a quick description of the issue first.', 'warn'); return; }
+  const btn = document.getElementById('rfi-ai-btn');
+  const proj = allProjects().find(p => p.id === ST.rfiModal?.pid);
+  const disc = document.getElementById('rfi-discipline')?.value || '';
+  if (btn) { btn._t = btn.textContent; btn.textContent = 'Drafting…'; btn.disabled = true; }
+  try {
+    const prompt = `You are an experienced construction project manager drafting a formal RFI (Request for Information) to send to the design team. Turn the brief below into a clear, professional RFI.
+
+Project: ${proj?.name || 'N/A'}${disc ? `
+Discipline: ${disc}` : ''}
+Brief: ${brief}
+
+Return ONLY a JSON object (no markdown, no commentary) with exactly:
+{"title": "<short specific title, max ~10 words>", "question": "<professional RFI body: state the issue, reference the relevant drawings/specs generically if not provided, and clearly ask what clarification or direction is needed. 2-5 sentences.>"}`;
+    const out = await aiComplete([{ role: 'user', content: prompt }], { project: proj?.name, discipline: disc });
+    const parsed = aiParseJSON(out);
+    if (!parsed || (!parsed.title && !parsed.question)) throw new Error('Could not parse a draft.');
+    const tEl = document.getElementById('rfi-title'); if (tEl && parsed.title) tEl.value = parsed.title;
+    const qEl = document.getElementById('rfi-question'); if (qEl && parsed.question) qEl.value = parsed.question;
+    showToast('Draft ready — review and edit before creating.', 'success');
+  } catch (e) {
+    console.error('rfiAiDraft:', e);
+    showToast('AI draft failed: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.textContent = btn._t || '✦ Draft RFI'; btn.disabled = false; }
+  }
+}
+
 function buildRfiModal() {
   const m = ST.rfiModal; if (!m) return '';
   const list = rfiGet(m.pid);
@@ -14328,6 +14442,15 @@ function buildRfiModal() {
           <option value="">— Unassigned —</option>
           ${members.map(mm => `<option value="${mm.user_id}">${esc(mm.display_name || mm.email)}${mm.user_id===myUid?' (you)':''}</option>`).join('')}
         </select>
+
+        <div style="background:var(--bg1);border:1px solid var(--border);padding:12px 14px;margin-bottom:14px;border-radius:2px">
+          <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:8px">✦ Draft with AI</div>
+          <div style="display:flex;gap:8px">
+            <input id="rfi-ai-brief" class="minp" style="flex:1;margin:0" placeholder="Quick description, e.g. window head height conflicts between A-201 and S-2">
+            <button id="rfi-ai-btn" class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="rfiAiDraft()">✦ Draft RFI</button>
+          </div>
+          <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:6px">AI fills in the title and question below — review before creating.</div>
+        </div>
 
         <label class="modal-label">Question</label>
         <textarea id="rfi-question" class="minp" style="width:100%;min-height:100px;resize:vertical;margin-bottom:8px" placeholder="Describe what you need clarified…"></textarea>
