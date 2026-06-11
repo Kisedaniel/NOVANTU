@@ -3608,6 +3608,23 @@ a:hover{opacity:.7}
 .bid-stage-label{letter-spacing:.08em}
 /* hold = warning -> true amber, never confusable with the red CTA accent */
 .badge-hold{background:rgba(200,120,15,.1);color:var(--nv-warning);border-color:rgba(200,120,15,.4)}
+
+/* ===== Fase C — AI loading: a dimension line that draws itself ===== */
+.nv-cota{position:relative;width:150px;height:12px;display:inline-block}
+.nv-cota i{position:absolute;background:var(--nv-red)}
+.nv-cota .tl,.nv-cota .tr{top:0;bottom:0;width:1.5px}
+.nv-cota .tl{left:0}
+.nv-cota .tr{right:0;opacity:0;animation:nv-cota-tick 2.4s ease-in-out infinite}
+.nv-cota .ln{left:0;right:0;top:50%;height:1.5px;margin-top:-0.75px;transform-origin:left center;transform:scaleX(0);animation:nv-cota-draw 2.4s ease-in-out infinite}
+@keyframes nv-cota-draw{0%{transform:scaleX(0);opacity:1}55%{transform:scaleX(1);opacity:1}82%{transform:scaleX(1);opacity:1}100%{transform:scaleX(1);opacity:0}}
+@keyframes nv-cota-tick{0%,50%{opacity:0}60%,82%{opacity:1}100%{opacity:0}}
+.nv-cota.on-dark .ln{background:var(--nv-bone)}
+.nv-cota.on-dark .tl,.nv-cota.on-dark .tr{background:var(--nv-red)}
+@media (prefers-reduced-motion: reduce){
+  .nv-cota .ln{animation:none;transform:scaleX(1)}
+  .nv-cota .tr{animation:none;opacity:1}
+}
+.to-analyzing .to-analyzing-text{margin-top:12px}
 </style>
 </head>
 <body>
@@ -4190,7 +4207,7 @@ async function manualSave() {
     showToast('All changes saved', 'success');
   } catch (e) {
     setSaveStatus('error', e.message);
-    showToast('Save failed: ' + e.message, 'error');
+    showToast("That didn’t save — your work is safe on this device. (" + e.message + ")", 'error');
   }
 }
 
@@ -4333,7 +4350,7 @@ async function loadSt() {
           rfiTemplates: ws.rfi_templates || [],
           plan: ws.plan || 'pro',
           features: (ws.features && typeof ws.features === 'object')
-            ? { ...ws.features, branding: true }
+            ? { ...ws.features, branding: true, whitelabel: ws.features.whitelabel === true }
             : { ...getPlanById(ws.plan || 'pro').features, branding: true },
         };
       }
@@ -4941,6 +4958,40 @@ function nvEmpty(opts) {
     <div class="nv-empty-line">${opts.line}</div>
     ${opts.btn ? `<button class="btn btn-amber btn-sm" onclick="${opts.btn.onclick}">${opts.btn.label}</button>` : ''}
   </div>`;
+}
+
+// AI loading state — trade language + a dimension line that draws itself.
+function nvAiLoader(stage, hint, opts) {
+  const o = opts || {};
+  return `<div style="text-align:center;padding:${o.compact ? '16px 12px 4px' : '46px 20px'}">
+    <div class="nv-cota" style="margin-bottom:14px"><i class="tl"></i><i class="ln"></i><i class="tr"></i></div>
+    <div style="font-family:var(--sans);font-size:${o.compact?13:14}px;color:var(--ink-900);font-weight:500;margin-bottom:4px">${esc(stage||'Working…')}</div>
+    ${hint ? `<div style="font-family:var(--mono);font-size:10px;color:var(--text3)">${esc(hint)}</div>` : ''}
+  </div>`;
+}
+
+// Single source of truth for our contact address.
+// ← When the novantu.com domain goes live, change it HERE only (hello@novantu.com).
+const NV_CONTACT_EMAIL = 'kisedaniel@gmail.com';
+
+// Branded HTML email (tables + inline styles, email-safe). Plain text in → HTML out.
+// The plain-text body stays in the payload as the fallback part.
+function nvEmailHtml(bodyText) {
+  const wm = (getSettings().brand?.wordmark) || 'NOVANTU';
+  const paras = String(bodyText || '').split(/\n{2,}/).map(p =>
+    `<p style="margin:0 0 14px;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:#181613">${esc(p).replace(/\n/g,'<br>')}</p>`
+  ).join('');
+  return `<!doctype html><html><body style="margin:0;padding:0;background:#FAF8F2">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#FAF8F2;padding:24px 0"><tr><td align="center">
+<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="width:560px;max-width:92%;background:#FFFFFF;border:1px solid #D8D2C4">
+<tr><td style="border-top:3px solid #C44A2C;padding:18px 28px 14px;border-bottom:1px solid #D8D2C4">
+  <span style="font-family:'Courier New',Courier,monospace;font-size:13px;font-weight:bold;letter-spacing:.24em;color:#181613">[ ${esc(wm.toUpperCase())} ]</span>
+</td></tr>
+<tr><td style="padding:24px 28px 12px">${paras}</td></tr>
+<tr><td style="padding:14px 28px 18px;border-top:1px solid #D8D2C4">
+  <span style="font-family:'Courier New',Courier,monospace;font-size:10px;letter-spacing:.08em;color:#6B6256">SENT WITH NOVANTU · ${esc(NV_CONTACT_EMAIL)}</span>
+</td></tr>
+</table></td></tr></table></body></html>`;
 }
 
 function buildLoginScreen() {
@@ -5881,6 +5932,7 @@ async function sendDialogConfirm() {
             to: r.email,
             subject: rend?.subject || tpl.subject,
             body: rend?.body || tpl.body,
+            html: nvEmailHtml(rend?.body || tpl.body),
             replyTo: userEmail || undefined,
             fromName: (ST.workspaces?.[wsId]?.name) || userName || undefined,
           }),
@@ -6933,6 +6985,7 @@ function buildBuilderPrintView() {
 
         <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Footer line</div>
           <input type="text" class="minp" value="${esc(pi.footerText||'')}" placeholder="Pricing valid for 30 days." onblur="settingsSetPath(['print','footerText'], this.value)" style="width:100%;box-sizing:border-box"></div>
+          ${hasWhitelabel() ? `<div style="margin-top:12px"><label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-700);cursor:pointer"><input type="checkbox" ${pi.hidePoweredBy?'checked':''} onchange="settingsSetPath(['print','hidePoweredBy'], this.checked)"> Hide &ldquo;Powered by NOVANTU&rdquo; on proposals &amp; portals <span class="badge" style="background:var(--bg2);border:1px solid var(--border);color:var(--text3)">ENTERPRISE</span></label></div>` : ''}
 
         <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);padding-bottom:4px;border-bottom:1px solid var(--border);margin-top:4px">Header layout</div>
 
@@ -7094,6 +7147,7 @@ function buildBuilderPrintView() {
         </tbody>
       </table>
       ${pi.footerText ? `<div style="margin-top:32px;padding-top:14px;border-top:1px solid ${headerBg};font-family:var(--mono);font-size:10px;color:#666;text-align:center;letter-spacing:.04em">${esc(pi.footerText)}</div>` : ''}
+      ${(pi.hidePoweredBy && hasWhitelabel()) ? '' : `<div style="margin-top:26px;font-family:'JetBrains Mono',monospace;font-size:8.5px;letter-spacing:.12em;color:#999;text-align:center">POWERED BY NOVANTU</div>`}
     </div>
     </div>
   `;
@@ -8684,7 +8738,7 @@ function buildOwnerPortal() {
       </div>` : ''}
 
       <!-- Footer -->
-      <div style="margin-top:48px;padding-top:24px;border-top:1px solid var(--border);font-family:var(--mono);font-size:10px;color:var(--text3);text-align:center;line-height:1.6">Powered by ${esc(brand.wordmark||'NOVANTU')}${pi.companyName?' · ' + esc(pi.companyName):''}${pi.footerText?'<br>' + esc(pi.footerText):''}</div>
+      <div style="margin-top:48px;padding-top:24px;border-top:1px solid var(--border);font-family:var(--mono);font-size:10px;color:var(--text3);text-align:center;line-height:1.6">${[(pi.hidePoweredBy && hasWhitelabel())?null:'Powered by NOVANTU', pi.companyName?esc(pi.companyName):null].filter(Boolean).join(' · ')}${pi.footerText?'<br>' + esc(pi.footerText):''}</div>
     </div>
   </div>`;
 }
@@ -9810,7 +9864,7 @@ function buildFollowUpModal() {
 
       <div class="fu-action-row">
         <button class="btn btn-amber" onclick="copyFollowUpEmails('${pid}','${esc(cat).replace(/'/g,"\\'")}')" ${!allEmails.length?'disabled style="opacity:.4;cursor:not-allowed"':''}>▤ Copy ${allEmails.length} Email${allEmails.length===1?'':'s'}</button>
-        <button class="btn" style="background:var(--green-bg);border:1px solid var(--green-border);color:var(--green);font-weight:600" onclick="markFollowUpSent('${pid}','${esc(cat).replace(/'/g,"\\'")}')">✓ Mark Email Sent — ${fmtDate(new Date().toISOString())}</button>
+        <button class="btn" style="background:var(--green-bg);border:1px solid var(--green-border);color:var(--green);font-weight:600" onclick="markFollowUpSent('${pid}','${esc(cat).replace(/'/g,"\\'")}')">✓ Mark email sent — ${fmtDate(new Date().toISOString())}</button>
       </div>
 
       <div class="fu-view-tabs">
@@ -10587,7 +10641,7 @@ async function runBidLeveling(pid, projName, cat) {
     render(); return;
   }
 
-  ST.bidLeveling[key] = { status:'running', stage:'Reading bid PDFs…', result:null, error:null, ts:Date.now() };
+  ST.bidLeveling[key] = { status:'running', stage:'Reading the bids…', result:null, error:null, ts:Date.now() };
   render();
 
   try {
@@ -10616,7 +10670,7 @@ async function runBidLeveling(pid, projName, cat) {
       });
     }
 
-    ST.bidLeveling[key].stage = 'AI is leveling the bids…';
+    ST.bidLeveling[key].stage = 'Leveling bids…';
     render();
 
     const res = await fetch(`${SUPABASE_URL}/functions/v1/level-bids`, {
@@ -10672,11 +10726,7 @@ function buildBidLevelingView(pid, projName, cat) {
   }
 
   if (lev.status === 'running') {
-    return `<div style="text-align:center;padding:50px 20px">
-      <div class="rp-spinner" style="margin:0 auto 16px;width:22px;height:22px;border-width:3px"></div>
-      <div style="font-family:var(--sans);font-size:14px;color:var(--text);font-weight:500;margin-bottom:4px">${esc(lev.stage||'Working…')}</div>
-      <div style="font-family:var(--mono);font-size:10px;color:var(--text3)">Reading PDFs and comparing scope — this can take 20-40 seconds.</div>
-    </div>`;
+    return nvAiLoader(lev.stage, 'Reading PDFs and comparing scope — 20-40 seconds.');
   }
 
   if (lev.status === 'error') {
@@ -10813,7 +10863,7 @@ async function bidsModalToggleCompare(sid, key) {
 function buildAddProjModal() {
   return `<div class="backdrop" onclick="if(event.target===this){ST.addProjModal=false;render()}">
     <div class="modal">
-      <div class="modal-title">Add New Project</div>
+      <div class="modal-title">Add new project</div>
       <div class="modal-sub">Enter the project name — categories can be activated after</div>
       <div class="modal-label">Project Name *</div>
       <input type="text" class="modal-input" id="np-name" placeholder="e.g. 1234 Ocean Ave" autofocus
@@ -11080,7 +11130,7 @@ function buildEditSubModal() {
         <button class="btn btn-danger btn-sm" onclick="confirmDeleteSub('${sub.id}')" title="Delete this subcontractor and all its bids from the database">✕ Delete</button>
         <span style="flex:1"></span>
         <button class="btn btn-ghost" onclick="ST.editSubModal=null;ST.editSubCodes=null;ST.editSubDivFilter='';render()">Cancel</button>
-        <button class="btn btn-amber" onclick="confirmEditSub('${sub.id}')">Save Changes</button>
+        <button class="btn btn-amber" onclick="confirmEditSub('${sub.id}')">Save changes</button>
       </div>
     </div>
   </div>`;
@@ -12531,10 +12581,10 @@ async function toFinalizePolygon(pid) {
   if (pts.length < 3) { showToast('Place at least 3 points before closing the polygon.', 'warn'); return; }
   if (!ST.toPxPerFoot) { showToast('Calibrate scale first.', 'warn'); return; }
 
-  ST.toAnalyzing = true; toRefreshChrome();
+  ST.toAnalyzing = true; toRefreshChrome(); toShowAnalyzing(true, 'Reading sheets…');
 
   const pdfCanvas = document.getElementById('to-pdf-canvas');
-  if (!pdfCanvas) { ST.toAnalyzing = false; toRefreshChrome(); return; }
+  if (!pdfCanvas) { ST.toAnalyzing = false; toShowAnalyzing(false); toRefreshChrome(); return; }
 
   // Bounding box of polygon + padding
   const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
@@ -12625,7 +12675,7 @@ async function toFinalizePolygon(pid) {
     ST.toSpaces = [...(ST.toSpaces || []), space];
     ST.toSelSpace = space.id;
     ST.toPolygonPts = [];
-    ST.toAnalyzing = false;
+    ST.toAnalyzing = false; toShowAnalyzing(false);
     saveSt();
     toClearLiveLayer();
     toRedrawAllPolygons();
@@ -12633,7 +12683,7 @@ async function toFinalizePolygon(pid) {
     showToast(`Identified: ${space.label} — ${space.areaSF} SF`, 'success');
 
   } catch (err) {
-    ST.toAnalyzing = false;
+    ST.toAnalyzing = false; toShowAnalyzing(false);
     toRefreshChrome();
     showToast('Vision error: ' + err.message, 'error');
   }
@@ -12770,6 +12820,23 @@ function toAttachInteractionHandlers() {
 
 // ── Chrome (sidebar + right panel) refresh ───────────────────────────────────
 // This only updates the surrounding HTML, NEVER the canvas zone (#to-canvas-zone).
+// Canvas overlay while Vision reads the sheet. Mounts into .to-canvas-container
+// (the CSS for .to-analyzing existed but was never wired — now it is).
+function toShowAnalyzing(on, label) {
+  const host = document.querySelector('.to-canvas-container');
+  let ov = document.getElementById('to-analyzing-ov');
+  if (!on) { if (ov) ov.remove(); return; }
+  if (!host) return;
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'to-analyzing-ov';
+    ov.className = 'to-analyzing';
+    host.appendChild(ov);
+  }
+  ov.innerHTML = `<div class="nv-cota on-dark"><i class="tl"></i><i class="ln"></i><i class="tr"></i></div>
+    <div class="to-analyzing-text">${esc(label || 'Reading sheets…')}</div>`;
+}
+
 function toRefreshChrome() {
   const root = document.getElementById('to-mount-root');
   if (!root) return;
@@ -12918,7 +12985,7 @@ async function toRunAITakeoff(pid) {
   const pdfCanvas = document.getElementById('to-pdf-canvas');
   if (!pdfCanvas) return;
 
-  ST.toAnalyzing = true; toRefreshChrome();
+  ST.toAnalyzing = true; toRefreshChrome(); toShowAnalyzing(true, 'Reading sheets…');
 
   try {
     const imageBase64 = pdfCanvas.toDataURL('image/jpeg', 0.85);
@@ -12943,7 +13010,7 @@ async function toRunAITakeoff(pid) {
     // data: { tradeDetected, groups: [{location, items: [{category, label, qty, unit, ...}]}], unreadable, notes }
 
     if (!data.groups || data.groups.length === 0) {
-      ST.toAnalyzing = false;
+      ST.toAnalyzing = false; toShowAnalyzing(false);
       toRefreshChrome();
       const reasons = (data.unreadable || []).join(' · ');
       showToast(`No markups extracted. ${reasons || data.notes || 'Try a clearer PDF with visible labels.'}`, 'warn');
@@ -12961,14 +13028,14 @@ async function toRunAITakeoff(pid) {
       planId: ST.toActivePlan?.planId || null,
     };
 
-    ST.toAnalyzing = false;
+    ST.toAnalyzing = false; toShowAnalyzing(false);
     saveSt();
     toRefreshChrome();
 
     const totalItems = data.groups.reduce((s, g) => s + (g.items?.length || 0), 0);
     showToast(`Extracted ${totalItems} measurement${totalItems===1?'':'s'} across ${data.groups.length} group${data.groups.length===1?'':'s'}`, 'success');
   } catch (err) {
-    ST.toAnalyzing = false;
+    ST.toAnalyzing = false; toShowAnalyzing(false);
     toRefreshChrome();
     showToast('AI extraction failed: ' + (err.message || err), 'error');
   }
@@ -13470,6 +13537,7 @@ const FEATURE_GROUPS = [
   { id: 'estimator',  label: 'Estimator + AI',    desc: 'Estimator, Ask AI with plan vision, Read Plans AI, Take-off', always: false },
   { id: 'fieldops',   label: 'Field Ops',         desc: 'Project scheduling (Gantt) + daily field logs',              always: false },
   { id: 'sendcenter', label: 'Send Center + Users',desc: 'Email send center, multiple users per workspace',            always: false },
+  { id: 'whitelabel', label: 'White-label',        desc: 'Hide "Powered by NOVANTU" on proposals and client portals',  always: false },
   { id: 'branding',   label: 'Workspace Branding', desc: 'Custom logo, accent color, company name',                     always: true  },
 ];
 
@@ -13481,25 +13549,25 @@ const SUBSCRIPTION_PLANS = [
     id: 'trial', name: 'Trial', price: 0,
     tagline: 'Try the full estimating workflow — limited to one project',
     maxProjects: 1,
-    features: { today: true, projects: true, estimator: true, fieldops: false, sendcenter: false, branding: true },
+    features: { today: true, projects: true, estimator: true, fieldops: false, sendcenter: false, branding: true, whitelabel: false },
   },
   {
     id: 'starter', name: 'Starter', price: 150,
     tagline: 'Solo estimators getting organized',
     maxProjects: null,
-    features: { today: true, projects: true, estimator: false, fieldops: false, sendcenter: false, branding: true },
+    features: { today: true, projects: true, estimator: false, fieldops: false, sendcenter: false, branding: true, whitelabel: false },
   },
   {
     id: 'pro', name: 'Pro', price: 200,
     tagline: 'Full estimating workflow with AI',
     maxProjects: null,
-    features: { today: true, projects: true, estimator: true, fieldops: true, sendcenter: false, branding: true },
+    features: { today: true, projects: true, estimator: true, fieldops: true, sendcenter: false, branding: true, whitelabel: false },
   },
   {
     id: 'enterprise', name: 'Enterprise', price: 300,
     tagline: 'Teams that send & collaborate',
     maxProjects: null,
-    features: { today: true, projects: true, estimator: true, fieldops: true, sendcenter: true, branding: true },
+    features: { today: true, projects: true, estimator: true, fieldops: true, sendcenter: true, branding: true, whitelabel: true },
   },
 ];
 
@@ -13534,6 +13602,13 @@ function hasFeature(featureId) {
   if (f && f.always) return true;
   const feats = getActiveFeatures();
   return feats[featureId] !== false;
+}
+
+// White-label is opt-in: a missing key must mean OFF (legacy workspaces),
+// so this reads === true instead of the lenient hasFeature() default.
+function hasWhitelabel() {
+  if (AUTH.isMaster && ST.masterSeeAll) return true;
+  return getActiveFeatures().whitelabel === true;
 }
 
 // ── Project-count limit (trial gating) ───────────────────────────────────────
@@ -13970,11 +14045,7 @@ function buildClientUpdateModal() {
 
   let inner;
   if (cu.status === 'running') {
-    inner = `<div style="text-align:center;padding:50px 20px">
-      <div class="rp-spinner" style="margin:0 auto 16px;width:22px;height:22px;border-width:3px"></div>
-      <div style="font-family:var(--sans);font-size:14px;color:var(--text);font-weight:500">Drafting the update…</div>
-      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:4px">Summarizing this period's logs + schedule.</div>
-    </div>`;
+    inner = nvAiLoader('Drafting the update…', "Summarizing this period's logs + schedule.");
   } else if (cu.status === 'error') {
     inner = `<div style="padding:30px 20px;text-align:center">
       <div style="font-family:var(--mono);font-size:11px;color:var(--red);margin-bottom:14px">Could not generate: ${esc(cu.error||'unknown')}</div>
@@ -14335,6 +14406,7 @@ ${senderName}`;
         to: r.assignedToEmail,
         subject,
         body,
+        html: nvEmailHtml(body),
         replyTo: AUTH.user?.email || undefined,
         fromName: (ST.workspaces?.[ST.activeWorkspace]?.name) || senderName,
       }),
@@ -17843,7 +17915,7 @@ function buildOwnerPortalV2() {
       </section>
 
       <footer class="owner-portal-footer">
-        Powered by ${esc(brand.wordmark||'NOVANTU')}${pi.companyName?` · ${esc(pi.companyName)}`:''}
+        ${[(pi.hidePoweredBy && hasWhitelabel())?null:'Powered by NOVANTU', pi.companyName?esc(pi.companyName):null].filter(Boolean).join(' · ')}
         ${pi.footerText?`<br>${esc(pi.footerText)}`:''}
       </footer>
     </main>
@@ -18999,7 +19071,7 @@ async function runPlanDiff(pid) {
     const oldB64 = oldPlan.dataUrl.split(',')[1];
     const newB64 = newPlan.dataUrl.split(',')[1];
 
-    ST.planDiff[pid].stage = 'AI is comparing revisions…';
+    ST.planDiff[pid].stage = 'Comparing revisions…';
     render();
 
     const res = await fetch(`${SUPABASE_URL}/functions/v1/diff-plans`, {
@@ -19077,10 +19149,7 @@ function buildPlanDiffCard(p, e) {
 
 function buildPlanDiffResult(pid, diff) {
   if (diff.status === 'running') {
-    return `<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--amber-border);text-align:center">
-      <div style="font-family:var(--sans);font-size:13px;color:var(--text);font-weight:500;margin-bottom:3px">${esc(diff.stage||'Working…')}</div>
-      <div style="font-family:var(--mono);font-size:10px;color:var(--text3)">Reading both sets and diffing — 20-40 seconds.</div>
-    </div>`;
+    return `<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--amber-border)">${nvAiLoader(diff.stage, 'Reading both sets and diffing — 20-40 seconds.', {compact:true})}</div>`;
   }
   if (diff.status === 'error') {
     return `<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--amber-border)">
