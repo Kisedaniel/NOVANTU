@@ -4240,11 +4240,11 @@ function currencySymbol() {
 const DEFAULT_TEMPLATES = {
   rfp: {
     subject: "RFP — {{project.name}} — {{category}}",
-    body: "Hi {{sub.contact}},\n\nWe're requesting a proposal for the following project:\n\nProject: {{project.name}}\nCategory: {{category}}\nDue: {{project.dueDate}}\n\nPlans and scope are attached. Please reply with your bid and any clarifying questions.\n\nThanks,\n{{user.name}}\n{{workspace.name}}\n{{user.email}}"
+    body: "Hi {{sub.contact}},\n\nYou're invited to bid on {{project.name}} \u2014 {{category}}. No account needed: open your private bid portal to see the plans, ask questions, and submit your price.\n\n{{sub_portal_link}}\n\nBids are due {{project.dueDate}}. Just reply here if anything's unclear.\n\nThanks,\n{{user.name}}\n{{workspace.name}}\n{{user.email}}"
   },
   followup: {
     subject: "Follow-up — {{project.name}} — {{category}}",
-    body: "Hi {{sub.contact}},\n\nFollowing up on the RFP we sent for {{project.name}} ({{category}}).\nIf you need any additional information let us know — otherwise we'd appreciate your bid by {{project.dueDate}}.\n\nThanks,\n{{user.name}}\n{{workspace.name}}"
+    body: "Hi {{sub.contact}},\n\nFollowing up on {{project.name}} ({{category}}) \u2014 we'd still love your number. Your bid portal is still open here:\n\n{{sub_portal_link}}\n\nIf you'd rather pass, a quick reply lets us know. Otherwise we'd appreciate your bid by {{project.dueDate}}.\n\nThanks,\n{{user.name}}\n{{workspace.name}}"
   }
 };
 
@@ -4976,11 +4976,28 @@ const NV_CONTACT_EMAIL = 'kisedaniel@gmail.com';
 
 // Branded HTML email (tables + inline styles, email-safe). Plain text in → HTML out.
 // The plain-text body stays in the payload as the fallback part.
-function nvEmailHtml(bodyText) {
+function nvEmailHtml(bodyText, opts) {
+  opts = opts || {};
   const wm = (getSettings().brand?.wordmark) || 'NOVANTU';
-  const paras = String(bodyText || '').split(/\n{2,}/).map(p =>
-    `<p style="margin:0 0 14px;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:#181613">${esc(p).replace(/\n/g,'<br>')}</p>`
-  ).join('');
+  const portal = opts.portalLink || '';
+  const label = opts.portalLabel || 'Open bid portal';
+  // Brand CTA button (email-safe: table + bgcolor, no flexbox/grid).
+  const button = (url) => `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 6px"><tr>
+    <td bgcolor="#C44A2C" style="border-radius:6px">
+      <a href="${esc(url)}" target="_blank" style="display:inline-block;padding:12px 26px;font-family:Helvetica,Arial,sans-serif;font-size:14px;font-weight:bold;color:#FAF8F2;text-decoration:none;border-radius:6px">${esc(label)} &rarr;</a>
+    </td></tr></table>`;
+  // Escape, then linkify bare URLs (the portal URL is left for the button).
+  const fmtPara = (txt) => {
+    let h = esc(txt).replace(/(https?:\/\/[^\s<]+)/g, (m) =>
+      (portal && m === esc(portal)) ? m
+      : `<a href="${m}" target="_blank" style="color:#C44A2C;text-decoration:underline">${m}</a>`);
+    return h.replace(/\n/g, '<br>');
+  };
+  const paras = String(bodyText || '').split(/\n{2,}/).map(p => {
+    // A portal link on its OWN line becomes the button.
+    if (portal && p.trim() === portal) return button(portal);
+    return `<p style="margin:0 0 14px;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:#181613">${fmtPara(p)}</p>`;
+  }).join('');
   return `<!doctype html><html><body style="margin:0;padding:0;background:#FAF8F2">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#FAF8F2;padding:24px 0"><tr><td align="center">
 <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="width:560px;max-width:92%;background:#FFFFFF;border:1px solid #D8D2C4">
@@ -5695,7 +5712,7 @@ function buildFilesTab() {
         </div>
 
         <div style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:18px;max-width:640px">
-          These templates are used when you click <b>SENT</b> on any project category. Use tokens like <code>{{project.name}}</code>, <code>{{category}}</code>, <code>{{sub.contact}}</code>, <code>{{user.name}}</code>, <code>{{user.email}}</code>, <code>{{workspace.name}}</code>, <code>{{project.dueDate}}</code> — they get replaced per recipient at send time.
+          These templates are used when you click <b>SENT</b> on any project category. Use tokens like <code>{{project.name}}</code>, <code>{{category}}</code>, <code>{{sub.contact}}</code>, <code>{{user.name}}</code>, <code>{{user.email}}</code>, <code>{{workspace.name}}</code>, <code>{{project.dueDate}}</code>, <code>{{sub_portal_link}}</code> — they get replaced per recipient at send time. Tip: put <code>{{sub_portal_link}}</code> on its own line and it becomes an &ldquo;Open bid portal&rdquo; button in the email.
         </div>
 
         ${['rfp','followup'].map(tid => {
@@ -5713,7 +5730,10 @@ function buildFilesTab() {
                     <button class="btn btn-ghost btn-sm" onclick="cancelTemplateEdit()">Cancel</button>
                     <button class="btn btn-amber btn-sm" onclick="saveTemplate('${tid}')">Save</button>
                   </div>`
-                : `<button class="btn btn-ghost btn-sm" onclick="editTemplate('${tid}')">Edit</button>`}
+                : `<div style="display:flex;gap:6px">
+                    <button class="btn btn-ghost btn-sm" onclick="resetTemplate('${tid}')" title="Restore the built-in NOVANTU template">Reset</button>
+                    <button class="btn btn-ghost btn-sm" onclick="editTemplate('${tid}')">Edit</button>
+                  </div>`}
             </div>
             <div style="padding:14px">
               ${isEd ? `
@@ -5737,6 +5757,15 @@ function buildFilesTab() {
 
 function editTemplate(tid) {
   ST.templateEditor = tid;
+  render();
+}
+function resetTemplate(tid) {
+  if (!DEFAULT_TEMPLATES[tid]) return;
+  if (!confirm('Restore the built-in NOVANTU ' + tid.toUpperCase() + ' template? Your current text for this template will be replaced.')) return;
+  if (!ST.emailTemplates) ST.emailTemplates = JSON.parse(JSON.stringify(DEFAULT_TEMPLATES));
+  ST.emailTemplates[tid] = { ...DEFAULT_TEMPLATES[tid] };
+  ST.templateEditor = null;
+  saveSt();
   render();
 }
 function cancelTemplateEdit() {
@@ -5932,7 +5961,7 @@ async function sendDialogConfirm() {
             to: r.email,
             subject: rend?.subject || tpl.subject,
             body: rend?.body || tpl.body,
-            html: nvEmailHtml(rend?.body || tpl.body),
+            html: nvEmailHtml(rend?.body || tpl.body, { portalLink: subPortalLink, portalLabel: "Open bid portal" }),
             replyTo: userEmail || undefined,
             fromName: (ST.workspaces?.[wsId]?.name) || userName || undefined,
           }),
