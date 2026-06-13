@@ -3626,6 +3626,56 @@ a:hover{opacity:.7}
 }
 .to-analyzing .to-analyzing-text{margin-top:12px}
 </style>
+<style id="nv-refine">
+/* ════════════════════════════════════════════════════════════════════════════
+   NOVANTU · Fase D — refinamiento estético (Plano Vivo). Solo pulido visual:
+   armoniza paleta, eleva superficies, afina jerarquía. Cero cambios de markup
+   o función. Cargado al final del <head> para ganar especificidad por orden.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* 1 · INFO SLATE — el "blueprint blue" (#2f5d8a) era más saturado que la paleta.
+   Lo bajo al Info slate apagado del manual (§3.2 · #51687f) + tintes derivados.
+   Recolorea, en cascada: badges SENT, links, toggles .set, stats azules,
+   arch-set links. Un solo punto de control. */
+:root{
+  --linea-100:#eaeef2;
+  --linea-500:#51687f;
+  --linea-700:#3b4a5a;
+  --blue-border:#c6cfd9;
+}
+.arch-set-btn.primary:hover{background:var(--linea-700)}  /* mata el hover azul-Jira #0052cc */
+
+/* 2 · ELEVACIÓN SOBRIA — lámina apoyada en la mesa: borde fino + sombra mínima
+   del token (§3.4 --nv-shadow). Profundidad sin fills pesados. */
+.stat-box{box-shadow:var(--nv-shadow)}
+.sb-item.active{box-shadow:inset 0 0 0 1px var(--bone-200)}
+
+/* 3 · JERARQUÍA BRUTAL en las cifras (§3.3): la cota manda, la etiqueta susurra. */
+.stat-num{font-size:24px !important;letter-spacing:-0.02em;line-height:1.05}
+
+/* 4 · LÍNEA DE COTA como firma — remates en T calmados (color línea) en el
+   bloque de marca y el titleblock superior. Nunca compiten. */
+.sb-brand{position:relative}
+.sb-brand::before,.sb-brand::after{content:"";position:absolute;bottom:-3px;width:1px;height:6px;background:var(--rule)}
+.sb-brand::before{left:16px}
+.sb-brand::after{right:16px}
+.app-topbar{position:relative}
+.app-topbar::before,.app-topbar::after{content:"";position:absolute;bottom:-3px;width:1px;height:6px;background:var(--rule);pointer-events:none}
+.app-topbar::before{left:0}
+.app-topbar::after{right:0}
+
+/* 5 · FOCO refinado en formularios (donde más se teclea): halo rojo tenue,
+   borde ink. Acota el acento de marca al gesto de edición. */
+.modal input:focus,.modal textarea:focus,.modal select:focus,
+.nv-sheet-input:focus{box-shadow:0 0 0 3px rgba(196,74,44,.10)}
+
+/* 6 · DETALLES de oficio — selección y scrollbars finos y precisos. */
+::selection{background:rgba(196,74,44,.16);color:var(--ink-900)}
+::-webkit-scrollbar{width:11px;height:11px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:6px;background-clip:padding-box;border:3px solid transparent}
+::-webkit-scrollbar-thumb:hover{background:var(--ink-300)}
+::-webkit-scrollbar-track{background:transparent}
+</style>
 </head>
 <body>
 <div class="app" id="app"></div>
@@ -5511,6 +5561,9 @@ function render() {
   if (typeof installGlobalErrorHandler === 'function') installGlobalErrorHandler();
   // Invalidate memoization caches at the start of each render
   _invalidateProjectSubCache();
+  // Reset the take-off skip flag; buildEstTakeoff() re-asserts it this pass if
+  // the live PDF canvas must be preserved (see the skip check below).
+  _TO_RENDER_SKIP = false;
 
   // ── Animation gating: only animate tab-switch when the tab actually changes,
   // and only animate a modal/backdrop the first time it appears. Without this,
@@ -5579,13 +5632,20 @@ function render() {
     scrollSnap[key] = { top: el.scrollTop, left: el.scrollLeft };
   });
 
-  let html;
+  let html, buildOk = true;
   try {
     html = buildApp();
   } catch (error) {
+    buildOk = false;
     logError('render', error, `tab=${ST.tab} selProj=${ST.selProj} selSub=${ST.selSub}`);
     html = buildErrorBoundaryFallback(error, `Rendering tab "${ST.tab}"`);
   }
+  // Take-off live: buildEstTakeoff() set _TO_RENDER_SKIP because replacing
+  // #app.innerHTML would wipe the rendered PDF <canvas> and detach the Konva
+  // stage mid-draw (the crash that bounced you out of take-offs). Skip the
+  // destructive rebuild — buildEstTakeoff already scheduled a surgical
+  // toRefreshChrome() for the sidebar/toolbar/detail panels.
+  if (buildOk && _TO_RENDER_SKIP) return;
   document.getElementById('app').innerHTML = html;
   // Apply entry-animation classes ONLY when warranted (see gating above)
   if (tabChanged) {
@@ -12074,6 +12134,10 @@ const _TO = {
   panMode: false,           // toggle via spacebar or tool button
   panning: false,           // actively dragging
   panStart: null,
+  loadingPlanId: null,      // plan whose PDF is being decoded right now (race guard)
+  loadedPlanId: null,       // plan whose PDF is currently mounted on the canvas
+  renderTask: null,         // in-flight pdf.js RenderTask (so we can cancel it)
+  renderSeq: 0,             // monotonic token; stale async renders bail out
 };
 
 // ── State helpers (these touch ST and saveSt) ─────────────────────────────────
@@ -12194,9 +12258,13 @@ function toSelectPlan(pid, planId) {
   ST.toCalState = 'idle'; ST.toCalPoints = []; ST.toPxPerFoot = null;
   ST.toPolygonPts = [];
   _TO.zoom = 1; _TO.pageNum = 1;
+  // Drop the previous plan's doc so the new one mounts cleanly (and cancel any
+  // in-flight render targeting the shared canvas).
+  if (_TO.renderTask) { try { _TO.renderTask.cancel(); } catch (e) {} _TO.renderTask = null; }
+  _TO.pdfDoc = null; _TO.loadedPlanId = null; _TO.loadingPlanId = null;
   saveSt();
   toRefreshChrome();
-  toLoadPDFAndRender(pl.dataUrl);
+  toLoadPDFAndRender(pl.dataUrl, planId);
 }
 
 function toChangePage(delta) {
@@ -12222,7 +12290,13 @@ function toSetZoom(z) {
 }
 
 // ── PDF loading ──────────────────────────────────────────────────────────────
-async function toLoadPDFAndRender(dataUrl) {
+async function toLoadPDFAndRender(dataUrl, planId) {
+  planId = planId || ST.toActivePlan?.planId || null;
+  // Already mounted for this plan → just (re)draw. Already loading it →
+  // ignore the duplicate (concurrent loads make pdf.js throw on the canvas).
+  if (planId && _TO.loadedPlanId === planId && _TO.pdfDoc) { toRenderCurrentPage(); return; }
+  if (planId && _TO.loadingPlanId === planId) return;
+  _TO.loadingPlanId = planId;
   try {
     await toEnsureLibs();
     const lib = window.pdfjsLib;
@@ -12234,13 +12308,21 @@ async function toLoadPDFAndRender(dataUrl) {
     const bytes = new Uint8Array(binStr.length);
     for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
 
-    _TO.pdfDoc = await lib.getDocument({ data: bytes }).promise;
-    _TO.totalPages = _TO.pdfDoc.numPages;
+    // User may have switched plans while we were decoding — bail if stale.
+    if (planId && _TO.loadingPlanId !== planId) return;
+    const doc = await lib.getDocument({ data: bytes }).promise;
+    if (planId && _TO.loadingPlanId !== planId) { try { doc.destroy(); } catch (e) {} return; }
+
+    _TO.pdfDoc = doc;
+    _TO.totalPages = doc.numPages;
     _TO.pageNum = 1;
+    _TO.loadedPlanId = planId;
     await toRenderCurrentPage();
     toRefreshChrome();
   } catch (err) {
-    showToast('PDF render error: ' + err.message, 'error');
+    showToast('PDF render error: ' + (err?.message || err), 'error');
+  } finally {
+    if (_TO.loadingPlanId === planId) _TO.loadingPlanId = null;
   }
 }
 
@@ -12250,7 +12332,13 @@ async function toRenderCurrentPage() {
   const wrapper = document.getElementById('to-canvas-inner');
   if (!pdfCanvas || !wrapper) return;
 
+  // pdf.js throws if two render() calls target the same canvas concurrently.
+  // Cancel any in-flight render and tag this one so a superseded pass bails.
+  if (_TO.renderTask) { try { _TO.renderTask.cancel(); } catch (e) {} _TO.renderTask = null; }
+  const seq = ++_TO.renderSeq;
+
   const page = await _TO.pdfDoc.getPage(_TO.pageNum);
+  if (seq !== _TO.renderSeq) return;   // a newer render started while awaiting
 
   // Determine base scale to fit canvas zone
   const zone = document.getElementById('to-canvas-zone');
@@ -12276,7 +12364,17 @@ async function toRenderCurrentPage() {
   const ctx = pdfCanvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  const task = page.render({ canvasContext: ctx, viewport: vp });
+  _TO.renderTask = task;
+  try {
+    await task.promise;
+  } catch (e) {
+    if (e && e.name === 'RenderingCancelledException') return;  // expected on cancel/supersede
+    throw e;
+  } finally {
+    if (_TO.renderTask === task) _TO.renderTask = null;
+  }
+  if (seq !== _TO.renderSeq) return;   // superseded while rendering
 
   // Initialize Konva stage to match
   toInitKonvaStage(vp.width, vp.height);
@@ -13362,7 +13460,11 @@ function buildEstTakeoff(p, e) {
 
   // ── Active session — viewer + calculator UI ────────────────────────────────
   const existingRoot = document.getElementById('to-mount-root');
-  if (existingRoot && _TO.mounted && _TO.pdfDoc) {
+  const activePlanId = ST.toActivePlan?.planId;
+  // Preserve the live canvas not just when a PDF is mounted, but also while one
+  // is still decoding for THIS plan — otherwise a concurrent render() rebuilds
+  // the canvas out from under the in-flight load.
+  if (existingRoot && _TO.mounted && (_TO.pdfDoc || (_TO.loadingPlanId && _TO.loadingPlanId === activePlanId))) {
     setTimeout(() => { toRefreshChrome(); }, 0);
     _TO_RENDER_SKIP = true;
     return existingRoot.outerHTML;
@@ -13371,9 +13473,10 @@ function buildEstTakeoff(p, e) {
   _TO.mounted = true;
 
   setTimeout(() => {
-    if (ST.toActivePlan && !_TO.pdfDoc) {
-      const pl = e.plans.find(x => x.id === ST.toActivePlan.planId);
-      if (pl?.dataUrl) toLoadPDFAndRender(pl.dataUrl);
+    const planId = ST.toActivePlan?.planId;
+    if (planId && _TO.loadedPlanId !== planId && _TO.loadingPlanId !== planId) {
+      const pl = e.plans.find(x => x.id === planId);
+      if (pl?.dataUrl) toLoadPDFAndRender(pl.dataUrl, planId);
     } else if (_TO.pdfDoc) {
       toRenderCurrentPage();
     }
@@ -13443,8 +13546,12 @@ function toHandleDrop(ev, pid, typeId) {
 
 // Reset mount flag when leaving take-off tab so re-entry triggers a fresh load
 function _toMountReset() {
+  if (_TO.renderTask) { try { _TO.renderTask.cancel(); } catch (e) {} _TO.renderTask = null; }
+  _TO.renderSeq++;
   _TO.mounted = false;
   _TO.pdfDoc = null;
+  _TO.loadingPlanId = null;
+  _TO.loadedPlanId = null;
   _TO.konvaStage = null;
   _TO.konvaBgLayer = null;
   _TO.konvaLiveLayer = null;
