@@ -3676,6 +3676,112 @@ a:hover{opacity:.7}
 ::-webkit-scrollbar-thumb:hover{background:var(--ink-300)}
 ::-webkit-scrollbar-track{background:transparent}
 </style>
+<style id="nv-today">
+/* Reusable dimension-line divider (T-ends). Shared across Today/Estimator/Settings. */
+.nv-dimline{position:relative;height:1px;background:var(--rule);margin:22px 0}
+.nv-dimline::before,.nv-dimline::after{content:"";position:absolute;top:-3px;width:1px;height:7px;background:var(--rule)}
+.nv-dimline::before{left:0}.nv-dimline::after{right:0}
+
+/* ── Today as the day's sheet ─────────────────────────────────────────────── */
+.nv-today{max-width:1080px}
+.nv-td-head{margin-bottom:22px}
+.nv-td-kick{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-500)}
+.nv-td-kick::before{content:"[ ";color:var(--bone-300)}
+.nv-td-kick::after{content:" ]";color:var(--bone-300)}
+.nv-td-greeting{font-family:var(--sans);font-size:28px;font-weight:700;letter-spacing:-.02em;color:var(--ink-900);margin:6px 0 2px}
+.nv-td-sub{font-family:var(--sans);font-size:13px;color:var(--ink-500)}
+
+/* titleblock stat cells */
+.nv-td-cells{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.nv-td-cell{position:relative;text-align:left;background:var(--bg2);border:1px solid var(--border);border-radius:var(--nv-radius);padding:14px 16px 12px;box-shadow:var(--nv-shadow);cursor:pointer;overflow:hidden;transition:transform .12s ease, box-shadow .12s ease;font-family:inherit}
+.nv-td-cell::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--td-accent)}
+.nv-td-cell:hover{transform:translateY(-1px);box-shadow:0 2px 4px rgba(24,22,19,.08),0 10px 22px rgba(24,22,19,.09)}
+.nv-td-cell:active{transform:translateY(0)}
+.nv-td-cell.is-zero{cursor:default;opacity:.6}
+.nv-td-cell.is-zero::before{background:var(--bone-300)}
+.nv-td-cellnum{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:26px;font-weight:600;letter-spacing:-.02em;line-height:1;color:var(--td-accent)}
+.nv-td-cell.is-zero .nv-td-cellnum{color:var(--ink-300)}
+.nv-td-celllabel{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink-500);margin-top:7px}
+
+/* two-column distribution of the four sections */
+.nv-td-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.nv-td-col{display:flex;flex-direction:column;gap:16px}
+.nv-td-phead{display:flex;align-items:center;gap:9px;padding:2px 2px 9px}
+.nv-td-tick{width:9px;height:9px;background:var(--td-accent);flex-shrink:0}
+.nv-td-ptitle{flex:1;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-900)}
+.nv-td-pcount{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.06em;color:var(--bone-50);background:var(--td-accent);padding:2px 8px;border-radius:var(--nv-radius-pill);min-width:20px;text-align:center}
+
+/* harmonize the soon/info row markers (the old --blueprint var was undefined) */
+.today-marker-soon{background:var(--amber)}
+.today-marker-info{background:var(--linea-500);opacity:.8}
+
+@media (max-width: 920px){
+  .nv-td-cells{grid-template-columns:repeat(2,1fr)}
+  .nv-td-grid{grid-template-columns:1fr}
+}
+</style>
+<style id="nv-estimator">
+/* Estimator topbar → titleblock: a dimension rule with T-ends at the corners. */
+.est-topbar{position:relative;box-shadow:var(--nv-shadow)}
+.est-topbar::before,.est-topbar::after{content:"";position:absolute;bottom:-1px;width:1px;height:6px;background:var(--rule);pointer-events:none}
+.est-topbar::before{left:0}
+.est-topbar::after{right:0}
+
+/* Project selector → titleblock cell. */
+.est-projsel{box-shadow:var(--nv-shadow)}
+.est-projsel-kicker{color:var(--ink-500)}
+
+/* Active tab → ink label + a red cota underline (was amber text). "You are here"
+   in the brand's dimension-line language; frees amber for technical notes. */
+.est-tab.on{background:transparent !important;border-color:transparent !important}
+.est-tab.on .est-tab-label{color:var(--ink-900) !important;font-weight:600}
+.est-tab.on .est-tab-meta{color:var(--plano-700) !important}
+.est-tab.on::after{content:"";position:absolute;left:12px;right:12px;bottom:2px;height:2px;background:var(--plano-500)}
+.est-tab{position:relative}
+
+/* Canvas toolbar — cota separators between control groups. */
+.to-tool-sep{position:relative;width:1px;height:20px;background:var(--rule);margin:0 7px;flex-shrink:0;align-self:center}
+.to-tool-sep::before,.to-tool-sep::after{content:"";position:absolute;left:-2px;width:5px;height:1px;background:var(--rule)}
+.to-tool-sep::before{top:0}
+.to-tool-sep::after{bottom:0}
+</style>
+<style id="nv-settings-css">
+/* Settings as numbered sheets (láminas). Auto-numbered via CSS counters so the
+   sequence stays correct even when the estimator section is feature-gated off. */
+.nv-settings{counter-reset:nvsheet}
+.nv-set-kick{position:relative}
+.nv-set-kick::before{counter-increment:nvsheet;content:counter(nvsheet,decimal-leading-zero) " · ";color:var(--plano-500);font-weight:700}
+
+/* Each section becomes a sheet, separated by a dimension line with T-ends. */
+.nv-settings > div[style*="margin-bottom:24px"]{position:relative;border-top:1px solid var(--rule);padding-top:22px;margin-top:22px}
+.nv-settings > div[style*="margin-bottom:24px"]::before,
+.nv-settings > div[style*="margin-bottom:24px"]::after{content:"";position:absolute;top:-3px;width:1px;height:7px;background:var(--rule)}
+.nv-settings > div[style*="margin-bottom:24px"]::before{left:0}
+.nv-settings > div[style*="margin-bottom:24px"]::after{right:0}
+
+/* Section content boxes pick up the brand surface + subtle elevation. */
+.nv-settings > div[style*="margin-bottom:24px"] > div[style*="border:1px solid var(--border)"]{box-shadow:var(--nv-shadow);border-radius:var(--nv-radius)}
+</style>
+<style id="nv-insights-css">
+/* Insights KPIs → titleblock cells: brutal mono numbers, accent tick, elevation. */
+.nv-kpi{position:relative;background:var(--bg2);border:1px solid var(--border);border-radius:var(--nv-radius);padding:14px 16px 12px;box-shadow:var(--nv-shadow);overflow:hidden}
+.nv-kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--kpi-accent)}
+.nv-kpi-num{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:26px;font-weight:700;letter-spacing:-.02em;line-height:1}
+.nv-kpi-lbl{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink-500);margin-top:7px}
+.nv-insights > div > div[style*="border:1px solid var(--border)"]{box-shadow:var(--nv-shadow);border-radius:var(--nv-radius)}
+</style>
+<style id="nv-projects-css">
+/* Project detail header → titleblock (matches Today/Settings/Estimator). */
+.d-kicker{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-500);margin-bottom:6px}
+.d-kicker::before{content:"[ ";color:var(--bone-300)}
+.d-kicker::after{content:" ]";color:var(--bone-300)}
+.d-header .d-title{font-size:26px;font-weight:700;letter-spacing:-.02em;line-height:1.05}
+.d-del{position:absolute;top:20px;right:24px;background:transparent;border:1px solid var(--border);color:var(--ink-500);padding:5px 11px;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;border-radius:var(--nv-radius);transition:border-color .12s,color .12s,background .12s}
+.d-del:hover{border-color:#a6311b;color:#a6311b;background:rgba(166,49,27,.06)}
+/* stats-row cells get a small drafting tick at the top — titleblock-cell language. */
+.stats-row .stat-box{position:relative}
+.stats-row .stat-box::before{content:"";position:absolute;top:0;left:16px;width:14px;height:2px;background:var(--bone-300)}
+</style>
 </head>
 <body>
 <div class="app" id="app"></div>
@@ -7762,13 +7868,13 @@ function buildSettingsTab() {
   const LOCALES = [['en-US','English (US)'],['es-MX','Español (México)'],['es-ES','Español (España)'],['en-GB','English (UK)']];
   const THEMES = [['bone','Bone (default)'],['dark','Dark'],['sepia','Sepia'],['hc','High contrast']];
 
-  return `<div class="overview-panel">
-    <div style="display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:1px solid var(--ink-700);margin-bottom:20px;gap:24px">
+  return `<div class="overview-panel nv-settings">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:1px solid var(--rule);margin-bottom:6px;gap:24px">
       <div><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">[ SETTINGS ]</div><h1 style="font-size:26px;font-weight:600;letter-spacing:-0.02em;color:var(--ink-900);margin:0">Preferences</h1></div>
       <button class="btn btn-amber btn-sm" onclick="settingsResetDefaults()">↻ Reset defaults</button>
     </div>
 
-    <div style="margin-bottom:24px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Display · Theme</div>
+    <div style="margin-bottom:24px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Display · Theme</div>
       <div style="border:1px solid var(--border);background:var(--bg);padding:18px 22px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px">
         <div><div class="modal-label">Theme</div><select class="msel" onchange="settingsSet('theme', this.value)">${THEMES.map(([c,l]) => `<option value="${c}"${s.theme===c?' selected':''}>${l}</option>`).join('')}</select></div>
         <div><div class="modal-label">Currency</div><select class="msel" onchange="settingsSet('currency', this.value)">${CURRENCIES.map(([c,l]) => `<option value="${c}"${s.currency===c?' selected':''}>${l}</option>`).join('')}</select></div>
@@ -7776,7 +7882,7 @@ function buildSettingsTab() {
       </div>
     </div>
 
-    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Email · Send from your Gmail</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Your own connection — emails you send go out from your account.</div></div>
+    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Email · Send from your Gmail</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Your own connection — emails you send go out from your account.</div></div>
       <div style="border:1px solid var(--border);background:var(--bg);padding:18px 22px">
         <div style="font-family:var(--mono);font-size:11px;color:var(--text3);line-height:1.5;margin-bottom:14px">
           Connect your Gmail so that when you send RFQs, follow-ups, or client updates from Novantu, they're delivered from your own address (with replies coming back to you). Your connection is private to your account and stored securely on the server.
@@ -7785,7 +7891,7 @@ function buildSettingsTab() {
       </div>
     </div>
 
-    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Brand</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Resell-ready — wordmark, logo, accent.</div></div>
+    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Brand</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Resell-ready — wordmark, logo, accent.</div></div>
       <div style="border:1px solid var(--border);background:var(--bg);padding:18px 22px;display:grid;grid-template-columns:1fr 1fr;gap:18px">
         <div><div class="modal-label">Wordmark</div><input type="text" class="minp" value="${esc(s.brand?.wordmark||'')}" placeholder="NOVANTU" onblur="settingsSetPath(['brand','wordmark'], this.value)"></div>
         <div><div class="modal-label">Subtitle (optional)</div><input type="text" class="minp" value="${esc(s.brand?.subtitle||'')}" placeholder="Estimating Suite" onblur="settingsSetPath(['brand','subtitle'], this.value)"></div>
@@ -7794,20 +7900,20 @@ function buildSettingsTab() {
       </div>
     </div>
 
-    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Print / PDF template</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Edit directly from Builder → Print preview → ✎ Edit template.</div></div>
+    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Print / PDF template</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Edit directly from Builder → Print preview → ✎ Edit template.</div></div>
       <div style="border:1px solid var(--border);background:var(--bg);padding:18px 22px;font-family:var(--mono);font-size:11px;color:var(--text3);line-height:1.6">
         Company info, logo placement, fonts, colors, header & footer are now edited live with preview in the print template editor. Go to Builder → pick a project → ▤ Print preview → ✎ Edit template.
       </div>
     </div>
 
-    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Default markup by cost type</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Applied when adding a Builder item.</div></div>
+    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Default markup by cost type</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Applied when adding a Builder item.</div></div>
       <div style="border:1px solid var(--border);background:var(--bg);overflow:hidden">
         ${COST_TYPES.map(ct => `<div style="display:grid;grid-template-columns:200px 1fr 100px 40px;align-items:center;padding:10px 18px;border-bottom:1px solid var(--border);gap:10px"><div style="font-size:13px;color:var(--ink-900);font-weight:500">${esc(ct)}</div><div style="font-family:var(--mono);font-size:11px;color:var(--text3)">${ct==='None'?'No category':ct==='Materials'?'Wood, hardware':ct==='Labor'?'In-house crews':ct==='Subcontractor'?'External trades':ct==='Equipment'?'Rentals':'Custom'}</div><div style="display:flex;align-items:center;gap:6px"><input type="number" step="0.5" class="minp" style="text-align:right;font-family:var(--mono)" value="${s.defaultMarkup?.[ct] ?? 0}" onchange="settingsSetMarkup('${esc(ct)}', Number(this.value))"><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">%</span></div>${DEFAULT_COST_TYPES.includes(ct) ? '' : `<button class="btn btn-ghost btn-sm" style="color:var(--red);padding:3px 6px" onclick="settingsRemoveCostType('${esc(ct)}')">✕</button>`}</div>`).join('')}
         <div style="padding:10px 18px;display:flex;gap:8px;align-items:center"><input type="text" class="minp" id="new-ct" placeholder="Add custom cost type…" onkeydown="if(event.key==='Enter')settingsAddCostType()" style="flex:1"><button class="btn btn-amber btn-sm" onclick="settingsAddCostType()">+ Add type</button></div>
       </div>
     </div>
 
-    ${hasFeature('estimator') ? `<div style="margin-bottom:24px" id="settings-pricing"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Take-off unit prices</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Edit unit costs that feed Estimator → Take-off line items.</div></div>
+    ${hasFeature('estimator') ? `<div style="margin-bottom:24px" id="settings-pricing"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Take-off unit prices</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Edit unit costs that feed Estimator → Take-off line items.</div></div>
       <div style="border:1px solid var(--border);background:var(--bg);overflow:hidden">
         ${TAKEOFF_TYPES.map(t => {
           const items = getPricingForType(t.id);
@@ -7843,40 +7949,40 @@ function buildSettingsTab() {
       </div>
     </div>` : ''}
 
-    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Trade categories</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">${CATS.length} active · used across Projects, RFQs, and Bids.${Array.isArray(ST.customCategories)?` <button onclick="if(confirm('Reset trade categories to default? Your customizations will be lost (existing bid data is preserved).')){resetCategoriesToDefault();render();showToast('Categories reset to default.','success')}" style="background:none;border:none;color:var(--ink-900);text-decoration:underline;cursor:pointer;font-family:var(--mono);font-size:10px;padding:0;margin-left:6px">Reset to default</button>`:''}</div></div>
+    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Trade categories</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">${CATS.length} active · used across Projects, RFQs, and Bids.${Array.isArray(ST.customCategories)?` <button onclick="if(confirm('Reset trade categories to default? Your customizations will be lost (existing bid data is preserved).')){resetCategoriesToDefault();render();showToast('Categories reset to default.','success')}" style="background:none;border:none;color:var(--ink-900);text-decoration:underline;cursor:pointer;font-family:var(--mono);font-size:10px;padding:0;margin-left:6px">Reset to default</button>`:''}</div></div>
       <div style="border:1px solid var(--border);background:var(--bg);overflow:hidden;max-height:380px;overflow-y:auto">
         ${CATS.map((cat, i) => `<div style="display:grid;grid-template-columns:30px 1fr 80px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--border);gap:10px"><div style="font-family:var(--mono);font-size:10px;color:var(--text3);text-align:right">${String(i+1).padStart(2,'0')}</div><input type="text" class="minp" value="${esc(cat)}" onblur="if(this.value.trim()&&this.value.trim().toUpperCase()!==('${esc(cat)}').toUpperCase()){renameCategory('${esc(cat)}', this.value);render()}" style="font-family:var(--mono);font-size:12px;color:var(--ink-900);font-weight:500"><button class="btn btn-ghost btn-sm" style="color:var(--red);padding:3px 8px" title="Remove this category" onclick="if(confirm('Remove category \\'${esc(cat)}\\'? Existing bid data under this category will be hidden but not deleted.')){removeCategory('${esc(cat)}');render();showToast('Category removed.','success')}">✕ Remove</button></div>`).join('')}
         <div style="padding:10px 14px;display:flex;gap:8px;align-items:center;background:var(--bg1)"><input type="text" class="minp" id="new-cat" placeholder="Add new trade category (e.g. PAINTING)…" onkeydown="if(event.key==='Enter'){if(addCategory(this.value)){this.value='';render();showToast('Category added.','success')}else{alert('Category already exists or invalid name.')}}" style="flex:1;font-family:var(--mono);text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"><button class="btn btn-amber btn-sm" onclick="const inp=document.getElementById('new-cat');if(addCategory(inp.value)){inp.value='';render();showToast('Category added.','success')}else{alert('Category already exists or invalid name.')}">+ Add category</button></div>
       </div>
     </div>
 
-    <div style="margin-bottom:24px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Notifications</div>
+    <div style="margin-bottom:24px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Notifications</div>
       <div style="border:1px solid var(--border);background:var(--bg);padding:14px 22px">
         ${[['newBids','New bids received'],['pendingCOs','Change orders awaiting approval'],['dueDateAlerts','Due-date alerts (<7 days, overdue)'],['threadReplies','RFP thread replies']].map(([k,l]) => `<label style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:13px;color:var(--ink-900);cursor:pointer"><input type="checkbox" ${(s.notifs?.[k]!==false)?'checked':''} onchange="settingsSetPath(['notifs','${k}'], this.checked)"><span style="flex:1">${esc(l)}</span></label>`).join('')}
       </div>
     </div>
 
-    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Keyboard shortcuts</div><label style="font-family:var(--mono);font-size:11px;color:var(--text2);cursor:pointer;display:flex;align-items:center;gap:6px"><input type="checkbox" ${s.kbNavEnabled!==false?'checked':''} onchange="settingsSet('kbNavEnabled', this.checked)">Enable j/k list navigation</label></div>
+    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Keyboard shortcuts</div><label style="font-family:var(--mono);font-size:11px;color:var(--text2);cursor:pointer;display:flex;align-items:center;gap:6px"><input type="checkbox" ${s.kbNavEnabled!==false?'checked':''} onchange="settingsSet('kbNavEnabled', this.checked)">Enable j/k list navigation</label></div>
       <div style="border:1px solid var(--border);background:var(--bg);padding:14px 22px;display:grid;grid-template-columns:repeat(2, 1fr);gap:8px 24px;font-family:var(--mono);font-size:11px">
         ${[['Cmd / Ctrl + K','Open command palette'],['Esc','Close palette / modals'],['j or ↓','Next item'],['k or ↑','Previous item'],['Enter','Open selected'],['G','Jump to last'],['Shift + click (Builder #)','Range-select items']].map(([k,l]) => `<div style="display:flex;justify-content:space-between;gap:14px"><span style="background:var(--bg1);border:1px solid var(--border);padding:2px 7px;color:var(--ink-900);letter-spacing:.04em">${esc(k)}</span><span style="color:var(--text2);text-align:right">${esc(l)}</span></div>`).join('')}
       </div>
     </div>
 
-    <div style="margin-bottom:24px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Email signature</div>
+    <div style="margin-bottom:24px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Email signature</div>
       <div style="border:1px solid var(--border);background:var(--bg);padding:18px 22px"><textarea id="set-signature" class="minp" rows="5" style="resize:vertical;width:100%;font-family:var(--mono);font-size:12px;line-height:1.6" onblur="settingsSet('emailSignature', this.value)">${esc(s.emailSignature||'')}</textarea><div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:8px">Use <code>{{user.signature}}</code> in templates.</div></div>
     </div>
 
-    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Auto-snapshots</div><button class="btn btn-ghost btn-sm" onclick="snapshotForceNow()">+ Take snapshot now</button></div>
+    <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Auto-snapshots</div><button class="btn btn-ghost btn-sm" onclick="snapshotForceNow()">+ Take snapshot now</button></div>
       <div style="border:1px solid var(--border);background:var(--bg)">${(() => { const list = snapshotList(); if (list.length === 0) return `<div style="padding:18px 22px;font-family:var(--mono);font-size:11px;color:var(--text3);font-style:italic">No snapshots yet. Up to ${SNAPSHOT_MAX} kept automatically.</div>`; return list.map((sn, i) => `<div style="display:flex;align-items:center;gap:14px;padding:10px 18px;border-bottom:1px solid var(--border)"><div style="flex:1;min-width:0"><div style="font-size:13px;color:var(--ink-900);font-weight:500">Snapshot ${i+1}${i===0?' · latest':''}</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px">${fmtDateRel(sn.ts)} · ${new Date(sn.ts).toLocaleString()} · ${Math.round(sn.size/1024)} KB</div></div><button class="btn btn-amber btn-sm" onclick="snapshotRestore(${i})">↶ Restore</button><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="snapshotDelete(${i})">✕</button></div>`).join(''); })()}</div>
     </div>
 
-    <div style="margin-bottom:24px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Storage</div>
+    <div style="margin-bottom:24px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Storage</div>
       <div style="border:1px solid var(--border);background:var(--bg);padding:18px 22px" id="storage-telemetry">
         <div style="font-family:var(--mono);font-size:11px;color:var(--text3);font-style:italic">Loading storage info...</div>
       </div>
     </div>
 
-    <div style="margin-bottom:24px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Data</div>
+    <div style="margin-bottom:24px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Data</div>
       <div style="border:1px solid var(--border);background:var(--bg);padding:18px 22px;display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="btn btn-ghost btn-sm" onclick="settingsExportJson()">↓ Export JSON</button><button class="btn btn-ghost btn-sm" onclick="settingsImportJson()">↑ Import JSON</button><span style="flex:1"></span><button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="settingsResetAll()">△ Reset all data</button></div>
     </div>
   </div>`;
@@ -8314,6 +8420,42 @@ function notifMarkRead() { ST.notifReadTs = new Date().toISOString(); saveSt(); 
 // ============================================================
 // INSIGHTS TAB
 // ============================================================
+// Monochrome sparkline (inline SVG, no axes) — Plano Vivo data motif.
+function nvSparkline(values, opts) {
+  opts = opts || {};
+  const w = opts.w || 120, h = opts.h || 26, pad = 2;
+  if (!values || values.length < 2) return '';
+  const max = Math.max(...values, 1), min = Math.min(...values, 0);
+  const range = (max - min) || 1, n = values.length;
+  const pts = values.map((v, i) => {
+    const x = pad + (i / (n - 1)) * (w - 2 * pad);
+    const y = h - pad - ((v - min) / range) * (h - 2 * pad);
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  const lx = w - pad, ly = h - pad - ((values[n - 1] - min) / range) * (h - 2 * pad);
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="display:block" aria-hidden="true">
+    <polyline points="${pts}" fill="none" stroke="var(--ink-300)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2" fill="var(--plano-500)"/>
+  </svg>`;
+}
+
+// Daily activity volume over the last N days, bucketed from the real activity log.
+function nvActivitySpark(days) {
+  days = days || 14;
+  const log = ST.activityLog || [];
+  if (log.length < 3) return '';
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  const buckets = new Array(days).fill(0);
+  for (const a of log) {
+    if (!a.ts) continue;
+    const d = new Date(a.ts); d.setHours(0, 0, 0, 0);
+    const diff = Math.round((now - d) / 86400000);
+    if (diff >= 0 && diff < days) buckets[days - 1 - diff]++;
+  }
+  if (buckets.every(v => v === 0)) return '';
+  return `<div style="display:flex;align-items:flex-end;gap:8px"><span style="font-family:var(--mono);font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em">${days}-day volume</span>${nvSparkline(buckets, {w:120,h:26})}</div>`;
+}
+
 function buildInsightsTab() {
   const projs = allProjects();
   const subs = allSubs();
@@ -8342,11 +8484,11 @@ function buildInsightsTab() {
   for (const pid of Object.keys(ST.estimates||{})) { const t = builderTotals(pid); if (t.builder > 0) { estCount++; totBuilder += t.builder; totClient += t.client; } }
   const avgMargin = totClient > 0 ? ((totClient - totBuilder)/totClient*100) : 0;
 
-  return `<div class="overview-panel">
-    <div style="display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:1px solid var(--ink-700);margin-bottom:20px;gap:24px"><div><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">[ INSIGHTS ] · ${projs.length} PROJECTS · ${subs.length} SUBS</div><h1 style="font-size:26px;font-weight:600;letter-spacing:-0.02em;color:var(--ink-900);margin:0">Performance Overview</h1></div></div>
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:28px">${[{lbl:'Active projects', val: activeProjs.length, color:'var(--ink-900)'},{lbl:'Bids received', val: totalBids, color:'var(--blue)'},{lbl:'Selected value', val: fmt$(selTotal), color:'var(--green)'},{lbl:'Win rate', val: winRate.toFixed(0)+'%', color: winRate>=70?'var(--green)':winRate>=40?'var(--ink-900)':'var(--plano-500)'},{lbl:'Avg margin', val: estCount?avgMargin.toFixed(1)+'%':'—', color:'var(--ink-900)'}].map(k => `<div style="border:1px solid var(--border);padding:14px 16px;background:var(--bg)"><div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3)">${esc(k.lbl)}</div><div style="font-family:var(--mono);font-size:22px;font-weight:700;color:${k.color};margin-top:6px">${typeof k.val==='string'?esc(k.val):k.val}</div></div>`).join('')}</div>
+  return `<div class="overview-panel nv-insights">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:1px solid var(--rule);margin-bottom:8px;gap:24px"><div><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">[ INSIGHTS ] · ${projs.length} PROJECTS · ${subs.length} SUBS</div><h1 style="font-size:26px;font-weight:600;letter-spacing:-0.02em;color:var(--ink-900);margin:0">Performance Overview</h1></div></div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:28px">${[{lbl:'Active projects', val: activeProjs.length, color:'var(--ink-900)'},{lbl:'Bids received', val: totalBids, color:'var(--blue)'},{lbl:'Selected value', val: fmt$(selTotal), color:'var(--green)'},{lbl:'Win rate', val: winRate.toFixed(0)+'%', color: winRate>=70?'var(--green)':winRate>=40?'var(--ink-900)':'var(--plano-500)'},{lbl:'Avg margin', val: estCount?avgMargin.toFixed(1)+'%':'—', color:'var(--ink-900)'}].map(k => `<div class="nv-kpi" style="--kpi-accent:${k.color}"><div class="nv-kpi-num" style="color:${k.color}">${typeof k.val==='string'?esc(k.val):k.val}</div><div class="nv-kpi-lbl">${esc(k.lbl)}</div></div>`).join('')}</div>
     <div style="margin-bottom:28px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Sub leaderboard · top 10</div>${subStats.length === 0 ? `<div style="padding:20px;border:1px dashed var(--border);font-family:var(--mono);font-size:11px;color:var(--text3);font-style:italic;text-align:center">No subs have submitted bids yet.</div>` : `<div style="border:1px solid var(--border);background:var(--bg);overflow:hidden"><div style="display:grid;grid-template-columns:36px 2fr 80px 80px 1fr;background:var(--bg1);border-bottom:1px solid var(--ink-700);font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)"><div style="padding:10px 12px">#</div><div style="padding:10px 12px">Subcontractor</div><div style="padding:10px 12px;text-align:right">Bids</div><div style="padding:10px 12px;text-align:right">Won</div><div style="padding:10px 12px">Win rate</div></div>${subStats.slice(0,10).map((x,i) => `<div onclick="ST.selSub='${x.sub.id}';setTab('subs')" style="cursor:pointer;display:grid;grid-template-columns:36px 2fr 80px 80px 1fr;border-bottom:1px solid var(--border);font-size:12px;align-items:center"><div style="padding:10px 12px;font-family:var(--mono);font-size:10px;color:var(--text3)">${String(i+1).padStart(2,'0')}</div><div style="padding:10px 12px;color:var(--ink-900)">${esc(x.sub.company)}</div><div style="padding:10px 12px;text-align:right;font-family:var(--mono);font-weight:600">${x.submitted}</div><div style="padding:10px 12px;text-align:right;font-family:var(--mono);font-weight:600;color:${x.won>0?'var(--green)':'var(--text3)'}">${x.won}</div><div style="padding:10px 12px;display:flex;align-items:center;gap:8px"><div style="flex:1;height:5px;background:var(--bg1);border:1px solid var(--border)"><div style="height:100%;background:${x.winRate>=50?'var(--green)':'var(--ink-700)'};width:${x.winRate.toFixed(0)}%"></div></div><span style="font-family:var(--mono);font-size:10px;color:var(--text3);min-width:38px;text-align:right">${x.winRate.toFixed(0)}%</span></div></div>`).join('')}</div>`}</div>
-    <div><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Recent activity · last ${Math.min(20, (ST.activityLog||[]).length)} events</div>${(ST.activityLog||[]).length === 0 ? `<div style="padding:14px 20px;border:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--text3);font-style:italic">No activity yet.</div>` : `<div style="border:1px solid var(--border);background:var(--bg)">${(ST.activityLog||[]).slice(0,20).map(a => `<div style="display:flex;align-items:center;gap:10px;padding:7px 14px;border-bottom:1px solid var(--border)"><span style="font-family:var(--mono);font-size:9px;width:110px;flex-shrink:0;color:var(--text3);letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc((a.type||'').toUpperCase())}">${(a.type||'').toUpperCase()}</span><div style="flex:1;min-width:0"><span style="font-size:12px;color:var(--ink-900)">${esc(a.sub||a.proj||'')}${a.sub && a.proj ? ' → ' + esc(a.proj) : ''}</span>${a.cat?`<span style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-left:6px">${esc(a.cat)}</span>`:''}${a.note?`<div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px;letter-spacing:.04em">${esc(a.note)}${a.actor?' · by ' + esc(a.actor):''}</div>`:(a.actor?`<div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px;letter-spacing:.04em">by ${esc(a.actor)}</div>`:'')}</div>${a.price?`<span style="font-family:var(--mono);font-size:11px;color:var(--green);font-weight:600">${fmt$(a.price)}</span>`:''}<span style="font-family:var(--mono);font-size:10px;color:var(--text3);min-width:60px;text-align:right" title="${esc(new Date(a.ts).toLocaleString())}">${fmtDateRel(a.ts)}</span></div>`).join('')}</div>`}</div>
+    <div><div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:10px;gap:16px"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Recent activity · last ${Math.min(20, (ST.activityLog||[]).length)} events</div>${nvActivitySpark()}</div>${(ST.activityLog||[]).length === 0 ? `<div style="padding:14px 20px;border:1px solid var(--border);font-family:var(--mono);font-size:11px;color:var(--text3);font-style:italic">No activity yet.</div>` : `<div style="border:1px solid var(--border);background:var(--bg)">${(ST.activityLog||[]).slice(0,20).map(a => `<div style="display:flex;align-items:center;gap:10px;padding:7px 14px;border-bottom:1px solid var(--border)"><span style="font-family:var(--mono);font-size:9px;width:110px;flex-shrink:0;color:var(--text3);letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc((a.type||'').toUpperCase())}">${(a.type||'').toUpperCase()}</span><div style="flex:1;min-width:0"><span style="font-size:12px;color:var(--ink-900)">${esc(a.sub||a.proj||'')}${a.sub && a.proj ? ' → ' + esc(a.proj) : ''}</span>${a.cat?`<span style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-left:6px">${esc(a.cat)}</span>`:''}${a.note?`<div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px;letter-spacing:.04em">${esc(a.note)}${a.actor?' · by ' + esc(a.actor):''}</div>`:(a.actor?`<div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px;letter-spacing:.04em">by ${esc(a.actor)}</div>`:'')}</div>${a.price?`<span style="font-family:var(--mono);font-size:11px;color:var(--green);font-weight:600">${fmt$(a.price)}</span>`:''}<span style="font-family:var(--mono);font-size:10px;color:var(--text3);min-width:60px;text-align:right" title="${esc(new Date(a.ts).toLocaleString())}">${fmtDateRel(a.ts)}</span></div>`).join('')}</div>`}</div>
   </div>`;
 }
 
@@ -9188,13 +9330,22 @@ function buildTopBar({recentBids, totalBids, userDisplay}) {
   };
   const crumb = tabTitles[ST.tab] || 'PROJECTS';
   const sel = ST.selProj ? allProjects().find(p=>p.id===ST.selProj) : null;
+  // Estimator shows its own active project + sub-tab as a technical breadcrumb.
+  let crumbTail = sel ? `<span class="sep">/</span><b>${esc((sel.name||'').toUpperCase())}</b>` : '';
+  if (ST.tab === 'estimator') {
+    const ep = allProjects().find(p => p.id === ST.estimatorSelProj);
+    const subMap = { plans:'PLAN SETS', setup:'SETUP', code:'CODE', takeoff:'TAKE-OFF', review:'PLAN SETS' };
+    const sub = subMap[ST.estimatorTab || 'plans'] || '';
+    crumbTail = (ep ? `<span class="sep">/</span><b>${esc((ep.name||'').toUpperCase())}</b>` : '')
+              + (sub ? `<span class="sep">/</span><span>${sub}</span>` : '');
+  }
   return `<header class="app-topbar">
     <button class="hamburger" onclick="event.stopPropagation();ST.sidebarOpen=!ST.sidebarOpen;render()" aria-label="Menu">☰</button>
     ${typeof buildWorkspaceSwitcher === 'function' && ST.activeWorkspace ? buildWorkspaceSwitcher() : ''}
     <div class="tb-crumb">
       ${(!ST.activeWorkspace) ? `<b class="bf-wm">${(getSettings().brand?.wordmark || 'NOVANTU').split('').map((c,i,a)=>`<span class="lt${i>=Math.ceil(a.length/2)?' accent':''}">${esc(c)}</span>`).join('')}</b><span class="sep">/</span>` : ''}
       <span>${crumb}</span>
-      ${sel ? `<span class="sep">/</span><b>${esc(sel.name||'').toUpperCase()}</b>` : ''}
+      ${crumbTail}
     </div>
     <div class="tb-spacer"></div>
     <span class="tb-util" id="save-indicator" style="cursor:${SAVE_STATE.status==='error'?'pointer':'default'};opacity:0.69" ${SAVE_STATE.status==='error'?'onclick="flushSave()"':''}>${saveIndicatorHtml()}</span>
@@ -9380,11 +9531,12 @@ function buildProjectDetail(p) {
 
   return `
     <div class="d-header" style="position:relative">
+      <div class="d-kicker">Sheet — Project</div>
       <div class="d-title">${esc(p.name)}</div>
       <div class="d-meta">
         ${bidStageBadge(p.id)}
       </div>
-      <button onclick="confirmDeleteProject('${p.id}')" title="Delete this project" style="position:absolute;top:14px;right:18px;background:var(--bg);border:1px solid var(--border);color:var(--text3);padding:4px 10px;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;border-radius:2px">✕ Delete project</button>
+      <button onclick="confirmDeleteProject('${p.id}')" title="Delete this project" class="d-del">✕ Delete project</button>
       <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;align-items:center">
         ${getProjTags(p.id).map(t => tagChip(t, { onRemove: `projRemoveTag('${p.id}','${esc(t)}')` })).join('')}
         <button onclick="projAddTag('${p.id}')" style="font-family:var(--mono);font-size:9px;letter-spacing:.04em;background:transparent;border:1px dashed var(--border);color:var(--text3);padding:2px 8px;cursor:pointer">+ tag</button>
@@ -13050,7 +13202,7 @@ function toBuildToolbar(p, e) {
       <button class="to-tool-btn" onclick="toChangePage(-1)" ${_TO.pageNum<=1?'disabled':''}>◀</button>
       <span style="font-family:var(--mono);font-size:10px;color:var(--text2);padding:0 4px">${_TO.pageNum} / ${_TO.totalPages}</span>
       <button class="to-tool-btn" onclick="toChangePage(1)" ${_TO.pageNum>=_TO.totalPages?'disabled':''}>▶</button>
-      <div style="width:1px;height:20px;background:var(--border);margin:0 4px"></div>
+      <span class="to-tool-sep"></span>
     ` : ''}
 
     <button class="to-tool-btn" onclick="toSetZoom(_TO.zoom/1.2)" title="Zoom out">−</button>
@@ -13059,7 +13211,7 @@ function toBuildToolbar(p, e) {
     <button class="to-tool-btn" onclick="toSetZoom(1)" title="Reset zoom">Fit</button>
 
     ${active ? `
-      <div style="width:1px;height:20px;background:var(--border);margin:0 4px"></div>
+      <span class="to-tool-sep"></span>
       <button class="to-tool-btn" onclick="toResetSession()" title="Clear current take-off and start over">✕ New take-off</button>
     ` : ''}
   </div>`;
@@ -16722,127 +16874,115 @@ function buildTodayTab() {
   const greetingTime = now.getHours() < 12 ? 'Good morning' : (now.getHours() < 18 ? 'Good afternoon' : 'Good evening');
   const userDisplay = AUTH.user?.email?.split('@')[0] || getSettings().brand?.userName || '';
   const dateStr = now.toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric' });
+  const sheetDate = now.toLocaleDateString('en-US', { month:'short', day:'2-digit', year:'numeric' }).toUpperCase();
+
+  const dueRows = due.map(d => {
+    const tone = d.days < 0 ? 'overdue' : (d.days <= 2 ? 'urgent' : 'soon');
+    const label = d.days < 0 ? `${Math.abs(d.days)}d overdue` : (d.days === 0 ? 'Due today' : (d.days === 1 ? 'Due tomorrow' : `Due in ${d.days}d`));
+    return `
+      <div class="today-row" onclick="ST.selProj='${d.project.id}';setTab('projects')">
+        <div class="today-row-marker today-marker-${tone}"></div>
+        <div class="today-row-main">
+          <div class="today-row-title">${esc(d.project.name)}</div>
+          <div class="today-row-meta">${bidStageBadge(d.project.id, {compact:true})} <span class="meta-chip">${esc(d.project.dl||'')}</span></div>
+        </div>
+        <div class="today-row-action today-action-${tone}">${esc(label)}</div>
+      </div>`;
+  }).join('');
+
+  const awaitRows = awaiting.map(a => `
+    <div class="today-row" onclick="ST.selProj='${a.project.id}';ST.selSub='${a.sub.id}';setTab('projects')">
+      <div class="today-row-marker today-marker-soon"></div>
+      <div class="today-row-main">
+        <div class="today-row-title">${esc(a.sub.company)}</div>
+        <div class="today-row-meta"><span class="meta-chip">${esc(a.project.name)}</span> · ${esc(a.sub.div||'')}</div>
+      </div>
+      <div class="today-row-action today-action-soon">${a.daysSince}d silent</div>
+    </div>
+  `).join('');
+
+  const rfiRows = rfis.map(r => `
+    <div class="today-row" onclick="ST.selProj='${r.project.id}';setTab('projects')">
+      <div class="today-row-marker today-marker-info"></div>
+      <div class="today-row-main">
+        <div class="today-row-title">${esc(r.project.name)}</div>
+        <div class="today-row-meta">${esc(r.rfi.length > 90 ? r.rfi.slice(0,90)+'\u2026' : r.rfi)}</div>
+      </div>
+      <div class="today-row-action today-action-info">${bidStageBadge(r.project.id, {compact:true})}</div>
+    </div>
+  `).join('');
+
+  const staleRows = stale.map(s => `
+    <div class="today-row" onclick="ST.selProj='${s.project.id}';setTab('projects')">
+      <div class="today-row-marker today-marker-mute"></div>
+      <div class="today-row-main">
+        <div class="today-row-title">${esc(s.project.name)}</div>
+        <div class="today-row-meta">${bidStageBadge(s.project.id, {compact:true})} for ${s.days} days (threshold ${s.threshold}d)</div>
+      </div>
+      <div class="today-row-action today-action-mute">${s.days}d</div>
+    </div>
+  `).join('');
+
+  const panel = (id, accent, title, count, rowsHtml) => count === 0 ? '' : `
+    <section id="${id}" class="nv-td-panel" style="--td-accent:${accent}">
+      <div class="nv-td-phead">
+        <span class="nv-td-tick"></span>
+        <span class="nv-td-ptitle">${esc(title)}</span>
+        <span class="nv-td-pcount">${count}</span>
+      </div>
+      <div class="today-rows">${rowsHtml}</div>
+    </section>`;
+
+  const cell = (n, label, accent, target) => `
+    <button class="nv-td-cell${n === 0 ? ' is-zero' : ''}" style="--td-accent:${accent}" ${n > 0 && target ? `onclick="document.getElementById('${target}')?.scrollIntoView({behavior:'smooth',block:'start'})"` : 'disabled'}>
+      <div class="nv-td-cellnum">${n}</div>
+      <div class="nv-td-celllabel">${esc(label)}</div>
+    </button>`;
 
   return `
-  <div class="today-wrap">
-    <div class="today-header">
-      <div>
-        <div class="today-greeting">${esc(greetingTime)}${userDisplay?`, ${esc(userDisplay)}`:''}</div>
-        <div class="today-date">${esc(dateStr)}</div>
-      </div>
-      <div class="today-summary">
-        ${totalAttn === 0
-          ? `<span class="today-clear">All clear — nothing urgent</span>`
-          : `<span class="today-count"><strong>${totalAttn}</strong> ${totalAttn===1?'item':'items'} need attention</span>`}
-      </div>
+  <div class="today-wrap nv-today">
+    <div class="nv-td-head">
+      <div class="nv-td-kick">Sheet \u2014 Today / ${esc(sheetDate)}</div>
+      <h1 class="nv-td-greeting">${esc(greetingTime)}${userDisplay ? `, ${esc(userDisplay)}` : ''}</h1>
+      <div class="nv-td-sub">${esc(dateStr)} \u00b7 ${totalAttn === 0 ? 'all clear' : `${totalAttn} ${totalAttn === 1 ? 'item' : 'items'} need your attention`}</div>
     </div>
 
     ${totalAttn === 0 ? `
       <div class="today-empty">
-        <div class="today-empty-icon">✓</div>
+        <div class="today-empty-icon">\u2713</div>
         <div class="today-empty-title">You're caught up</div>
         <div class="today-empty-sub">No urgent deadlines, no overdue subs, no open RFIs.</div>
       </div>
-    ` : ''}
+    ` : `
+      <div class="nv-td-cells">
+        ${cell(due.length, 'Bids due', 'var(--red)', 'td-due')}
+        ${cell(awaiting.length, 'Subs silent', 'var(--amber)', 'td-awaiting')}
+        ${cell(rfis.length, 'Open RFIs', 'var(--linea-500)', 'td-rfis')}
+        ${cell(stale.length, 'Stale', 'var(--ink-500)', 'td-stale')}
+      </div>
 
-    ${due.length > 0 ? `
-      <section class="today-section">
-        <div class="today-section-head">
-          <span class="today-section-icon" style="background:var(--red);color:#fff">!</span>
-          <span class="today-section-title">Bids due soon</span>
-          <span class="today-section-count">${due.length}</span>
-        </div>
-        <div class="today-rows">
-          ${due.map(d => {
-            const tone = d.days < 0 ? 'overdue' : (d.days <= 2 ? 'urgent' : 'soon');
-            const label = d.days < 0 ? `${Math.abs(d.days)}d overdue` : (d.days === 0 ? 'Due today' : (d.days === 1 ? 'Due tomorrow' : `Due in ${d.days}d`));
-            return `
-              <div class="today-row" onclick="ST.selProj='${d.project.id}';setTab('projects')">
-                <div class="today-row-marker today-marker-${tone}"></div>
-                <div class="today-row-main">
-                  <div class="today-row-title">${esc(d.project.name)}</div>
-                  <div class="today-row-meta">${bidStageBadge(d.project.id, {compact:true})} <span class="meta-chip">${esc(d.project.dl||'')}</span></div>
-                </div>
-                <div class="today-row-action today-action-${tone}">${esc(label)}</div>
-              </div>`;
-          }).join('')}
-        </div>
-      </section>
-    ` : ''}
+      <div class="nv-dimline"></div>
 
-    ${awaiting.length > 0 ? `
-      <section class="today-section">
-        <div class="today-section-head">
-          <span class="today-section-icon" style="background:var(--amber);color:#fff">○</span>
-          <span class="today-section-title">Subs not responding</span>
-          <span class="today-section-count">${awaiting.length}</span>
+      <div class="nv-td-grid">
+        <div class="nv-td-col">
+          ${panel('td-due', 'var(--red)', 'Bids due soon', due.length, dueRows)}
+          ${panel('td-stale', 'var(--ink-500)', 'Stale \u2014 stuck too long', stale.length, staleRows)}
         </div>
-        <div class="today-rows">
-          ${awaiting.map(a => `
-            <div class="today-row" onclick="ST.selProj='${a.project.id}';ST.selSub='${a.sub.id}';setTab('projects')">
-              <div class="today-row-marker today-marker-soon"></div>
-              <div class="today-row-main">
-                <div class="today-row-title">${esc(a.sub.company)}</div>
-                <div class="today-row-meta"><span class="meta-chip">${esc(a.project.name)}</span> · ${esc(a.sub.div||'')}</div>
-              </div>
-              <div class="today-row-action today-action-soon">${a.daysSince}d silent</div>
-            </div>
-          `).join('')}
+        <div class="nv-td-col">
+          ${panel('td-awaiting', 'var(--amber)', 'Subs not responding', awaiting.length, awaitRows)}
+          ${panel('td-rfis', 'var(--linea-500)', 'Open RFIs', rfis.length, rfiRows)}
         </div>
-      </section>
-    ` : ''}
-
-    ${rfis.length > 0 ? `
-      <section class="today-section">
-        <div class="today-section-head">
-          <span class="today-section-icon" style="background:var(--blueprint);color:#fff">?</span>
-          <span class="today-section-title">Open RFIs</span>
-          <span class="today-section-count">${rfis.length}</span>
-        </div>
-        <div class="today-rows">
-          ${rfis.map(r => `
-            <div class="today-row" onclick="ST.selProj='${r.project.id}';setTab('projects')">
-              <div class="today-row-marker today-marker-info"></div>
-              <div class="today-row-main">
-                <div class="today-row-title">${esc(r.project.name)}</div>
-                <div class="today-row-meta">${esc(r.rfi.length > 90 ? r.rfi.slice(0,90)+'…' : r.rfi)}</div>
-              </div>
-              <div class="today-row-action today-action-info">${bidStageBadge(r.project.id, {compact:true})}</div>
-            </div>
-          `).join('')}
-        </div>
-      </section>
-    ` : ''}
-
-    ${stale.length > 0 ? `
-      <section class="today-section">
-        <div class="today-section-head">
-          <span class="today-section-icon" style="background:var(--text3);color:#fff">∼</span>
-          <span class="today-section-title">Stale — stuck too long</span>
-          <span class="today-section-count">${stale.length}</span>
-        </div>
-        <div class="today-rows">
-          ${stale.map(s => `
-            <div class="today-row" onclick="ST.selProj='${s.project.id}';setTab('projects')">
-              <div class="today-row-marker today-marker-mute"></div>
-              <div class="today-row-main">
-                <div class="today-row-title">${esc(s.project.name)}</div>
-                <div class="today-row-meta">${bidStageBadge(s.project.id, {compact:true})} for ${s.days} days (threshold ${s.threshold}d)</div>
-              </div>
-              <div class="today-row-action today-action-mute">${s.days}d</div>
-            </div>
-          `).join('')}
-        </div>
-      </section>
-    ` : ''}
+      </div>
+    `}
 
     <div class="today-footer">
       <div class="today-footer-tip">
-        <strong>Tip:</strong> Press <kbd>⌘K</kbd> to search anything, <kbd>⌘S</kbd> to save now.
+        <strong>Tip:</strong> Press <kbd>\u2318K</kbd> to search anything, <kbd>\u2318S</kbd> to save now.
       </div>
     </div>
   </div>`;
 }
+
 
 
 
