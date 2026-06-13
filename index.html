@@ -15515,9 +15515,9 @@ function wsApplyDataSnapshot(snap) {
   ST.addedSubs         = snap.addedSubs         || [];
   ST.addedProjects     = snap.addedProjects     || [];
   ST.activityLog       = snap.activityLog       || [];
-  ST.followUp          = snap.followUp          || [];
-  ST.sentHistory       = snap.sentHistory       || [];
-  ST.emailTemplates    = snap.email_templates   || [];
+  ST.followUp          = snap.followUp          || {};
+  ST.sentHistory       = snap.sentHistory       || {};
+  ST.emailTemplates    = snap.email_templates   || DEFAULT_TEMPLATES;
   ST.estimates         = snap.estimates         || {};
   ST.estimateTemplates = snap.estimateTemplates || [];
   ST.changeOrders      = snap.changeOrders      || {};
@@ -16801,22 +16801,34 @@ function getSubsAwaitingResponse() {
     if (ST.overrides[p.id]?._deleted) continue;
     const stage = getBidStage(p.id);
     if (stage !== 'out_for_bid' && stage !== 'pricing_in') continue;
-    // Find subs with a bid record for this project that has "sent" but no "received"
+
+    // sentHistory is { pid: { cat: [ { ts, recipients:[{sid}], ... } ] } } — not a
+    // flat array. Build a map of subId → most-recent send timestamp for this project
+    // by scanning every category's send records.
+    const sentBySub = {};
+    const projHistory = (ST.sentHistory && ST.sentHistory[p.id]) || {};
+    for (const cat of Object.keys(projHistory)) {
+      const sends = Array.isArray(projHistory[cat]) ? projHistory[cat] : [];
+      for (const send of sends) {
+        const recips = Array.isArray(send.recipients) ? send.recipients : [];
+        for (const r of recips) {
+          if (!r || !r.sid) continue;
+          const prev = sentBySub[r.sid];
+          if (!prev || new Date(send.ts) > new Date(prev)) sentBySub[r.sid] = send.ts;
+        }
+      }
+    }
+
     for (const s of subs) {
       if (s.active === false) continue;
-      // Check sentHistory or bids structure
-      const subBids = (s.bids && s.bids[p.name]) || null;
-      if (!subBids) {
-        // Check sent history for this sub × project
-        const sentRecord = (ST.sentHistory || []).find(h =>
-          h.subId === s.id && h.projId === p.id);
-        if (sentRecord) {
-          const sentDate = new Date(sentRecord.ts);
-          const daysSince = Math.floor((Date.now() - sentDate.getTime()) / (1000*60*60*24));
-          if (daysSince >= 7) {
-            out.push({ sub: s, project: p, daysSince, sentDate });
-          }
-        }
+      // Skip subs that already submitted a bid for this project.
+      if (s.bids && s.bids[p.name]) continue;
+      const sentTs = sentBySub[s.id];
+      if (!sentTs) continue;
+      const sentDate = new Date(sentTs);
+      const daysSince = Math.floor((Date.now() - sentDate.getTime()) / (1000 * 60 * 60 * 24));
+      if (daysSince >= 7) {
+        out.push({ sub: s, project: p, daysSince, sentDate });
       }
     }
   }
