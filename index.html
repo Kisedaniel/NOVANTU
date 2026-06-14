@@ -294,7 +294,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--text);height:100vh
 .mrow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .modal-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
 .btn{padding:8px 16px;border-radius:var(--r2);font-size:12px;font-family:var(--sans);cursor:pointer;border:1px solid var(--border2);font-weight:500;transition:all .1s}
-.btn-amber{background:var(--amber);border-color:var(--amber);color:#fff}
+.btn-amber{background:var(--amber);border-color:var(--amber);color:var(--amber-ink)}
 .btn-amber:hover{background:var(--amber-dim);border-color:var(--amber-dim)}
 .btn-ghost{background:transparent;color:var(--text2)}
 .btn-ghost:hover{background:var(--bg2);color:var(--text)}
@@ -2039,7 +2039,7 @@ body[data-theme="hc"] {
 .to-canvas-toolbar{height:40px;flex-shrink:0;background:var(--bg);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px;padding:0 12px}
 .to-tool-btn{height:28px;padding:0 12px;border:1px solid var(--border);background:var(--bg1);color:var(--text2);font-family:var(--mono);font-size:10px;letter-spacing:.06em;border-radius:var(--r2);cursor:pointer;display:inline-flex;align-items:center;gap:5px;transition:all .12s;white-space:nowrap}
 .to-tool-btn:hover{background:var(--bg2);color:var(--text);border-color:var(--border2)}
-.to-tool-btn.on{background:var(--amber);border-color:var(--amber);color:var(--bone-50)}
+.to-tool-btn.on{background:var(--amber);border-color:var(--amber);color:var(--amber-ink)}
 .to-tool-btn:disabled{opacity:.4;cursor:not-allowed}
 .to-canvas-container{flex:1;overflow:auto;display:flex;align-items:flex-start;justify-content:flex-start;padding:16px;position:relative}
 .to-canvas-inner{position:relative;display:inline-block;line-height:0}
@@ -2384,7 +2384,7 @@ body[data-theme="hc"] {
 }
 .rp-btn:not(:disabled):hover{filter:brightness(1.1);transform:translateY(-1px)}
 .rp-btn:disabled{opacity:.45;cursor:not-allowed}
-.rp-btn-active{background:var(--amber);border-color:var(--amber);color:#fff}
+.rp-btn-active{background:var(--amber);border-color:var(--amber);color:var(--amber-ink)}
 .rp-btn-loading{background:var(--bg);color:var(--amber);border-color:var(--amber)}
 .rp-icon{font-size:14px;line-height:1}
 .rp-spinner{
@@ -3638,6 +3638,7 @@ a:hover{opacity:.7}
    Recolorea, en cascada: badges SENT, links, toggles .set, stats azules,
    arch-set links. Un solo punto de control. */
 :root{
+  --amber-ink:#FAF8F2;
   --linea-100:#eaeef2;
   --linea-500:#51687f;
   --linea-700:#3b4a5a;
@@ -3709,7 +3710,7 @@ a:hover{opacity:.7}
 .nv-td-phead{display:flex;align-items:center;gap:9px;padding:2px 2px 9px}
 .nv-td-tick{width:9px;height:9px;background:var(--td-accent);flex-shrink:0}
 .nv-td-ptitle{flex:1;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-900)}
-.nv-td-pcount{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.06em;color:var(--bone-50);background:var(--td-accent);padding:2px 8px;border-radius:var(--nv-radius-pill);min-width:20px;text-align:center}
+.nv-td-pcount{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.06em;color:var(--ink-700);background:var(--bone-200);border:1px solid var(--border);padding:2px 8px;border-radius:var(--nv-radius-pill);min-width:20px;text-align:center}
 
 /* harmonize the soon/info row markers (the old --blueprint var was undefined) */
 .today-marker-soon{background:var(--amber)}
@@ -4508,6 +4509,8 @@ async function loadSt() {
           features: (ws.features && typeof ws.features === 'object')
             ? { ...ws.features, branding: true, whitelabel: ws.features.whitelabel === true }
             : { ...getPlanById(ws.plan || 'pro').features, branding: true },
+          accountType: (ws.account_type === 'sub') ? 'sub' : 'gc',
+          subTrade: ws.sub_trade || null,
         };
       }
       console.log(`Loaded ${Object.keys(ST.workspaces).length} workspace(s). isMaster=${AUTH.isMaster}`);
@@ -13496,7 +13499,29 @@ function toClearExtraction(pid) {
 // Critical: if the shell is already mounted (canvas+konva exist), we return
 // an empty marker that the global render() respects via _TO_RENDER_SKIP.
 let _TO_RENDER_SKIP = false;
+
+// Take-off types available in THIS workspace. Sub workspaces are narrowed to
+// their trade pack's calculators; GCs (or subs without a pack) see all types.
+function getCalculatorTypes() {
+  const pack = getActiveTradePack();
+  if (pack && Array.isArray(pack.calculators) && pack.calculators.length) {
+    const ids = new Set(pack.calculators);
+    const filtered = TAKEOFF_TYPES.filter(t => ids.has(t.id));
+    return filtered.length ? filtered : TAKEOFF_TYPES;
+  }
+  return TAKEOFF_TYPES;
+}
+
 function buildEstTakeoff(p, e) {
+  // The specialized budget calculator is a subcontractor tool. GCs don't see
+  // it (master "see all" still reveals it for testing).
+  if (!hasBudgetCalculator()) {
+    return `<div class="to-wizard"><div class="to-wizard-card" style="text-align:center">
+      <div class="to-wizard-step">[ SUBCONTRACTOR TOOL ]</div>
+      <div class="to-wizard-title">Budget calculator</div>
+      <div class="to-wizard-sub">The specialized budget calculator is available on subcontractor workspaces. This workspace is set up as a General Contractor — change its account type in Workspace settings to enable it.</div>
+    </div></div>`;
+  }
   const allPlans = e.plans || [];
   const hasActiveSession = ST.toActivePlan && allPlans.find(pl => pl.id === ST.toActivePlan.planId);
 
@@ -13545,7 +13570,7 @@ function buildEstTakeoff(p, e) {
           <div class="to-wizard-sub">Pick the discipline so NOVANTU maps measurements to the right unit prices.</div>
 
           <div class="to-type-grid">
-            ${TAKEOFF_TYPES.map(t => `
+            ${getCalculatorTypes().map(t => `
               <button class="to-type-card" onclick="ST.toTakeoffType='${t.id}';render()">
                 <div class="to-type-icon">${takeoffIcon(t.id, 30)}</div>
                 <div class="to-type-label">${esc(t.label)}</div>
@@ -13808,6 +13833,81 @@ const WS_ACCENT_PRESETS = [
   { name: 'Teal',     hex: '#2e6e6e' },
   { name: 'Burgundy', hex: '#6e2840' },
 ];
+
+// ============================================================
+// ACCOUNT TYPE — GC vs SUBCONTRACTOR  (master-controlled)
+// ────────────────────────────────────────────────────────────
+// A workspace is either a General Contractor ('gc', default) or a
+// Subcontractor ('sub') of a specific trade. Sub workspaces get the
+// specialized budget calculator and a trade-specific set of categories
+// that REPLACE the GC project categories. This registry is the single
+// source of truth — add a trade here and the wizard, editor, category
+// swap and calculator filter all pick it up automatically.
+const SUB_TRADE_PACKS = {
+  fire_sprinklers: { label: 'Fire Sprinklers', categories: ['DESIGN & SUBMITTALS','UNDERGROUND SUPPLY','OVERHEAD PIPING','BRANCH LINES','SPRINKLER HEADS','FIRE PUMP','BACKFLOW PREVENTER','INSPECTOR TEST & DRAIN','HANGERS & SEISMIC BRACING','INSPECTION & SIGN-OFF'], calculators: ['general'] },
+  concrete: { label: 'Concrete', categories: ['FOOTINGS','FOUNDATION WALLS','SLAB ON GRADE','ELEVATED SLABS','COLUMNS & BEAMS','REINFORCING STEEL','FORMWORK','PUMP & PLACE','FINISHING','CURING & SEALING'], calculators: ['general'] },
+  drywall: { label: 'Drywall & Framing', categories: ['METAL FRAMING','INSULATION','BOARD HANGING','TAPE & MUD','LEVEL-5 FINISH','CEILINGS','SOFFITS & BULKHEADS','ACCESS PANELS','PATCH & REPAIR'], calculators: ['gypsum'] },
+  hvac: { label: 'HVAC', categories: ['LOAD CALCS & DESIGN','EQUIPMENT SET','DUCTWORK','REGISTERS & GRILLES','REFRIGERANT LINES','CONTROLS & THERMOSTATS','EXHAUST & VENTILATION','TEST & BALANCE','START-UP'], calculators: ['general'] },
+  plumbing: { label: 'Plumbing', categories: ['UNDERGROUND ROUGH','WATER SUPPLY ROUGH','DWV ROUGH','GAS PIPING','FIXTURE SET','WATER HEATER','TRIM & FINISH','BACKFLOW & TEST','INSPECTION'], calculators: ['general'] },
+  electrical: { label: 'Electrical', categories: ['TEMP POWER','SERVICE & PANELS','BRANCH ROUGH-IN','LOW VOLTAGE / DATA','DEVICES & TRIM','FIXTURES','PANEL SCHEDULE & LABELING','TEST & SIGN-OFF'], calculators: ['general'] },
+  roofing: { label: 'Roofing', categories: ['TEAR-OFF','DECK PREP','UNDERLAYMENT','FLASHING & EDGE METAL','FIELD MEMBRANE','PENETRATIONS & CURBS','GUTTERS & DOWNSPOUTS','WARRANTY INSPECTION'], calculators: ['roofing'] },
+  tile_flooring: { label: 'Tile & Flooring', categories: ['SUBSTRATE PREP','WATERPROOFING','CRACK ISOLATION','TILE SETTING','GROUT','HARDWOOD / LVP','TRANSITIONS & TRIM','SEALING'], calculators: ['tile','hardwood'] },
+  stucco_facade: { label: 'Stucco & Facade', categories: ['LATH & PAPER','SCRATCH COAT','BROWN COAT','FINISH COAT','CONTROL JOINTS','SIDING / CLADDING','SEALANTS','PATCH & REPAIR'], calculators: ['facade'] },
+  painting: { label: 'Painting', categories: ['SURFACE PREP','PATCH & SAND','PRIMER','INTERIOR WALLS','CEILINGS','TRIM & DOORS','EXTERIOR','CABINET FINISH','TOUCH-UP'], calculators: ['paint'] },
+};
+const SUB_TRADE_LIST = Object.keys(SUB_TRADE_PACKS).map(id => ({ id, label: SUB_TRADE_PACKS[id].label }));
+
+function getTradePack(tradeId) { return (tradeId && SUB_TRADE_PACKS[tradeId]) || null; }
+function wsAccountType(wsId) { const ws = ST.workspaces?.[wsId || ST.activeWorkspace]; return (ws && ws.accountType === 'sub') ? 'sub' : 'gc'; }
+function wsSubTrade(wsId) { const ws = ST.workspaces?.[wsId || ST.activeWorkspace]; return (ws && ws.accountType === 'sub') ? (ws.subTrade || null) : null; }
+function isSubAccount(wsId) { return wsAccountType(wsId) === 'sub'; }
+function getActiveTradePack() { return getTradePack(wsSubTrade()); }
+
+// Specialized budget calculator is a SUB tool; GCs don't see it (master "see all" reveals everything).
+function hasBudgetCalculator() { if (AUTH.isMaster && ST.masterSeeAll) return true; return isSubAccount(); }
+
+// Scan active workspace data for category names that currently hold data, so a swap never orphans anything.
+function wsCategoriesInUse() {
+  const used = new Set();
+  const so = ST.subOverrides || {};
+  for (const sid in so) {
+    const bids = so[sid] && so[sid].bids;
+    if (bids) for (const key in bids) {
+      const parts = String(key).split('|');
+      if (parts.length >= 2) used.add(parts.slice(1).join('|'));
+      const c = bids[key] && bids[key].cat; if (c) used.add(c);
+    }
+  }
+  for (const store of [ST.followUp, ST.sentHistory]) {
+    if (!store) continue;
+    for (const pid in store) { const inner = store[pid]; if (inner && typeof inner === 'object') for (const cat in inner) used.add(cat); }
+  }
+  if (ST.overrides) for (const pid in ST.overrides) { const inner = ST.overrides[pid]; if (inner && typeof inner === 'object') for (const k in inner) { if (!k.startsWith('_')) used.add(k); } }
+  return used;
+}
+
+// Apply/revert the trade pack categories for a workspace — NON-DESTRUCTIVE.
+function wsApplyTradePack(wsId) {
+  const ws = ST.workspaces?.[wsId];
+  if (!ws) return { applied: false };
+  if (wsId !== ST.activeWorkspace) { ws._tradePackPending = true; wsSaveRegistry(ST.workspaces); return { applied: false, deferred: true }; }
+  delete ws._tradePackPending;
+  const inUse = wsCategoriesInUse();
+  if (ws.accountType === 'sub' && getTradePack(ws.subTrade)) {
+    const pack = getTradePack(ws.subTrade);
+    const currentCats = new Set(CATS);
+    const preserve = [...inUse].filter(c => currentCats.has(c) && !pack.categories.includes(c));
+    ST.customCategories = [...pack.categories, ...preserve];
+    syncCategoriesFromSettings(); saveSt();
+    return { applied: true, mode: 'sub', preserved: preserve.length };
+  } else {
+    const def = new Set(DEFAULT_CATS);
+    const extra = [...inUse].filter(c => !def.has(c) && c && c === c.toUpperCase());
+    ST.customCategories = extra.length ? [...DEFAULT_CATS, ...extra] : null;
+    syncCategoriesFromSettings(); saveSt();
+    return { applied: true, mode: 'gc', preserved: extra.length };
+  }
+}
 
 // ============================================================
 // SUBSCRIPTION PLANS + FEATURE FLAGS
@@ -15600,6 +15700,8 @@ async function wsCreate(config) {
     rfiTemplates: Array.isArray(config.rfiTemplates) ? config.rfiTemplates : [],
     plan: planId,
     features,
+    accountType: (config.accountType === 'sub') ? 'sub' : 'gc',
+    subTrade: (config.accountType === 'sub' && config.subTrade) ? config.subTrade : null,
     createdAt: new Date().toISOString(),
     lastUsed: new Date().toISOString(),
   };
@@ -15622,6 +15724,8 @@ async function wsCreate(config) {
         rfi_templates: ws.rfiTemplates,
         plan: ws.plan,
         features: ws.features,
+        account_type: ws.accountType || 'gc',
+        sub_trade: ws.subTrade || null,
       });
       if (wsErr) throw wsErr;
       // 2) Assign the master user as a member (so they retain visibility)
@@ -15656,6 +15760,7 @@ function wsSwitchTo(wsId) {
   wsSetActiveId(wsId);
   // Load new workspace's data
   wsLoadWorkspaceData(wsId);
+  if (ST.workspaces[wsId] && ST.workspaces[wsId]._tradePackPending) { wsApplyTradePack(wsId); }
   // Apply visual brand
   wsApplyBrand(ST.workspaces[wsId]);
   // Reset UI state
@@ -15674,6 +15779,7 @@ function wsApplyBrand(ws) {
   // Override the --amber CSS variable used throughout the app
   if (ws.accentColor) {
     document.body.style.setProperty('--amber', ws.accentColor);
+    document.body.style.setProperty('--amber-ink', nvPickInk(ws.accentColor));
     // Compute a derived amber-bg (transparent-ish) and amber-border
     const rgb = wsHexToRgb(ws.accentColor);
     if (rgb) {
@@ -15682,10 +15788,27 @@ function wsApplyBrand(ws) {
     }
   } else {
     document.body.style.removeProperty('--amber');
+    document.body.style.removeProperty('--amber-ink');
     document.body.style.removeProperty('--amber-bg');
     document.body.style.removeProperty('--amber-border');
   }
   // Note: the wordmark substitution happens inside buildTopBar via wsGetActiveWordmark()
+}
+
+// Pick the higher-contrast text color (light vs ink) to sit ON a given accent.
+function nvRelLum(r, g, b) {
+  const f = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+function nvPickInk(hex) {
+  const rgb = wsHexToRgb(hex);
+  if (!rgb) return '#FAF8F2';
+  const L = nvRelLum(rgb.r, rgb.g, rgb.b);
+  const cWhite = (1.0 + 0.05) / (L + 0.05);
+  // Keep the brand's light text unless white would be genuinely low-contrast
+  // (rescues very light custom accents like pale yellow without disturbing the
+  // amber/preset look, all of which clear AA-large with white).
+  return cWhite >= 3.0 ? '#FAF8F2' : '#181613';
 }
 
 function wsHexToRgb(hex) {
@@ -15890,6 +16013,30 @@ function buildWsWizard() {
             <input type="text" class="minp" placeholder="ACME" value="${esc(cfg.wordmark||'')}" oninput="ST.wsWizard.config.wordmark=this.value.toUpperCase()">
           </div>
         </div>
+
+        ${AUTH.isMaster ? `
+        <div style="margin-bottom:18px;padding:14px;border:1px solid var(--border);border-radius:6px;background:var(--bg1)">
+          <div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);margin-bottom:8px">Account type <span style="color:var(--text3);font-weight:400;letter-spacing:0">· master control</span></div>
+          <div style="display:flex;gap:8px;margin-bottom:${(cfg.accountType==='sub')?'12px':'0'}">
+            ${[['gc','General Contractor','Full bid leveling + standard categories'],['sub','Subcontractor','Specialized budget calculator + trade categories']].map(opt => {
+              const on=(cfg.accountType||'gc')===opt[0];
+              const setTrade = (opt[0]==='sub' && !cfg.subTrade) ? `ST.wsWizard.config.subTrade='${SUB_TRADE_LIST[0].id}';` : '';
+              return `<button onclick="ST.wsWizard.config.accountType='${opt[0]}';${setTrade}render()"
+                style="flex:1;text-align:left;padding:11px 12px;border-radius:6px;cursor:pointer;background:${on?'var(--amber-bg)':'var(--bg)'};border:2px solid ${on?'var(--amber)':'var(--border)'}">
+                <div style="font-family:var(--sans);font-size:13px;font-weight:700;color:${on?'var(--amber)':'var(--text)'}">${opt[1]}</div>
+                <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px;line-height:1.4">${opt[2]}</div>
+              </button>`;
+            }).join('')}
+          </div>
+          ${cfg.accountType==='sub' ? `
+            <div class="modal-label">Subcontractor trade</div>
+            <select class="minp" onchange="ST.wsWizard.config.subTrade=this.value;render()">
+              ${SUB_TRADE_LIST.map(t => `<option value="${t.id}" ${(cfg.subTrade||'')===t.id?'selected':''}>${esc(t.label)}</option>`).join('')}
+            </select>
+            ${getTradePack(cfg.subTrade) ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:8px;line-height:1.5">Will replace project categories with: ${getTradePack(cfg.subTrade).categories.slice(0,5).map(esc).join(' · ')}${getTradePack(cfg.subTrade).categories.length>5?' …':''}</div>` : ''}
+          ` : ''}
+        </div>
+        ` : ''}
 
         <div style="margin-bottom:18px">
           <div class="modal-label">Accent color</div>
@@ -16218,6 +16365,7 @@ async function wsWizardNext() {
   ST.wsWizard = null;
   showToast(`Workspace "${ws.name}" created. Switching…`, 'success');
   wsSwitchTo(ws.id);
+  if (ws.accountType === 'sub') { wsApplyTradePack(ws.id); render(); }
 }
 
 function wsHandleLogoUpload(ev) {
@@ -16321,6 +16469,29 @@ function buildWsSettingsModal() {
           <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:8px;letter-spacing:.02em">Changing the plan resets the feature toggles below to that plan's defaults.</div>
         </div>
 
+        <!-- Account type (master only) -->
+        ${(AUTH.session && AUTH.isMaster) ? `
+        <div style="margin-bottom:22px">
+          <div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);margin-bottom:10px">02b · Account type <span style="color:var(--text3);font-weight:400;letter-spacing:0">· master control</span></div>
+          <div style="display:flex;gap:8px;margin-bottom:${(ws.accountType==='sub')?'12px':'0'}">
+            ${[['gc','General Contractor'],['sub','Subcontractor']].map(opt => {
+              const on=(ws.accountType||'gc')===opt[0];
+              const tradeArg = opt[0]==='sub' ? ("'"+(ws.subTrade||SUB_TRADE_LIST[0].id)+"'") : 'null';
+              return `<button onclick="wsSetAccountType('${ws.id}','${opt[0]}',${tradeArg})"
+                style="flex:1;padding:10px 12px;border-radius:6px;cursor:pointer;background:${on?'var(--amber-bg)':'var(--bg)'};border:2px solid ${on?'var(--amber)':'var(--border)'};font-family:var(--sans);font-size:13px;font-weight:700;color:${on?'var(--amber)':'var(--text)'}">${opt[1]}</button>`;
+            }).join('')}
+          </div>
+          ${ws.accountType==='sub' ? `
+            <div class="modal-label">Subcontractor trade</div>
+            <select class="minp" onchange="wsSetAccountType('${ws.id}','sub',this.value)">
+              ${SUB_TRADE_LIST.map(t => `<option value="${t.id}" ${(ws.subTrade||'')===t.id?'selected':''}>${esc(t.label)}</option>`).join('')}
+            </select>
+            ${getTradePack(ws.subTrade) ? `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:8px;line-height:1.5">Replaces project categories with: ${getTradePack(ws.subTrade).categories.slice(0,6).map(esc).join(' · ')}${getTradePack(ws.subTrade).categories.length>6?' …':''}</div>` : ''}
+          ` : `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:8px;line-height:1.5">General Contractor — full bid leveling and the standard project categories.</div>`}
+          <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:8px;letter-spacing:.02em">Non-destructive: any category that already holds bids or estimates is preserved.</div>
+        </div>
+        ` : ''}
+
         <!-- Features (master only) -->
         <div style="margin-bottom:22px">
           <div style="font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--amber);margin-bottom:10px">03 · Features enabled <span style="color:var(--text3);font-weight:400;letter-spacing:0">· master control</span></div>
@@ -16388,6 +16559,28 @@ function wsUpdate(wsId, field, value) {
   render();
 }
 
+// Set a workspace's account type (GC | sub+trade). Master-only. Applies the
+// trade pack's categories non-destructively and syncs the type to the cloud.
+function wsSetAccountType(wsId, type, trade) {
+  const ws = ST.workspaces?.[wsId];
+  if (!ws) return;
+  if (!(AUTH.session && AUTH.isMaster)) { showToast('Only the master can set account type.', 'warn'); return; }
+  ws.accountType = (type === 'sub') ? 'sub' : 'gc';
+  ws.subTrade = (ws.accountType === 'sub')
+    ? ((trade && trade !== 'null' && trade !== null) ? trade : (SUB_TRADE_LIST[0] && SUB_TRADE_LIST[0].id))
+    : null;
+  wsSaveRegistry(ST.workspaces);
+  const res = wsApplyTradePack(wsId);
+  if (AUTH.session && AUTH.isMaster) wsSyncToCloud(wsId, true);
+  if (res && res.deferred) {
+    showToast('Account type saved. Open that workspace to apply its categories.', 'info');
+  } else {
+    const pack = getTradePack(ws.subTrade);
+    showToast((ws.accountType === 'sub' && pack) ? `Set to Subcontractor · ${pack.label}.` : 'Set to General Contractor.', 'success');
+  }
+  render();
+}
+
 // Set a workspace's plan and reset its features to that plan's defaults
 function wsSetPlan(wsId, planId) {
   const ws = ST.workspaces?.[wsId];
@@ -16428,6 +16621,8 @@ async function wsSyncToCloud(wsId, silent) {
       logo_data: ws.logoData || null,
       plan: ws.plan,
       features: ws.features,
+      account_type: ws.accountType || 'gc',
+      sub_trade: ws.subTrade || null,
     }).eq('id', wsId);
     if (error) throw error;
     if (!silent) showToast('Workspace synced to cloud.', 'success');
@@ -19657,6 +19852,7 @@ function buildEstimatorTab() {
   // an accordion, not as a top-level tab.
   let tab = ST.estimatorTab || 'plans';
   if (tab === 'review') { tab = 'plans'; ST.estimatorTab = 'plans'; }
+  if (tab === 'takeoff' && !hasBudgetCalculator()) { tab = 'plans'; }
 
   // Inline tab counters
   const planCount = e.plans.length;
@@ -19672,8 +19868,8 @@ function buildEstimatorTab() {
     { id:'plans', label:'Plan Sets',       meta: planCount ? planCount + (planCount===1?' file':' files') : '—' },
     { id:'setup', label:'Setup',           meta: setupFilled + '/5' },
     { id:'code',  label:'Code Compliance', meta: codeCount ? codeCount + ' items' : '—' },
-    { id:'takeoff', label:'Take-off',      meta: '' },
   ];
+  if (hasBudgetCalculator()) tabs.push({ id:'takeoff', label:'Take-off', meta: '' });
 
   return `
     <div class="est-shell">
