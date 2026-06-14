@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>NOVANTU</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;700;900&family=JetBrains+Mono:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --bone:#FAF8F2; --ink:#181613; --ink-soft:#6B6256; --line:#D8D2C4; --red:#C44A2C;
+      --success:#3E7A4E; --error:#A6311B; --info:#C8780F;
+      --accent: var(--success);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; display:flex; align-items:center; justify-content:center; padding:24px;
+      background-color:var(--bone); color:var(--ink);
+      background-image:
+        linear-gradient(var(--line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--line) 1px, transparent 1px);
+      background-size:34px 34px; background-position:center;
+      font-family:'Geist', system-ui, -apple-system, sans-serif;
+      -webkit-font-smoothing:antialiased;
+    }
+    .sheet{
+      position:relative; width:100%; max-width:430px;
+      background:var(--bone); border:1px solid var(--line);
+      padding:42px 38px 30px;
+      box-shadow: 0 1px 2px rgba(24,22,19,.06), 0 20px 56px rgba(24,22,19,.12);
+    }
+    .sheet::before, .sheet::after{
+      content:""; position:absolute; width:11px; height:11px;
+      border:1.5px solid var(--red); pointer-events:none;
+    }
+    .sheet::before{top:-1px; left:-1px; border-right:none; border-bottom:none}
+    .sheet::after{bottom:-1px; right:-1px; border-left:none; border-top:none}
+    .wm{
+      font-family:'JetBrains Mono', monospace; font-size:12px; font-weight:700;
+      letter-spacing:.3em; text-transform:uppercase; color:var(--ink);
+    }
+    .wm .b{color:var(--line)}
+    .rule{position:relative; height:1px; background:var(--line); margin:20px 0 24px}
+    .rule::before{
+      content:""; position:absolute; left:0; top:0; width:40px; height:3px;
+      background:var(--red); margin-top:-1px;
+    }
+    .mark{
+      width:46px; height:46px; border-radius:50%;
+      display:flex; align-items:center; justify-content:center;
+      font-size:23px; font-weight:700; margin-bottom:20px;
+      border:2px solid var(--accent); color:var(--accent);
+      font-family:'JetBrains Mono', monospace;
+    }
+    h1{font-size:25px; font-weight:700; letter-spacing:-.02em; line-height:1.12; margin:0 0 10px}
+    p{font-size:14px; line-height:1.6; color:var(--ink-soft); margin:0}
+    .email{
+      display:inline-block; margin-top:10px; padding:4px 10px;
+      background:var(--bone); border:1px solid var(--line); border-radius:3px;
+      font-family:'JetBrains Mono', monospace; font-size:12px; color:var(--ink);
+    }
+    .foot{
+      margin-top:26px; border-top:1px solid var(--line); padding-top:15px;
+      font-family:'JetBrains Mono', monospace; font-size:10px;
+      letter-spacing:.13em; text-transform:uppercase; color:var(--ink-soft);
+    }
+    .foot b{color:var(--ink); font-weight:700}
+  </style>
+</head>
+<body>
+  <div class="sheet" id="sheet">
+    <div class="wm"><span class="b">[</span> NOVANTU <span class="b">]</span></div>
+    <div class="rule"></div>
+    <div class="mark" id="mark">·</div>
+    <h1 id="title">Connecting…</h1>
+    <p id="msg">Please wait a moment.</p>
+    <div class="foot">You can close this tab <b>&middot;</b> it closes itself shortly</div>
+  </div>
+
+  <script>
+    (function () {
+      var qs = new URLSearchParams(window.location.search);
+      var status = (qs.get('status') || 'success').toLowerCase();
+      var title = qs.get('title') || 'Done';
+      var msg = qs.get('msg') || '';
+      var email = qs.get('email') || '';
+
+      var map = {
+        success: { accent: 'var(--success)', glyph: '\u2713' },
+        error:   { accent: 'var(--error)',   glyph: '\u2715' },
+        info:    { accent: 'var(--info)',    glyph: '!'      }
+      };
+      var conf = map[status] || map.success;
+      document.documentElement.style.setProperty('--accent', conf.accent);
+      document.getElementById('mark').textContent = conf.glyph;
+      document.getElementById('title').textContent = title;
+
+      var msgEl = document.getElementById('msg');
+      msgEl.textContent = msg;
+      if (email) {
+        var br = document.createElement('br');
+        var chip = document.createElement('span');
+        chip.className = 'email';
+        chip.textContent = email;
+        msgEl.appendChild(br);
+        msgEl.appendChild(chip);
+      }
+
+      document.title = title + ' \u00b7 NOVANTU';
+
+      // Auto-close if this is a popup the app opened.
+      setTimeout(function () { try { window.close(); } catch (e) {} }, 4000);
+    })();
+  </script>
+</body>
+</html>
