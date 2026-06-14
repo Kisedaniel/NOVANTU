@@ -9492,8 +9492,10 @@ function buildProjectsTab() {
                 ${p.dl?`<span class="meta-chip">DL: ${p.dl}</span>`:''}
                 ${p.est?`<span class="meta-chip">${p.est}</span>`:''}
               </div>
-              <div class="prog-track"><div class="prog-fill${pct===100?' done':''}" style="width:${pct}%"></div></div>
-              <div class="prog-text">${s.rec}/${s.total} received • ${pct}%${s.totalVal>0?' • '+fmt$(s.totalVal):''}</div>
+              ${isSubAccount()
+                ? `<div class="prog-text" style="margin-top:8px">${(() => { const t = subEstTotal(p.id); return t > 0 ? 'Bid · ' + fmt$(t) : 'No estimate yet'; })()}</div>`
+                : `<div class="prog-track"><div class="prog-fill${pct===100?' done':''}" style="width:${pct}%"></div></div>
+              <div class="prog-text">${s.rec}/${s.total} received • ${pct}%${s.totalVal>0?' • '+fmt$(s.totalVal):''}</div>`}
             </div>`;
           }).join('')}
         </div>
@@ -9514,8 +9516,43 @@ function getRfi(p) {
   return ST.overrides[p.id]?._rfi !== undefined ? ST.overrides[p.id]._rfi : (p.rfi||'');
 }
 
+// ── Subcontractor per-project estimate (Phase 2) ─────────────────────────────
+// Stored under overrides[pid]._subEst[cat] = { amount, note }. Rides the
+// existing overrides sync; "_"-prefixed key is ignored by category detection,
+// while wsCategoriesInUse() looks inside it so a trade switch never orphans
+// a category that already holds a priced line.
+function subEstStore(pid) {
+  if (!ST.overrides[pid]) ST.overrides[pid] = {};
+  if (!ST.overrides[pid]._subEst || typeof ST.overrides[pid]._subEst !== 'object') ST.overrides[pid]._subEst = {};
+  return ST.overrides[pid]._subEst;
+}
+function subEstGet(pid, cat) {
+  const st = (ST.overrides[pid] && ST.overrides[pid]._subEst) || {};
+  const e = st[cat];
+  return (e && typeof e === 'object') ? { amount: Number(e.amount) || 0, note: e.note || '' } : { amount: 0, note: '' };
+}
+function subEstSet(pid, idx, value) {
+  const cat = CATS[idx]; if (cat === undefined) return;
+  const store = subEstStore(pid);
+  const amt = Number(String(value).replace(/[^0-9.\-]/g, '')) || 0;
+  if (!store[cat] || typeof store[cat] !== 'object') store[cat] = {};
+  store[cat].amount = amt;
+  saveSt();
+  render();
+}
+function subEstSetNote(pid, idx, value) {
+  const cat = CATS[idx]; if (cat === undefined) return;
+  const store = subEstStore(pid);
+  if (!store[cat] || typeof store[cat] !== 'object') store[cat] = {};
+  store[cat].note = String(value || '');
+  saveSt();
+}
+// Sum the currently-shown categories so the total matches the visible rows.
+function subEstTotal(pid) { let t = 0; CATS.forEach(cat => { t += subEstGet(pid, cat).amount; }); return t; }
+
 function buildProjectDetail(p) {
   if (!p) return '<div class="empty">Project not found</div>';
+  if (isSubAccount()) return buildSubProjectDetail(p);
   const s = calcProjStats(p.id);
   const pct = s.total>0 ? Math.round(s.rec/s.total*100) : 0;
   const activeCats = CATS.filter(cat => isCatActive(p.id, cat));
@@ -9599,6 +9636,105 @@ function buildProjectDetail(p) {
         <div class="na-wrap">
           ${naCats.map(cat=>`<span class="na-tag" onclick="activateCat('${p.id}','${esc(cat)}')" title="Click to add to active categories">+ ${esc(cat)}</span>`).join('')}
         </div>`:''}
+    </div>`;
+}
+
+// ── Subcontractor project detail (Phase 2 — Option B) ────────────────────────
+// Replaces the GC bid-leveling surface with the sub's OWN estimate for the job:
+// a priced line per trade category, their bid status, and a jump to the budget
+// calculator. No RFQ / subs / leveling. GC view is untouched.
+function buildSubEstRow(pid, idx, cat) {
+  const e = subEstGet(pid, cat);
+  const priced = e.amount > 0;
+  return `<div class="cat-row" style="align-items:center;gap:10px">
+    <div class="cat-name" style="flex:1;min-width:0">${esc(cat)}</div>
+    <input type="text" value="${esc(e.note || '')}" placeholder="scope note (optional)"
+      onchange="subEstSetNote('${pid}',${idx},this.value)"
+      style="flex:1;min-width:90px;max-width:240px;background:transparent;border:none;border-bottom:1px dashed var(--border);padding:4px 2px;font-size:11px;color:var(--text2);font-family:var(--sans);outline:none">
+    <div style="display:flex;align-items:center;gap:6px">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--text3)">$</span>
+      <input type="number" inputmode="decimal" min="0" step="any" value="${priced ? e.amount : ''}" placeholder="0"
+        onchange="subEstSet('${pid}',${idx},this.value)"
+        style="width:118px;background:var(--bg2);border:1px solid ${priced ? 'var(--green-border)' : 'var(--border)'};border-radius:var(--r2);padding:6px 9px;font-size:12px;color:var(--text);font-family:var(--mono);text-align:right;outline:none">
+    </div>
+  </div>`;
+}
+
+function buildSubProjectDetail(p) {
+  if (!p) return '<div class="empty">Project not found</div>';
+  const pack = getActiveTradePack();
+  const tradeLabel = pack ? pack.label : 'Trade';
+  const cats = CATS.slice();
+  const comments = getComments(p);
+  const rfi = getRfi(p);
+  const isEditingComm = ST.editComments === p.id;
+  const total = subEstTotal(p.id);
+  const priced = cats.filter(c => subEstGet(p.id, c).amount > 0).length;
+
+  return `
+    <div class="d-header" style="position:relative">
+      <div class="d-kicker">Sheet — ${esc(tradeLabel)} bid</div>
+      <div class="d-title">${esc(p.name)}</div>
+      <div class="d-meta">${bidStageBadge(p.id)}</div>
+      <button onclick="confirmDeleteProject('${p.id}')" title="Delete this project" class="d-del">✕ Delete project</button>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;align-items:center">
+        ${getProjTags(p.id).map(t => tagChip(t, { onRemove: `projRemoveTag('${p.id}','${esc(t)}')` })).join('')}
+        <button onclick="projAddTag('${p.id}')" style="font-family:var(--mono);font-size:9px;letter-spacing:.04em;background:transparent;border:1px dashed var(--border);color:var(--text3);padding:2px 8px;cursor:pointer">+ tag</button>
+      </div>
+    </div>
+
+    <div style="padding:14px 20px 0">
+      ${bidStagePicker(p.id)}
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-box" style="flex:2"><div class="stat-num green" style="font-size:15px">${fmt$(total)}</div><div class="stat-label">Bid Total</div></div>
+      <div class="stat-box"><div class="stat-num">${priced}</div><div class="stat-label">Priced</div></div>
+      <div class="stat-box"><div class="stat-num amber">${cats.length}</div><div class="stat-label">Line Items</div></div>
+    </div>
+
+    ${buildArchSet(p)}
+
+    ${buildProjBoxes(p)}
+
+    <div class="cats-section">
+      <div class="sec-heading" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <span>Estimate — ${esc(tradeLabel)}</span>
+        <button class="btn btn-ghost btn-sm" onclick="if(typeof _toMountReset==='function')_toMountReset();ST.tab='estimator';ST.estimatorSelProj='${p.id}';ST.estimatorTab='takeoff';render()" title="Open the budget calculator for this project">Budget calculator →</button>
+      </div>
+      ${cats.map((cat, i) => buildSubEstRow(p.id, i, cat)).join('')}
+      <div class="cat-row" style="align-items:center;border-top:2px solid var(--border);margin-top:4px;padding-top:10px">
+        <div class="cat-name" style="flex:1;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text2)">Total bid</div>
+        <div style="font-family:var(--mono);font-size:15px;font-weight:700;color:var(--green)">${fmt$(total)}</div>
+      </div>
+    </div>
+
+    ${buildClientShareSectionV2(p)}
+    ${buildProjectFilesSection(p)}
+    ${buildThreadsSection(p)}
+    ${buildChangeOrdersSection(p)}
+
+    <div style="padding:12px 20px 18px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      ${isEditingComm ? `
+        <div style="flex:1;min-width:200px">
+          <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:4px">NOTES / COMMENTS</div>
+          <textarea id="comm-inp" rows="2" style="width:100%;background:var(--bg2);border:1px solid var(--amber);border-radius:var(--r2);padding:7px 10px;font-size:12px;color:var(--text);resize:vertical;font-family:var(--sans);outline:none">${esc(comments)}</textarea>
+        </div>
+        <div style="flex:1;min-width:160px">
+          <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-bottom:4px">RFI</div>
+          <input type="text" id="rfi-inp" value="${esc(rfi)}" style="width:100%;background:var(--bg2);border:1px solid var(--amber);border-radius:var(--r2);padding:7px 10px;font-size:12px;color:var(--text);font-family:var(--sans);outline:none">
+        </div>
+        <div style="display:flex;gap:6px;align-self:flex-end;padding-bottom:2px">
+          <button class="btn btn-amber btn-sm" onclick="saveComments('${p.id}')">Save</button>
+          <button class="btn btn-ghost btn-sm" onclick="ST.editComments=null;render()">Cancel</button>
+        </div>
+      ` : `
+        <div style="flex:1">
+          ${rfi ? `<div class="rfi-box" style="margin-bottom:6px">⚑ RFI: ${esc(rfi)}</div>` : ''}
+          ${comments ? `<div class="comment-box" style="margin-bottom:0">${esc(comments)}</div>` : `<div style="font-size:11px;color:var(--text3)">No notes yet</div>`}
+        </div>
+        <button class="edit-btn" onclick="ST.editComments='${p.id}';render()" style="align-self:flex-start">✎ Edit notes</button>
+      `}
     </div>`;
 }
 
@@ -13882,7 +14018,14 @@ function wsCategoriesInUse() {
     if (!store) continue;
     for (const pid in store) { const inner = store[pid]; if (inner && typeof inner === 'object') for (const cat in inner) used.add(cat); }
   }
-  if (ST.overrides) for (const pid in ST.overrides) { const inner = ST.overrides[pid]; if (inner && typeof inner === 'object') for (const k in inner) { if (!k.startsWith('_')) used.add(k); } }
+  if (ST.overrides) for (const pid in ST.overrides) {
+    const inner = ST.overrides[pid];
+    if (inner && typeof inner === 'object') for (const k in inner) {
+      if (k === '_subEst' && inner._subEst && typeof inner._subEst === 'object') {
+        for (const cat in inner._subEst) { const e = inner._subEst[cat]; if (e && Number(e.amount) > 0) used.add(cat); }
+      } else if (!k.startsWith('_')) { used.add(k); }
+    }
+  }
   return used;
 }
 
