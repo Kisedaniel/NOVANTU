@@ -4511,9 +4511,29 @@ async function loadSt() {
             : { ...getPlanById(ws.plan || 'pro').features, branding: true },
           accountType: (ws.account_type === 'sub') ? 'sub' : 'gc',
           subTrade: ws.sub_trade || null,
+          ownsBaseSeed: ws.owns_base_seed === true,
         };
       }
       console.log(`Loaded ${Object.keys(ST.workspaces).length} workspace(s). isMaster=${AUTH.isMaster}`);
+      // ── Legacy seed ownership ────────────────────────────────────────────
+      // PROJECTS_BASE / SUBS_BASE are the original GC's hardcoded data. They
+      // must appear in exactly ONE workspace (the master's own), never in new
+      // or client/sub workspaces. If nothing is flagged yet, assign the
+      // master's workspace once and persist (silent: a pre-migration column is
+      // harmless — the in-memory flag still works for this session).
+      try {
+        if (AUTH.isMaster && Array.isArray(AUTH.workspaceMemberships)) {
+          const anyOwner = Object.values(ST.workspaces).some(w => w && w.ownsBaseSeed === true);
+          if (!anyOwner) {
+            const masterMem = AUTH.workspaceMemberships.find(m => m.is_master);
+            const ownerId = masterMem && masterMem.workspace_id;
+            if (ownerId && ST.workspaces[ownerId]) {
+              ST.workspaces[ownerId].ownsBaseSeed = true;
+              if (typeof wsSyncToCloud === 'function') { try { wsSyncToCloud(ownerId, true); } catch (_e) {} }
+            }
+          }
+        }
+      } catch (e) { console.warn('Base-seed owner assignment skipped:', e); }
     } catch(e) {
       console.error('Failed to load workspaces list:', e);
     }
@@ -5506,15 +5526,18 @@ function allProjects() {
   if (_allProjectsCache) return _allProjectsCache;
   // Newly added projects come first (most recent at index 0), then the seed.
   // Deleted seed projects are filtered out via their _deleted override flag.
+  const _seedProjects = wsOwnsBaseSeed()
+    ? PROJECTS_BASE
+        .filter(p => !ST.overrides[p.id]?._deleted)
+        .map(p => ({
+          ...p,
+          status: ST.overrides[p.id]?._status || p.status,
+          name: ST.overrides[p.id]?._projName || p.name
+        }))
+    : [];
   _allProjectsCache = [
     ...ST.addedProjects.slice().reverse(),
-    ...PROJECTS_BASE
-      .filter(p => !ST.overrides[p.id]?._deleted)
-      .map(p => ({
-        ...p,
-        status: ST.overrides[p.id]?._status || p.status,
-        name: ST.overrides[p.id]?._projName || p.name
-      }))
+    ..._seedProjects
   ];
   return _allProjectsCache;
 }
@@ -5612,8 +5635,9 @@ function allSubs() {
   };
   // Skip subs marked _deleted via subOverrides flag (delete capability)
   const notDeleted = s => !ST.subOverrides?.[s.id]?._deleted;
+  const _seedSubs = wsOwnsBaseSeed() ? SUBS_BASE.filter(notDeleted).map(merge) : [];
   _allSubsCache = [
-    ...SUBS_BASE.filter(notDeleted).map(merge),
+    ..._seedSubs,
     ...ST.addedSubs.filter(notDeleted).map(merge)
   ];
   return _allSubsCache;
@@ -7918,7 +7942,7 @@ function buildSettingsTab() {
 
     ${hasFeature('estimator') ? `<div style="margin-bottom:24px" id="settings-pricing"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Take-off unit prices</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Edit unit costs that feed Estimator → Take-off line items.</div></div>
       <div style="border:1px solid var(--border);background:var(--bg);overflow:hidden">
-        ${TAKEOFF_TYPES.map(t => {
+        ${getPricingEditorTypes().map(t => {
           const items = getPricingForType(t.id);
           return `
             <details style="border-bottom:1px solid var(--border)" ${ST.settingsPricingOpen===t.id?'open':''}>
@@ -7942,9 +7966,13 @@ function buildSettingsTab() {
                       <option value="EA"${it.unit==='EA'?' selected':''}>EA</option>
                     </select>
                     <div style="display:flex;align-items:center;gap:4px"><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">$</span><input type="number" step="0.01" class="minp" value="${it.perUnit}" onchange="setPricingItem('${t.id}',${i},'perUnit',this.value)" style="text-align:right;font-family:var(--mono)"></div>
-                    <button class="btn btn-ghost btn-sm" style="color:var(--text3);padding:3px 6px" onclick="if(confirm('Reset ${esc(t.label)} prices to defaults?'))resetPricingForType('${t.id}')" title="Reset ${esc(t.label)} prices">↻</button>
+                    <button class="btn btn-ghost btn-sm" style="color:var(--red);padding:3px 6px" onclick="if(confirm('Delete this line item?'))deletePricingItem('${t.id}',${i})" title="Delete line item">✕</button>
                   </div>
                 `).join('')}
+                <div style="padding:8px 18px;display:flex;gap:8px;align-items:center;border-top:1px solid var(--border)">
+                  <button class="btn btn-amber btn-sm" onclick="addPricingItem('${t.id}')">+ Add line item</button>
+                  <button class="btn btn-ghost btn-sm" style="margin-left:auto;color:var(--text3)" onclick="if(confirm('Reset ${esc(t.label)} prices to defaults? Custom items will be lost.'))resetPricingForType('${t.id}')" title="Reset to defaults">↻ Reset to defaults</button>
+                </div>
               </div>
             </details>
           `;
@@ -13111,7 +13139,7 @@ async function toFinalizePolygon(pid) {
 function toPushToBid(pid) {
   const typeId = ST.toTakeoffType;
   if (!typeId) { showToast('No trade selected', 'warn'); return; }
-  const typeMeta = TAKEOFF_TYPES.find(t => t.id === typeId);
+  const typeMeta = takeoffTypeById(typeId);
   const catalog = getPricingForType(typeId);
   const calcState = toGetCalcState(pid, typeId);
 
@@ -13282,7 +13310,7 @@ function toBuildSidebar(p, e) {
   const allPlans = e.plans || [];
   const active = ST.toActivePlan;
   const typeId = ST.toTakeoffType;
-  const typeMeta = TAKEOFF_TYPES.find(t => t.id === typeId);
+  const typeMeta = takeoffTypeById(typeId);
 
   return `<div id="to-sidebar" class="to-sidebar">
     ${typeMeta ? `
@@ -13510,7 +13538,7 @@ function toOpenSaved(pid, typeId) {
 
 // Delete a saved take-off — wipes calculator data AND the linked PDF (if any)
 function toDeleteSaved(pid, typeId) {
-  const meta = TAKEOFF_TYPES.find(t => t.id === typeId);
+  const meta = takeoffTypeById(typeId);
   const label = meta ? meta.label : typeId;
   if (!confirm(`Delete saved "${label}" take-off?\n\n• All entered quantities will be removed\n• The PDF uploaded specifically for this take-off (if any) will be removed\n• Plans uploaded under Plan Sets are NOT affected`)) return;
 
@@ -13541,7 +13569,7 @@ function toDeleteSaved(pid, typeId) {
 
 function toBuildDetailPanel(p, e) {
   const typeId = ST.toTakeoffType;
-  const typeMeta = TAKEOFF_TYPES.find(t => t.id === typeId);
+  const typeMeta = takeoffTypeById(typeId);
 
   if (!typeId || !typeMeta) {
     return `<div id="to-detail" class="to-detail">
@@ -13642,7 +13670,7 @@ function getCalculatorTypes() {
   const pack = getActiveTradePack();
   if (pack && Array.isArray(pack.calculators) && pack.calculators.length) {
     const ids = new Set(pack.calculators);
-    const filtered = TAKEOFF_TYPES.filter(t => ids.has(t.id));
+    const filtered = allTakeoffTypes().filter(t => ids.has(t.id));
     return filtered.length ? filtered : TAKEOFF_TYPES;
   }
   return TAKEOFF_TYPES;
@@ -13665,7 +13693,7 @@ function buildEstTakeoff(p, e) {
   if (!hasActiveSession) {
     _TO.mounted = false;
     const chosenType = ST.toTakeoffType;
-    const typeMeta = TAKEOFF_TYPES.find(t => t.id === chosenType);
+    const typeMeta = takeoffTypeById(chosenType);
 
     if (!chosenType) {
       // STEP 1 — pick take-off type
@@ -13678,7 +13706,7 @@ function buildEstTakeoff(p, e) {
           const calc = ST.toCalculator[key] || {};
           const hasData = Object.values(calc).some(line => line && line.qty > 0);
           if (!hasData) continue;
-          const meta = TAKEOFF_TYPES.find(t => t.id === savedType);
+          const meta = takeoffTypeById(savedType);
           if (!meta) continue;
           // Compute total
           const catalog = getPricingForType(savedType);
@@ -13980,12 +14008,12 @@ const WS_ACCENT_PRESETS = [
 // source of truth — add a trade here and the wizard, editor, category
 // swap and calculator filter all pick it up automatically.
 const SUB_TRADE_PACKS = {
-  fire_sprinklers: { label: 'Fire Sprinklers', categories: ['DESIGN & SUBMITTALS','UNDERGROUND SUPPLY','OVERHEAD PIPING','BRANCH LINES','SPRINKLER HEADS','FIRE PUMP','BACKFLOW PREVENTER','INSPECTOR TEST & DRAIN','HANGERS & SEISMIC BRACING','INSPECTION & SIGN-OFF'], calculators: ['general'] },
-  concrete: { label: 'Concrete', categories: ['FOOTINGS','FOUNDATION WALLS','SLAB ON GRADE','ELEVATED SLABS','COLUMNS & BEAMS','REINFORCING STEEL','FORMWORK','PUMP & PLACE','FINISHING','CURING & SEALING'], calculators: ['general'] },
+  fire_sprinklers: { label: 'Fire Sprinklers', categories: ['DESIGN & SUBMITTALS','UNDERGROUND SUPPLY','OVERHEAD PIPING','BRANCH LINES','SPRINKLER HEADS','FIRE PUMP','BACKFLOW PREVENTER','INSPECTOR TEST & DRAIN','HANGERS & SEISMIC BRACING','INSPECTION & SIGN-OFF'], calculators: ['fire_sprinklers'] },
+  concrete: { label: 'Concrete', categories: ['FOOTINGS','FOUNDATION WALLS','SLAB ON GRADE','ELEVATED SLABS','COLUMNS & BEAMS','REINFORCING STEEL','FORMWORK','PUMP & PLACE','FINISHING','CURING & SEALING'], calculators: ['concrete'] },
   drywall: { label: 'Drywall & Framing', categories: ['METAL FRAMING','INSULATION','BOARD HANGING','TAPE & MUD','LEVEL-5 FINISH','CEILINGS','SOFFITS & BULKHEADS','ACCESS PANELS','PATCH & REPAIR'], calculators: ['gypsum'] },
-  hvac: { label: 'HVAC', categories: ['LOAD CALCS & DESIGN','EQUIPMENT SET','DUCTWORK','REGISTERS & GRILLES','REFRIGERANT LINES','CONTROLS & THERMOSTATS','EXHAUST & VENTILATION','TEST & BALANCE','START-UP'], calculators: ['general'] },
-  plumbing: { label: 'Plumbing', categories: ['UNDERGROUND ROUGH','WATER SUPPLY ROUGH','DWV ROUGH','GAS PIPING','FIXTURE SET','WATER HEATER','TRIM & FINISH','BACKFLOW & TEST','INSPECTION'], calculators: ['general'] },
-  electrical: { label: 'Electrical', categories: ['TEMP POWER','SERVICE & PANELS','BRANCH ROUGH-IN','LOW VOLTAGE / DATA','DEVICES & TRIM','FIXTURES','PANEL SCHEDULE & LABELING','TEST & SIGN-OFF'], calculators: ['general'] },
+  hvac: { label: 'HVAC', categories: ['LOAD CALCS & DESIGN','EQUIPMENT SET','DUCTWORK','REGISTERS & GRILLES','REFRIGERANT LINES','CONTROLS & THERMOSTATS','EXHAUST & VENTILATION','TEST & BALANCE','START-UP'], calculators: ['hvac'] },
+  plumbing: { label: 'Plumbing', categories: ['UNDERGROUND ROUGH','WATER SUPPLY ROUGH','DWV ROUGH','GAS PIPING','FIXTURE SET','WATER HEATER','TRIM & FINISH','BACKFLOW & TEST','INSPECTION'], calculators: ['plumbing'] },
+  electrical: { label: 'Electrical', categories: ['TEMP POWER','SERVICE & PANELS','BRANCH ROUGH-IN','LOW VOLTAGE / DATA','DEVICES & TRIM','FIXTURES','PANEL SCHEDULE & LABELING','TEST & SIGN-OFF'], calculators: ['electrical'] },
   roofing: { label: 'Roofing', categories: ['TEAR-OFF','DECK PREP','UNDERLAYMENT','FLASHING & EDGE METAL','FIELD MEMBRANE','PENETRATIONS & CURBS','GUTTERS & DOWNSPOUTS','WARRANTY INSPECTION'], calculators: ['roofing'] },
   tile_flooring: { label: 'Tile & Flooring', categories: ['SUBSTRATE PREP','WATERPROOFING','CRACK ISOLATION','TILE SETTING','GROUT','HARDWOOD / LVP','TRANSITIONS & TRIM','SEALING'], calculators: ['tile','hardwood'] },
   stucco_facade: { label: 'Stucco & Facade', categories: ['LATH & PAPER','SCRATCH COAT','BROWN COAT','FINISH COAT','CONTROL JOINTS','SIDING / CLADDING','SEALANTS','PATCH & REPAIR'], calculators: ['facade'] },
@@ -14001,6 +14029,14 @@ function getActiveTradePack() { return getTradePack(wsSubTrade()); }
 
 // Specialized budget calculator is a SUB tool; GCs don't see it (master "see all" reveals everything).
 function hasBudgetCalculator() { if (AUTH.isMaster && ST.masterSeeAll) return true; return isSubAccount(); }
+
+// Only the workspace flagged as the legacy-seed owner shows the hardcoded
+// PROJECTS_BASE / SUBS_BASE. New (and client/sub) workspaces start empty.
+function wsOwnsBaseSeed(wsId) {
+  wsId = wsId || ST.activeWorkspace;
+  const ws = ST.workspaces && ST.workspaces[wsId];
+  return !!(ws && ws.ownsBaseSeed === true);
+}
 
 // Scan active workspace data for category names that currently hold data, so a swap never orphans anything.
 function wsCategoriesInUse() {
@@ -15845,6 +15881,7 @@ async function wsCreate(config) {
     features,
     accountType: (config.accountType === 'sub') ? 'sub' : 'gc',
     subTrade: (config.accountType === 'sub' && config.subTrade) ? config.subTrade : null,
+    ownsBaseSeed: config.ownsBaseSeed === true,
     createdAt: new Date().toISOString(),
     lastUsed: new Date().toISOString(),
   };
@@ -15869,6 +15906,7 @@ async function wsCreate(config) {
         features: ws.features,
         account_type: ws.accountType || 'gc',
         sub_trade: ws.subTrade || null,
+        owns_base_seed: ws.ownsBaseSeed === true,
       });
       if (wsErr) throw wsErr;
       // 2) Assign the master user as a member (so they retain visibility)
@@ -16010,6 +16048,11 @@ function wsInit() {
     }
     wsSaveRegistry(registry);
     ST.workspaces = registry;
+    // Legacy seed belongs to the original (first) local workspace only.
+    if (!Object.values(registry).some(w => w && w.ownsBaseSeed === true)) {
+      const firstId = Object.keys(registry)[0];
+      if (firstId && registry[firstId]) { registry[firstId].ownsBaseSeed = true; wsSaveRegistry(registry); }
+    }
     let activeId = wsGetActiveId();
     if (!activeId || !registry[activeId]) {
       activeId = Object.keys(registry)[0];
@@ -16029,6 +16072,7 @@ function wsInit() {
         accentColor: getSettings().brand?.accentColor || '#c8780f',
         logoData: getSettings().brand?.logoData || '',
         planId: 'enterprise',
+        ownsBaseSeed: true,
       });
       // Snapshot current data into the new workspace's slot
       try {
@@ -16044,6 +16088,7 @@ function wsInit() {
         wordmark: 'NOVANTU',
         accentColor: '#c8780f',
         planId: 'enterprise',
+        ownsBaseSeed: true,
       });
       ST.activeWorkspace = ws.id;
       wsSetActiveId(ws.id);
@@ -16766,6 +16811,7 @@ async function wsSyncToCloud(wsId, silent) {
       features: ws.features,
       account_type: ws.accountType || 'gc',
       sub_trade: ws.subTrade || null,
+      owns_base_seed: ws.ownsBaseSeed === true,
     }).eq('id', wsId);
     if (error) throw error;
     if (!silent) showToast('Workspace synced to cloud.', 'success');
@@ -19244,6 +19290,20 @@ const TAKEOFF_TYPES = [
   { id: 'general',    label: 'General',       desc: 'Mixed / GC scope',                      icon: '⊞' },
 ];
 
+// Subcontractor-specific calculator types (one per trade). These are NOT shown
+// to GCs — getCalculatorTypes() only surfaces them on sub workspaces. Each id
+// has a matching catalog in DEFAULT_PRICING_CATALOG below.
+const SUB_TAKEOFF_TYPES = [
+  { id: 'fire_sprinklers', label: 'Fire Sprinklers', desc: 'Heads, pipe, riser, FDC, calcs',       icon: '⌖' },
+  { id: 'hvac',            label: 'HVAC',            desc: 'Equipment, duct, registers, controls', icon: '❄' },
+  { id: 'plumbing',        label: 'Plumbing',        desc: 'Rough, fixtures, water / waste / gas',  icon: '◍' },
+  { id: 'electrical',      label: 'Electrical',      desc: 'Service, branch, devices, fixtures',    icon: '◈' },
+  { id: 'concrete',        label: 'Concrete',        desc: 'Footings, slab, walls, rebar',          icon: '▦' },
+];
+// All calculator types = GC disciplines + subcontractor trades.
+function allTakeoffTypes() { return TAKEOFF_TYPES.concat(SUB_TAKEOFF_TYPES); }
+function takeoffTypeById(id) { return allTakeoffTypes().find(t => t.id === id) || null; }
+
 // Each catalog entry is a line item with:
 //   code      — internal id for the row
 //   name      — display label
@@ -19315,6 +19375,69 @@ const DEFAULT_PRICING_CATALOG = {
     { code: 'gen-ceiling',    name: 'Ceiling (allowance)',   sub: 'Frame + drywall + paint', unit: 'SF', perUnit: 7.00,  matchTags: ['ceiling','ceilings'] },
     { code: 'gen-doors',      name: 'Doors (each)',          sub: 'Avg interior + hardware', unit: 'EA', perUnit: 850.00, matchTags: ['door'] },
   ],
+  fire_sprinklers: [
+    { code: 'fs-head-concealed', name: 'Sprinkler head · concealed', sub: 'Residential pendant 155°F',  unit: 'EA', perUnit: 85.00,   matchTags: ['head','sprinkler','pendant','concealed'] },
+    { code: 'fs-head-sidewall',  name: 'Sprinkler head · sidewall',  sub: 'Horizontal / dry',           unit: 'EA', perUnit: 95.00,   matchTags: ['sidewall','dry head'] },
+    { code: 'fs-pipe-branch',    name: 'Branch line pipe',           sub: 'CPVC 1" · install + fittings',unit: 'LF', perUnit: 9.00,    matchTags: ['branch','pipe','cpvc','line'] },
+    { code: 'fs-pipe-main',      name: 'Main / feed pipe',           sub: 'Steel sch 40 · 2-2½"',       unit: 'LF', perUnit: 18.00,   matchTags: ['main','feed','riser pipe','standpipe'] },
+    { code: 'fs-riser',          name: 'Riser assembly',             sub: 'Valve, gauge, drain',        unit: 'EA', perUnit: 1200.00, matchTags: ['riser','assembly'] },
+    { code: 'fs-fdc',            name: 'Fire dept connection (FDC)', sub: 'Wall / freestanding',        unit: 'EA', perUnit: 650.00,  matchTags: ['fdc','connection'] },
+    { code: 'fs-backflow',       name: 'Backflow preventer',         sub: 'Double check',               unit: 'EA', perUnit: 1400.00, matchTags: ['backflow'] },
+    { code: 'fs-flowswitch',     name: 'Flow switch + tamper',       sub: 'Monitored',                  unit: 'EA', perUnit: 450.00,  matchTags: ['flow','switch','tamper','monitor'] },
+    { code: 'fs-calc-permit',    name: 'Hydraulic calc + permit',    sub: 'Engineering & submittal',    unit: 'EA', perUnit: 1800.00, matchTags: ['calc','permit','plan','design','submittal'] },
+    { code: 'fs-test',           name: 'Inspector test & sign-off',  sub: 'Final acceptance',           unit: 'EA', perUnit: 380.00,  matchTags: ['test','inspection','sign-off'] },
+  ],
+  hvac: [
+    { code: 'hv-ac-unit',    name: 'Condensing unit (AC)',     sub: 'Split system · 2-5 ton',     unit: 'EA', perUnit: 4200.00, matchTags: ['condenser','ac','condensing','unit'] },
+    { code: 'hv-furnace',    name: 'Furnace / air handler',    sub: 'Gas 80% or AHU',             unit: 'EA', perUnit: 2600.00, matchTags: ['furnace','air handler','ahu'] },
+    { code: 'hv-heatpump',   name: 'Heat pump system',         sub: 'Ducted split',               unit: 'EA', perUnit: 6500.00, matchTags: ['heat pump','heatpump'] },
+    { code: 'hv-minisplit',  name: 'Mini-split (ductless)',    sub: 'Per indoor head',            unit: 'EA', perUnit: 2800.00, matchTags: ['mini split','ductless','minisplit'] },
+    { code: 'hv-duct',       name: 'Ductwork',                 sub: 'Sheet metal / flex',         unit: 'LF', perUnit: 28.00,   matchTags: ['duct','ductwork'] },
+    { code: 'hv-supply-reg', name: 'Supply register',          sub: 'Ceiling / wall diffuser',    unit: 'EA', perUnit: 45.00,   matchTags: ['supply','register','diffuser'] },
+    { code: 'hv-return',     name: 'Return air grille',        sub: 'Filter back',                unit: 'EA', perUnit: 120.00,  matchTags: ['return','grille'] },
+    { code: 'hv-lineset',    name: 'Refrigerant line set',     sub: 'Insulated',                  unit: 'LF', perUnit: 22.00,   matchTags: ['line set','lineset','refrigerant'] },
+    { code: 'hv-condensate', name: 'Condensate drain',         sub: 'PVC + pump if req',          unit: 'LF', perUnit: 8.00,    matchTags: ['condensate','drain'] },
+    { code: 'hv-tstat',      name: 'Thermostat',               sub: 'Smart / zoning',             unit: 'EA', perUnit: 320.00,  matchTags: ['thermostat','tstat','control'] },
+    { code: 'hv-permit',     name: 'Title-24 + Manual J + permit', sub: 'Load calc & submittal',  unit: 'EA', perUnit: 650.00,  matchTags: ['title 24','load calc','permit','manual j'] },
+    { code: 'hv-crane',      name: 'Crane / rooftop rigging',  sub: 'Set heavy equipment',        unit: 'EA', perUnit: 1200.00, matchTags: ['crane','rigging','rooftop'] },
+    { code: 'hv-tab',        name: 'Test, balance & start-up', sub: 'Airflow commissioning',      unit: 'EA', perUnit: 480.00,  matchTags: ['balance','tab','commission','start-up','startup'] },
+  ],
+  concrete: [
+    { code: 'conc-footing',       name: 'Footings · concrete',     sub: 'All-in place · per CY',     unit: 'CY', perUnit: 290.00, matchTags: ['footing','footings','grade beam'] },
+    { code: 'conc-fdn-wall',      name: 'Foundation wall',         sub: 'Formed + placed · face',    unit: 'SF', perUnit: 24.00,  matchTags: ['foundation','wall','stem wall','retaining'] },
+    { code: 'conc-slab-grade',    name: 'Slab on grade',           sub: 'Place + finish',            unit: 'SF', perUnit: 9.50,   matchTags: ['slab','slab on grade','sog','floor'] },
+    { code: 'conc-slab-elevated', name: 'Elevated slab',           sub: 'Suspended / deck',          unit: 'SF', perUnit: 19.00,  matchTags: ['elevated','suspended','deck slab','podium'] },
+    { code: 'conc-col-beam',      name: 'Columns & beams',         sub: 'Formed · per CY',           unit: 'CY', perUnit: 680.00, matchTags: ['column','beam'] },
+    { code: 'conc-rebar',         name: 'Reinforcing steel',       sub: 'Supply + install',          unit: 'LB', perUnit: 1.35,   matchTags: ['rebar','reinforcing','reinforcement','steel'] },
+    { code: 'conc-formwork',      name: 'Formwork',                sub: 'Contact area',              unit: 'SF', perUnit: 12.00,  matchTags: ['form','formwork','forming'] },
+    { code: 'conc-pump',          name: 'Concrete pump',           sub: 'Boom / line · per day',     unit: 'EA', perUnit: 1800.00,matchTags: ['pump','boom','line pump'] },
+    { code: 'conc-finish',        name: 'Finishing / trowel',      sub: 'Broom / smooth',            unit: 'SF', perUnit: 2.50,   matchTags: ['finish','trowel','broom'] },
+    { code: 'conc-cure-seal',     name: 'Curing & sealing',        sub: 'Cure + sealer',             unit: 'SF', perUnit: 0.85,   matchTags: ['cure','curing','seal','sealer'] },
+  ],
+  plumbing: [
+    { code: 'plumb-fixture-rough', name: 'Fixture rough-in',       sub: 'Per fixture',               unit: 'EA', perUnit: 450.00, matchTags: ['rough','fixture rough','rough-in'] },
+    { code: 'plumb-water-supply',  name: 'Water supply piping',    sub: 'PEX / copper',              unit: 'LF', perUnit: 14.00,  matchTags: ['water','supply','pex','copper'] },
+    { code: 'plumb-dwv',           name: 'DWV piping',             sub: 'ABS / PVC waste & vent',    unit: 'LF', perUnit: 18.00,  matchTags: ['dwv','waste','vent','drain'] },
+    { code: 'plumb-gas',           name: 'Gas piping',             sub: 'Black iron / CSST',         unit: 'LF', perUnit: 16.00,  matchTags: ['gas'] },
+    { code: 'plumb-underground',   name: 'Underground rough',      sub: 'Under-slab / sewer lateral',unit: 'LF', perUnit: 32.00,  matchTags: ['underground','sewer','under slab','lateral'] },
+    { code: 'plumb-fixture-set',   name: 'Fixture set & trim',     sub: 'Per fixture',               unit: 'EA', perUnit: 220.00, matchTags: ['fixture','set','trim','finish'] },
+    { code: 'plumb-wh-tank',       name: 'Water heater · tank',    sub: '50 gal gas/electric',       unit: 'EA', perUnit: 1900.00,matchTags: ['water heater','tank'] },
+    { code: 'plumb-wh-tankless',   name: 'Water heater · tankless',sub: 'On-demand',                 unit: 'EA', perUnit: 3200.00,matchTags: ['tankless'] },
+    { code: 'plumb-backflow',      name: 'Backflow + test',        sub: 'Assembly + certification',  unit: 'EA', perUnit: 650.00, matchTags: ['backflow','test'] },
+    { code: 'plumb-permit',        name: 'Permit & inspection',    sub: 'Submittal & sign-off',      unit: 'EA', perUnit: 480.00, matchTags: ['permit','inspection'] },
+  ],
+  electrical: [
+    { code: 'elec-temp-power',  name: 'Temp power',               sub: 'Construction power',        unit: 'EA', perUnit: 1200.00,matchTags: ['temp','temporary power','construction power'] },
+    { code: 'elec-service',     name: 'Service & main panel',     sub: '200A · meter + main',       unit: 'EA', perUnit: 3800.00,matchTags: ['service','panel','main','meter'] },
+    { code: 'elec-subpanel',    name: 'Sub-panel',                sub: 'Feeder + breakers',         unit: 'EA', perUnit: 1100.00,matchTags: ['sub panel','subpanel'] },
+    { code: 'elec-branch-rough',name: 'Branch rough-in',          sub: 'Per box / device',          unit: 'EA', perUnit: 48.00,  matchTags: ['rough','branch','circuit','box','wire'] },
+    { code: 'elec-lowvolt',     name: 'Low voltage / data drop',  sub: 'Cat6 / coax',               unit: 'EA', perUnit: 95.00,  matchTags: ['low voltage','data','cat6','coax','drop'] },
+    { code: 'elec-device-trim', name: 'Devices & trim',           sub: 'Per device',                unit: 'EA', perUnit: 22.00,  matchTags: ['device','receptacle','switch','outlet','trim'] },
+    { code: 'elec-fixture',     name: 'Light fixture install',    sub: 'Recessed / surface',        unit: 'EA', perUnit: 85.00,  matchTags: ['fixture','light','can','recessed'] },
+    { code: 'elec-panel-label', name: 'Panel schedule & labeling',sub: 'As-built schedule',         unit: 'EA', perUnit: 180.00, matchTags: ['schedule','label','labeling'] },
+    { code: 'elec-ev',          name: 'EV charger circuit',       sub: '240V dedicated',            unit: 'EA', perUnit: 850.00, matchTags: ['ev','charger','car charger'] },
+    { code: 'elec-permit',      name: 'Permit & sign-off',        sub: 'Submittal & inspection',    unit: 'EA', perUnit: 420.00, matchTags: ['permit','inspection','sign-off'] },
+  ],
 };
 
 // ── Pricing accessors ────────────────────────────────────────────────────────
@@ -19353,6 +19476,42 @@ function resetPricingForType(typeId) {
   saveSt();
   render();
   showToast('Pricing reset to defaults for ' + typeId, 'success');
+}
+
+// Which catalogs appear in the Settings price editor: a master with "see all"
+// gets every catalog; a sub workspace gets only ITS trade's calculator(s); a GC
+// gets the standard disciplines.
+function getPricingEditorTypes() {
+  if (AUTH.isMaster && ST.masterSeeAll) return allTakeoffTypes();
+  if (isSubAccount()) return getCalculatorTypes();
+  return TAKEOFF_TYPES;
+}
+
+function addPricingItem(typeId) {
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  if (!ST.settings.takeoffPricing) ST.settings.takeoffPricing = {};
+  if (!Array.isArray(ST.settings.takeoffPricing[typeId])) {
+    ST.settings.takeoffPricing[typeId] = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG[typeId] || []));
+  }
+  const code = typeId.slice(0, 4) + '-' + Date.now().toString(36).slice(-4);
+  ST.settings.takeoffPricing[typeId].push({ code, name: 'New item', sub: '', unit: 'EA', perUnit: 0, matchTags: [] });
+  ST.settingsPricingOpen = typeId;
+  saveSt();
+  render();
+}
+
+function deletePricingItem(typeId, idx) {
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  if (!ST.settings.takeoffPricing) ST.settings.takeoffPricing = {};
+  if (!Array.isArray(ST.settings.takeoffPricing[typeId])) {
+    ST.settings.takeoffPricing[typeId] = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG[typeId] || []));
+  }
+  const list = ST.settings.takeoffPricing[typeId];
+  if (idx < 0 || idx >= list.length) return;
+  list.splice(idx, 1);
+  ST.settingsPricingOpen = typeId;
+  saveSt();
+  render();
 }
 
 // ── Match an extracted markup item to a pricing catalog row ──────────────────
