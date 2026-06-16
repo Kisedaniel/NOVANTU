@@ -2314,7 +2314,9 @@ body[data-theme="hc"] {
 .to-calc-itm-name{
   font-family:var(--sans);font-size:12px;font-weight:500;color:var(--ink-900);
   letter-spacing:-.005em;line-height:1.25;
+  min-width:0;flex:1 1 auto;overflow-wrap:anywhere;
 }
+.to-calc-name > div{min-width:0}
 .to-calc-unit-price{
   font-family:var(--mono);font-size:9px;color:var(--text3);
   letter-spacing:.04em;flex-shrink:0;
@@ -15802,7 +15804,7 @@ function wsApplyDataSnapshot(snap) {
   ST.changeOrders      = snap.changeOrders      || {};
   ST.threadNotes       = snap.threadNotes       || {};
   ST.subPortalTokens   = snap.subPortalTokens   || {};
-  ST.settings          = snap.settings          || ST.settings || {};
+  ST.settings          = snap.settings          || (typeof DEFAULT_SETTINGS !== 'undefined' ? JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) : {});
   ST.ownerPortalTokens = snap.ownerPortalTokens || {};
   ST.projectFiles      = snap.projectFiles      || {};
   ST.subMessages       = snap.subMessages       || {};
@@ -15812,6 +15814,9 @@ function wsApplyDataSnapshot(snap) {
   ST.estimator         = snap.estimator         || {};
   ST.toSpaces          = snap.toSpaces          || [];
   ST.bidStages         = snap.bidStages         || {};
+  // Re-derive the global category list for THIS workspace so the previous
+  // workspace's categories never bleed across on switch.
+  syncCategoriesFromSettings();
 }
 
 // Save the current workspace's data (and registry) to localStorage
@@ -15837,6 +15842,13 @@ function wsSaveCurrentWorkspace() {
 
 // Load a workspace's data into ST (replacing current data)
 function wsLoadWorkspaceData(wsId) {
+  // Cloud mode (authenticated): Supabase app_state is the source of truth, scoped
+  // per workspace. Reload it for the now-active workspace so categories, pricing and
+  // every per-workspace blob reflect THIS workspace — never the one we switched from.
+  if (AUTH.session && typeof loadSt === 'function') {
+    loadSt();
+    return;
+  }
   try {
     const raw = localStorage.getItem(WS_STATE_PREFIX + wsId);
     if (!raw) {
