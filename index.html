@@ -4858,10 +4858,22 @@ function snapshotBaselines() {
 
 // A remote app_state row changed (another editor saved). Re-base our local edits on it.
 function handleRemoteStateChange(payload) {
+  // Supabase Realtime caps broadcast payload size. A large row — e.g. `estimator`
+  // with embedded plan PDFs (≤5 MB base64) — exceeds that cap and is delivered
+  // TRUNCATED: `value` arrives null/missing or the payload carries an `errors`
+  // marker. Trusting it would let merge3 adopt the truncated remote and wipe good
+  // local data (a just-uploaded plan PDF vanishes until reload, which then breaks
+  // Plan Diff because its dataUrl is gone). So ignore truncated broadcasts — our own
+  // write already persisted to app_state, and flushSave's REST re-fetch + loadSt read
+  // the FULL row, so collaborators' oversized changes still reconcile on next save/reload.
+  if (payload && payload.errors) return;
   const row = payload && (payload.new || payload.record);
   if (!row || !row.key) return;
   const k = row.key;
   if (!(k in APP_STATE_KEYS)) return;
+  // app_state.value is NOT NULL, so a null/absent value here means the broadcast was
+  // truncated (oversized). Never overwrite local state with a truncated payload.
+  if (row.value === null || row.value === undefined) return;
   const remote = row.value;
   if (SYNC.baseline[k] !== undefined && deepEqual(remote, SYNC.baseline[k])) return; // our own echo / no-op
   let local = getStateKey(k); if (local === undefined || local === null) local = appStateDefault(k);
