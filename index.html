@@ -3792,29 +3792,9 @@ a:hover{opacity:.7}
 // ============================================================
 // BASE DATA
 // ============================================================
-const PROJECTS_BASE = [
-  {id:'p01',name:'52-60 Market St',status:'on-hold',dl:'TBD',sdl:null,est:'Csaba',source:'Breakform',comments:'Wait till the new changes arrive to re bid. Csaba is checking new plans.',rfi:'',builder:'Csaba'},
-  {id:'p02',name:'Quadro Vecchio',status:'lost',dl:'PAST DUE',sdl:null,est:null,source:null,comments:'LOST — Csaba is checking new plans.',rfi:'',builder:null},
-  {id:'p03',name:'429 Sherman Canal',status:'active',dl:'08/15/25',sdl:null,est:'Sofia',source:'INTERNAL',comments:'',rfi:'',builder:'Tas'},
-  {id:'p04',name:'213 OFW Waterfront',status:'active',dl:'08/01/25',sdl:null,est:'Sofia',source:'INTERNAL',comments:'',rfi:'',builder:'Csaba'},
-  {id:'p05',name:'723 OFW',status:'active',dl:'08/30/25',sdl:'12/19/25',est:'Sofia',source:null,comments:'',rfi:'',builder:null},
-  {id:'p06',name:'15265 W Bestor Blvd',status:'sent',dl:'05/12/25',sdl:null,est:'Tas',source:'Breakform',comments:'Wait for architects to answer. Call Billy.',rfi:'',builder:'Tas'},
-  {id:'p07',name:'748 & 750 Palisades Dr',status:'active',dl:'08/30/25',sdl:'02/27/26',est:'Sofia',source:'Breakform',comments:'Monday for site walks.',rfi:'',builder:'Csaba'},
-  {id:'p08',name:'478 Wynola St',status:'sent',dl:'09/22/25',sdl:'12/22/25',est:null,source:'Architect',comments:'Take-offs: wood flooring, tiles, gypsum board, stucco.',rfi:'Specify finish on flooring',builder:null},
-  {id:'p09',name:'6537 Topanga Canyon',status:'withdrawn',dl:'WITHDRAW',sdl:null,est:null,source:null,comments:'DISREGARD PROJECT',rfi:'',builder:null},
-  {id:'p10',name:'17797 Camino De Yatasto',status:'sent',dl:'SENT',sdl:null,est:'Edmund',source:'Architect',comments:'',rfi:'',builder:'Edmund'},
-  {id:'p11',name:'865 N Oreo Pl',status:'sent',dl:'11/28/25',sdl:null,est:'Tas',source:'Breakform',comments:'Structural drawings bid updates — Billy Snow.',rfi:'',builder:'Tas'},
-  {id:'p12',name:'807 6th Ave',status:'sent',dl:'11/07/25',sdl:null,est:'Edmund',source:'Architect: David Kornmeyer',comments:'',rfi:'',builder:'Edmund'},
-  {id:'p13',name:'1080 El Medio Place',status:'sent',dl:'12/04/25',sdl:'12/12/25',est:'Tas',source:'Architect: Bestor',comments:'Take-offs: tiles, wood flooring, wood deck, stone pavers.',rfi:'Grand HVAC contractor asks for site walk.',builder:'Tas'},
-  {id:'p14',name:'4565 Dundee Drive',status:'sent',dl:'SENT',sdl:null,est:'Edmund',source:'Architect: RFRMM Collective',comments:'',rfi:'',builder:'Edmund'},
-  {id:'p15',name:'1093 Palms Blvd',status:'sent',dl:'12/01/25',sdl:null,est:'Tas',source:'Architect',comments:'Re-send info to AMG Electric.',rfi:'',builder:'Tas'},
-  {id:'p16',name:'2429 Eastern Canal',status:'sent',dl:'SENT',sdl:null,est:null,source:'Architect',comments:'Service connections from main house included.',rfi:'',builder:null},
-  {id:'p17',name:'16339 Akron',status:'active',dl:'01/09/26',sdl:null,est:null,source:null,comments:'',rfi:'',builder:null},
-  {id:'p18',name:'14949 Mc Kendree Ave',status:'sent',dl:'SENT',sdl:null,est:null,source:null,comments:'',rfi:'',builder:null},
-  {id:'p19',name:'12979 Blairwood Dr',status:'sent',dl:'SENT',sdl:null,est:null,source:null,comments:'',rfi:'',builder:null},
-  {id:'p20',name:'7300 Vista Del Mar',status:'active',dl:'',sdl:null,est:null,source:null,comments:'',rfi:'',builder:null},
-  {id:'p21',name:'1134 Iliff St',status:'active',dl:'',sdl:null,est:null,source:null,comments:'',rfi:'',builder:null},
-];
+// Demo/seed projects removed — blank board for first client.
+// (Subcontractor directory SUBS_BASE is kept intentionally.)
+const PROJECTS_BASE = [];
 
 const DEFAULT_CATS = ['STRUCTURAL CONCRETE','ROUGH CARPENTRY','PLUMBING AND APPLIANCES','HVAC','ELECTRIC ROUGH','INSULATION','WATERPROOFING','DEMOLITION','ROOFING','STRUCTURAL STEEL','MASONRY','ELEVATORS','EXTERIOR WOOD SIDING','METAL SIDING - PANELS','CABINETS','GYPSUM BOARD - DRYWALL','WOOD FLOORING','INSTALLATION TILES','METAL FABRICATION','WINDOWS & DOORS','FIRE SPRINKLERS','STUCCO','RAILING','GLAZING','PLANTING-LANDSCAPING','SWIMING POOL/SPA','FIREPLACE','SHORING / GRADING','SKYLIGHTS','CONCRETE SLAB','ELEVATED ROOF DECKS','SOLAR PANELS'];
 let CATS = [...DEFAULT_CATS];
