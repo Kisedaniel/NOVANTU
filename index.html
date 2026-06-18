@@ -4641,6 +4641,17 @@ async function loadSt() {
   render();
 }
 
+// Surface a one-time warning when localStorage is full so offline saves don't
+// fail silently. In cloud mode the data still lives in Supabase; in local-only
+// mode this is the user's signal to free up space.
+function warnLocalSaveFailed(e) {
+  const isQuota = e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014);
+  if (isQuota && !window._lsQuotaWarned) {
+    window._lsQuotaWarned = true;
+    if (typeof showToast === 'function') showToast('This device\'s local storage is full — some changes may not be saved offline. Free up space or remove old projects.', 'error');
+  }
+}
+
 // Legacy single-key save (used only as fallback if workspace system isn't initialized)
 function saveStLocalLegacy() {
   try {
@@ -4660,7 +4671,7 @@ function saveStLocalLegacy() {
       bidStages: ST.bidStages,
     };
     localStorage.setItem('bidflow_state', JSON.stringify(state));
-  } catch(e) { console.warn('local save failed', e); }
+  } catch(e) { console.warn('local save failed', e); warnLocalSaveFailed(e); }
 }
 
 // Workspace-aware save: routes to the active workspace's slot if available,
@@ -4680,7 +4691,7 @@ async function saveSt() {
     if (window.BYPASS_LOGIN) { saveStLocal(); setSaveStatus('saved'); }
     return;
   }
-  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','priceBook','scopeTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator','bidStages','toCalculator','schedule','dailyLogs','bidLeveling','planDiff','rfis']
+  ['overrides','subOverrides','addedSubs','addedProjects','activityLog','followUp','sentHistory','email_templates','estimates','estimateTemplates','priceBook','scopeTemplates','changeOrders','threadNotes','subPortalTokens','settings','ownerPortalTokens','projectFiles','subMessages','estimateVersions','customCategories','printTemplates','estimator','bidStages','toCalculator','schedule','dailyLogs','bidLeveling','planDiff','rfis','toSpaces']
     .forEach(k => SAVE_STATE.pendingKeys.add(k));
   if (SAVE_STATE.debounceTimer) clearTimeout(SAVE_STATE.debounceTimer);
   SAVE_STATE.debounceTimer = setTimeout(flushSave, 400);
@@ -4728,7 +4739,7 @@ async function flushSave() {
     // Reflect the merged union locally so this editor immediately sees collaborators' records.
     assignStateKey(k, merged);
     SYNC.baseline[k] = deepClone(merged);
-    rows.push({ workspace_id: ws, key: k, value: merged });
+    rows.push({ workspace_id: ws, key: k, value: merged, updated_by: AUTH.user?.id || null });
   }
 
   try {
@@ -4775,8 +4786,9 @@ const APP_STATE_KEYS = {
   estimateVersions: 'estimateVersions', customCategories: 'customCategories', printTemplates: 'printTemplates',
   estimator: 'estimator', bidStages: 'bidStages', toCalculator: 'toCalculator', schedule: 'schedule',
   dailyLogs: 'dailyLogs', bidLeveling: 'bidLeveling', planDiff: 'planDiff', rfis: 'rfis',
+  toSpaces: 'toSpaces',
 };
-const APP_STATE_DEFAULTS = { addedSubs: [], addedProjects: [], activityLog: [], estimateTemplates: [], priceBook: [], scopeTemplates: [], customCategories: [], printTemplates: [] };
+const APP_STATE_DEFAULTS = { addedSubs: [], addedProjects: [], activityLog: [], estimateTemplates: [], priceBook: [], scopeTemplates: [], customCategories: [], printTemplates: [], toSpaces: [] };
 function appStateDefault(k) { return APP_STATE_DEFAULTS[k] !== undefined ? deepClone(APP_STATE_DEFAULTS[k]) : {}; }
 function getStateKey(k) { return APP_STATE_KEYS[k] ? ST[APP_STATE_KEYS[k]] : undefined; }
 function assignStateKey(k, v) { if (APP_STATE_KEYS[k]) ST[APP_STATE_KEYS[k]] = (v === undefined || v === null) ? appStateDefault(k) : v; }
@@ -7862,7 +7874,7 @@ async function subPortalSubmit() {
   const disc = Number(document.getElementById('sp-disc')?.value) || null;
   const comments = document.getElementById('sp-comments')?.value || '';
   const file = document.getElementById('sp-pdf')?.files?.[0];
-  if (!price || price <= 0) { alert('Enter a valid price.'); return; }
+  if (!price || price <= 0) { alert('A bid amount greater than $0 is required.\n\nIf you don\'t want to bid on this package, use "Pass / No-bid" instead.'); return; }
   if (!file) { alert('Attach your PDF.'); return; }
   if (disc && disc >= price) { alert('Discounted must be less than original.'); return; }
   const statusEl = document.getElementById('sp-status');
@@ -11915,11 +11927,10 @@ function estAccToggle(accId) {
   render();
 }
 
-// --- Ask AI placeholder ---
-// TODO Fase 2: wire to Anthropic API via Supabase Edge Function. Context
-// to send with each question: project setup + plan filenames + active
-// disciplines + open RFI items + derived codes. The Edge Function will
-// keep the API key secret and stream results back.
+// --- Ask AI ---
+// Implemented: estSendMessage() streams from the `ask-ai` Edge Function with the
+// project context (setup + plan filenames + active disciplines + open RFI items +
+// derived codes), keeping the API key server-side. This just opens the panel.
 function estOpenAskAI() { ST.estimatorAskAIOpen = true; render(); setTimeout(estScrollChat, 50); }
 function estCloseAskAI() { ST.estimatorAskAIOpen = false; render(); }
 
@@ -13218,19 +13229,29 @@ function toAttachInteractionHandlers() {
       ev.preventDefault();
     }
   });
-  window.addEventListener('mousemove', (ev) => {
-    if (!_TO.panning || !_TO.panStart) return;
-    const dx = ev.clientX - _TO.panStart.x;
-    const dy = ev.clientY - _TO.panStart.y;
-    zone.scrollLeft = _TO.panStart.scrollX - dx;
-    zone.scrollTop = _TO.panStart.scrollY - dy;
-  });
-  window.addEventListener('mouseup', () => {
-    if (_TO.panning) {
-      _TO.panning = false;
-      zone.style.cursor = _TO.panMode ? 'grab' : 'crosshair';
-    }
-  });
+  // Window-level pan listeners attach ONCE per session (not per render).
+  // The #to-canvas-zone element is recreated on each render, so they look it
+  // up dynamically instead of capturing a stale `zone` by closure — otherwise
+  // a new pair would leak on every take-off render.
+  if (!window._toPanWinAttached) {
+    window._toPanWinAttached = true;
+    window.addEventListener('mousemove', (ev) => {
+      if (!_TO.panning || !_TO.panStart) return;
+      const z = document.getElementById('to-canvas-zone');
+      if (!z) return;
+      const dx = ev.clientX - _TO.panStart.x;
+      const dy = ev.clientY - _TO.panStart.y;
+      z.scrollLeft = _TO.panStart.scrollX - dx;
+      z.scrollTop = _TO.panStart.scrollY - dy;
+    });
+    window.addEventListener('mouseup', () => {
+      if (_TO.panning) {
+        _TO.panning = false;
+        const z = document.getElementById('to-canvas-zone');
+        if (z) z.style.cursor = _TO.panMode ? 'grab' : 'crosshair';
+      }
+    });
+  }
 
   // Keyboard shortcuts (only when take-off is the active tab)
   if (!window._toKeyboardAttached) {
@@ -15785,6 +15806,9 @@ function wsBuildDataSnapshot() {
     estimator: ST.estimator,
     toSpaces: ST.toSpaces,
     bidStages: ST.bidStages,
+    priceBook: ST.priceBook, scopeTemplates: ST.scopeTemplates,
+    toCalculator: ST.toCalculator, schedule: ST.schedule, dailyLogs: ST.dailyLogs,
+    bidLeveling: ST.bidLeveling, planDiff: ST.planDiff, rfis: ST.rfis,
   };
 }
 
@@ -15814,6 +15838,14 @@ function wsApplyDataSnapshot(snap) {
   ST.estimator         = snap.estimator         || {};
   ST.toSpaces          = snap.toSpaces          || [];
   ST.bidStages         = snap.bidStages         || {};
+  ST.priceBook         = Array.isArray(snap.priceBook) ? snap.priceBook : [];
+  ST.scopeTemplates    = Array.isArray(snap.scopeTemplates) ? snap.scopeTemplates : [];
+  ST.toCalculator      = snap.toCalculator      || {};
+  ST.schedule          = snap.schedule          || {};
+  ST.dailyLogs         = snap.dailyLogs          || {};
+  ST.bidLeveling       = snap.bidLeveling        || {};
+  ST.planDiff          = snap.planDiff           || {};
+  ST.rfis              = snap.rfis               || {};
   // Re-derive the global category list for THIS workspace so the previous
   // workspace's categories never bleed across on switch.
   syncCategoriesFromSettings();
@@ -15837,16 +15869,17 @@ function wsSaveCurrentWorkspace() {
     }
   } catch (e) {
     console.warn('ws save failed', e);
+    warnLocalSaveFailed(e);
   }
 }
 
 // Load a workspace's data into ST (replacing current data)
-function wsLoadWorkspaceData(wsId) {
+async function wsLoadWorkspaceData(wsId) {
   // Cloud mode (authenticated): Supabase app_state is the source of truth, scoped
   // per workspace. Reload it for the now-active workspace so categories, pricing and
   // every per-workspace blob reflect THIS workspace — never the one we switched from.
   if (AUTH.session && typeof loadSt === 'function') {
-    loadSt();
+    await loadSt();
     return;
   }
   try {
@@ -15939,7 +15972,7 @@ async function wsCreate(config) {
 }
 
 // Switch to a different workspace
-function wsSwitchTo(wsId) {
+async function wsSwitchTo(wsId) {
   if (!ST.workspaces?.[wsId]) {
     showToast('Workspace not found.', 'error');
     return;
@@ -15951,8 +15984,9 @@ function wsSwitchTo(wsId) {
   // Switch
   ST.activeWorkspace = wsId;
   wsSetActiveId(wsId);
-  // Load new workspace's data
-  wsLoadWorkspaceData(wsId);
+  // Load new workspace's data — AWAIT so the brand/reset/render below run on the
+  // new workspace's data, not a stale flash of the previous one.
+  await wsLoadWorkspaceData(wsId);
   if (ST.workspaces[wsId] && ST.workspaces[wsId]._tradePackPending) { wsApplyTradePack(wsId); }
   // Apply visual brand
   wsApplyBrand(ST.workspaces[wsId]);
@@ -16564,7 +16598,7 @@ async function wsWizardNext() {
   const ws = await wsCreate(cfg);
   ST.wsWizard = null;
   showToast(`Workspace "${ws.name}" created. Switching…`, 'success');
-  wsSwitchTo(ws.id);
+  await wsSwitchTo(ws.id);
   if (ws.accountType === 'sub') { wsApplyTradePack(ws.id); render(); }
 }
 
@@ -20155,7 +20189,7 @@ function buildEstimatorTab() {
   // Auto-select first project if nothing selected, or fallback if selected was deleted
   let selId = ST.estimatorSelProj;
   if (!selId || !projs.find(p => p.id === selId)) {
-    selId = ST.selProj && projs.find(p => p.id === selId) ? ST.selProj : projs[0].id;
+    selId = (ST.selProj && projs.find(p => p.id === ST.selProj)) ? ST.selProj : projs[0].id;
     ST.estimatorSelProj = selId;
   }
   const p = projs.find(pp => pp.id === selId);
