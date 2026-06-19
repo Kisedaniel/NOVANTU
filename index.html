@@ -3964,6 +3964,121 @@ const SUBS_BASE = [{"id": "m0000", "div": "DIVISION 09", "divName": "FINISHES", 
 </script>
 <script>
 // ============================================================
+// HVAC SUBCONTRACTOR DEMO SEED
+// ────────────────────────────────────────────────────────────
+// Pre-loaded sample data for the HVAC subcontractor trial. On a
+// sub/HVAC workspace this surfaces a ready "GC's & Suppliers"
+// directory, one demo project, and a fully built Builder estimate
+// that mirrors EMC HVAC's $148,400 linear-diffuser job in NOVANTU
+// format. Flip HVAC_DEMO_SEED to false to ship a blank workspace.
+// ============================================================
+const HVAC_DEMO_SEED = true;
+const HVAC_DEMO_PID = 'hvac-demo-bfd';
+
+// GC's & Suppliers an HVAC sub actually works with (names/phones/emails are
+// sample data). div/divName kept for shape-compatibility with SUBS_BASE.
+const GC_SUPPLIERS_BASE = [
+  { id:'demo-gc-bfd',  div:'DIVISION 01', divName:'GENERAL CONTRACTOR', code:'General Contractor', codes:['General Contractor'], company:'Break Form Design', active:true, contact:'Daniel Romero', phone:'1 414 416 0022', cell:'1 310 555 0145', email:'estimating@breakformdesign.com', statusNote:'HIGHLY ACTIVE', comments:'Pacific Palisades remodel — linear diffuser install. Awarded.', bids:{} },
+  { id:'demo-gc-summit',div:'DIVISION 01', divName:'GENERAL CONTRACTOR', code:'General Contractor', codes:['General Contractor'], company:'Summit Ridge Builders', active:true, contact:'Marcus Hale', phone:'1 818 555 0142', cell:'1 818 555 0143', email:'bids@summitridgebuilders.com', statusNote:'NEW', comments:'Two custom homes in Encino — sends RFPs monthly.', bids:{} },
+  { id:'demo-gc-coast', div:'DIVISION 01', divName:'GENERAL CONTRACTOR', code:'General Contractor', codes:['General Contractor'], company:'Coastline Construction Group', active:true, contact:'Elena Powell', phone:'1 310 555 0188', cell:'', email:'estimating@coastlinecg.com', statusNote:'', comments:'Mixed-use TI work in Santa Monica.', bids:{} },
+  { id:'demo-gc-vanguard',div:'DIVISION 01', divName:'GENERAL CONTRACTOR', code:'General Contractor', codes:['General Contractor'], company:'Vanguard Build Co.', active:true, contact:'Trevor Nash', phone:'1 323 555 0167', cell:'', email:'ops@vanguardbuild.co', statusNote:'CALL', comments:'Wants a number on a Sherman Oaks duplex.', bids:{} },
+  { id:'demo-gc-anvil', div:'DIVISION 01', divName:'GENERAL CONTRACTOR', code:'General Contractor', codes:['General Contractor'], company:'Anvil & Oak Builders', active:false, contact:'Priya Raman', phone:'1 626 555 0119', cell:'', email:'preconstruction@anviloak.com', statusNote:'', comments:'Slow payer — bid selectively.', bids:{} },
+  { id:'demo-sup-pacair',div:'DIVISION 23', divName:'SUPPLIER', code:'HVAC Equipment Supplier', codes:['HVAC Equipment Supplier','Mitsubishi'], company:'Pacific Air Supply', active:true, contact:'Will (counter)', phone:'1 818 555 0203', cell:'', email:'orders@pacificairsupply.com', statusNote:'HIGHLY ACTIVE', comments:'Mitsubishi air handlers & heat-pump condensers. Net-30.', bids:{} },
+  { id:'demo-sup-socal',div:'DIVISION 23', divName:'SUPPLIER', code:'HVAC Equipment Supplier', codes:['HVAC Equipment Supplier'], company:'SoCal HVAC Wholesale', active:true, contact:'Andre Kim', phone:'1 213 555 0234', cell:'', email:'sales@socalhvacwholesale.com', statusNote:'', comments:'Backup distributor — good on ductwork & flex.', bids:{} },
+  { id:'demo-sup-linea',div:'DIVISION 23', divName:'SUPPLIER', code:'Diffusers & Grilles Supplier', codes:['Diffusers & Grilles Supplier'], company:'Linea Diffusers & Grilles', active:true, contact:'Rosa Medina', phone:'1 747 555 0291', cell:'', email:'quotes@lineadiffusers.com', statusNote:'', comments:'Linear diffuser boxes 4ft/2ft, slot faces.', bids:{} },
+  { id:'demo-sup-copper',div:'DIVISION 23', divName:'SUPPLIER', code:'Copper / Line Set Supplier', codes:['Copper / Line Set Supplier'], company:'CopperLine Refrigeration Supply', active:true, contact:'Gus Patel', phone:'1 562 555 0277', cell:'', email:'desk@copperlinesupply.com', statusNote:'', comments:'Copper line sets, fittings, refrigerant.', bids:{} },
+  { id:'demo-sup-thermo',div:'DIVISION 23', divName:'SUPPLIER', code:'Controls & Thermostats Supplier', codes:['Controls & Thermostats Supplier'], company:'ThermoControls Distributing', active:true, contact:'Hana Brooks', phone:'1 949 555 0260', cell:'', email:'support@thermocontrolsdist.com', statusNote:'', comments:'Smart thermostats, zoning boards, low-volt wire.', bids:{} },
+  { id:'demo-sup-sheet',div:'DIVISION 23', divName:'SUPPLIER', code:'Custom Plenum Fabricator', codes:['Custom Plenum Fabricator'], company:'Sheet Metal Pros', active:true, contact:'Dom Vargas', phone:'1 805 555 0215', cell:'', email:'shop@sheetmetalpros.com', statusNote:'', comments:'Custom insulated supply/return plenums, 24-48 hr turnaround.', bids:{} },
+];
+
+// The demo project — the EMC HVAC job, in NOVANTU.
+const HVAC_DEMO_PROJECT = {
+  id: HVAC_DEMO_PID,
+  name: 'Break Form Design — Linear Diffuser Install',
+  status: 'active',
+  dl: '', sdl: null, est: null, source: 'Demo',
+  comments: 'New install with linear diffusers · 17797 Camino De Yatasto, Pacific Palisades, CA 90272 · 3 systems, 32 boxes, 32 supply vents',
+  rfi: '', builder: 'Break Form Design', address: '17797 Camino De Yatasto, Pacific Palisades, CA 90272',
+};
+
+// The $148,400 estimate, broken into NOVANTU cost codes. Client price totals
+// exactly $148,400.00 (builder cost $110,200 + $38,200 markup ≈ 25.7% margin).
+const HVAC_DEMO_ESTIMATE = { groups: [
+  { id:'g_hv_ahu', code:'23 81.13', title:'AIR HANDLERS', items:[
+    { id:'i_hv_ahu35', code:'hv-ahu-35', title:'Mitsubishi air handler · 3.5 ton', description:'Supply & install — location TBD', qty:2, unit:'EA', unitCost:3200, costType:'Equipment', markup:30, taxable:false },
+    { id:'i_hv_ahu4',  code:'hv-ahu-4',  title:'Mitsubishi air handler · 4 ton',   description:'Supply & install — location TBD', qty:1, unit:'EA', unitCost:3600, costType:'Equipment', markup:30, taxable:false },
+  ]},
+  { id:'g_hv_cond', code:'23 81.26', title:'CONDENSERS / HEAT PUMPS', items:[
+    { id:'i_hv_cond35', code:'hv-cond-35', title:'Mitsubishi heat pump condenser · 3.5 ton', description:'Outdoor unit, location TBD', qty:3, unit:'EA', unitCost:4200, costType:'Equipment', markup:30, taxable:false },
+  ]},
+  { id:'g_hv_line', code:'23 23.00', title:'REFRIGERANT LINE SETS', items:[
+    { id:'i_hv_line', code:'hv-lineset', title:'Copper refrigerant line set', description:'New copper lines from air handlers to condensers · insulated', qty:240, unit:'LF', unitCost:22, costType:'Materials', markup:35, taxable:false },
+  ]},
+  { id:'g_hv_duct', code:'23 31.00', title:'DUCTWORK', items:[
+    { id:'i_hv_duct', code:'hv-duct', title:'R-8 flexible duct', description:'New R-8 flex duct runs', qty:600, unit:'LF', unitCost:14, costType:'Materials', markup:35, taxable:false },
+  ]},
+  { id:'g_hv_box', code:'23 37.13', title:'LINEAR DIFFUSER BOXES', items:[
+    { id:'i_hv_box4', code:'hv-linbox-4', title:'Linear diffuser box · 4 ft', description:'Two per room', qty:30, unit:'EA', unitCost:280, costType:'Materials', markup:40, taxable:false },
+    { id:'i_hv_box2', code:'hv-linbox-2', title:'Linear diffuser box · 2 ft', description:'One per restroom', qty:2, unit:'EA', unitCost:180, costType:'Materials', markup:40, taxable:false },
+  ]},
+  { id:'g_hv_grille', code:'23 37.16', title:'SUPPLY & RETURN GRILLES', items:[
+    { id:'i_hv_supply', code:'hv-supply-reg', title:'Linear supply vent / diffuser face', description:'32 supply vents', qty:32, unit:'EA', unitCost:95, costType:'Materials', markup:40, taxable:false },
+    { id:'i_hv_return', code:'hv-return', title:'Return air grille', description:'Filter back', qty:4, unit:'EA', unitCost:160, costType:'Materials', markup:40, taxable:false },
+  ]},
+  { id:'g_hv_plenum', code:'23 33.13', title:'CUSTOM PLENUMS', items:[
+    { id:'i_hv_plenum', code:'hv-plenum', title:'Custom insulated supply & return plenum', description:'One set per system', qty:4, unit:'EA', unitCost:850, costType:'Materials', markup:35, taxable:false },
+  ]},
+  { id:'g_hv_cond_drain', code:'23 05.16', title:'CONDENSATE DRAINS', items:[
+    { id:'i_hv_drain', code:'hv-condensate', title:'Condensate drain to nearest sink', description:'Run new condensation lines where possible', qty:4, unit:'EA', unitCost:220, costType:'Labor', markup:30, taxable:false },
+  ]},
+  { id:'g_hv_ctrl', code:'23 09.00', title:'CONTROLS & THERMOSTATS', items:[
+    { id:'i_hv_tstat', code:'hv-tstat', title:'Smart thermostat', description:'One per system, location TBD', qty:4, unit:'EA', unitCost:320, costType:'Materials', markup:30, taxable:false },
+    { id:'i_hv_wire', code:'hv-tstat-wire', title:'Thermostat wire / low-voltage', description:'New thermostat wire in determined location', qty:4, unit:'EA', unitCost:180, costType:'Labor', markup:30, taxable:false },
+  ]},
+  { id:'g_hv_permit', code:'23 08.00', title:'LOAD CALCS & PERMITS', items:[
+    { id:'i_hv_permit', code:'hv-permit', title:'Title-24 + Manual J + permit', description:'Load calc & submittal', qty:1, unit:'EA', unitCost:1800, costType:'Other', markup:20, taxable:false },
+  ]},
+  { id:'g_hv_start', code:'23 08.13', title:'CRANE · TEST, BALANCE & START-UP', items:[
+    { id:'i_hv_crane', code:'hv-crane', title:'Crane / rooftop rigging', description:'Set heavy equipment', qty:1, unit:'EA', unitCost:1800, costType:'Equipment', markup:25, taxable:false },
+    { id:'i_hv_tab', code:'hv-tab', title:'Test, balance & start-up', description:'Airflow commissioning · 10-yr system / 1-yr labor warranty', qty:1, unit:'EA', unitCost:1600, costType:'Labor', markup:25, taxable:false },
+  ]},
+  { id:'g_hv_labor', code:'23 05.00', title:'INSTALLATION LABOR', items:[
+    { id:'i_hv_labor', code:'hv-labor', title:'Installation labor — 3 systems', description:'Equipment set, ductwork, line sets, diffusers & plenums', qty:1, unit:'LS', unitCost:50000, costType:'Labor', markup:36.784, taxable:false },
+  ]},
+]};
+
+// Gate: only a sub workspace whose trade is HVAC sees the demo seed.
+function wsShowsHvacDemo() {
+  try { return HVAC_DEMO_SEED && typeof isSubAccount === 'function' && isSubAccount() && wsSubTrade() === 'hvac'; }
+  catch(_e) { return false; }
+}
+
+// Inject the demo data into ST once per session (id-guarded → never duplicates,
+// and respects anything the user has since deleted).
+function seedHvacDemoOnce() {
+  try {
+    if (!wsShowsHvacDemo() || ST._hvacDemoSeeded) return;
+    if (!Array.isArray(ST.addedSubs)) ST.addedSubs = [];
+    if (!Array.isArray(ST.addedProjects)) ST.addedProjects = [];
+    if (!ST.estimates || typeof ST.estimates !== 'object') ST.estimates = {};
+    let added = false;
+    const haveSub = new Set(ST.addedSubs.map(s => s && s.id));
+    for (const g of GC_SUPPLIERS_BASE) {
+      if (!haveSub.has(g.id)) { ST.addedSubs.push(JSON.parse(JSON.stringify(g))); added = true; }
+    }
+    if (!ST.addedProjects.some(p => p && p.id === HVAC_DEMO_PID)) {
+      ST.addedProjects.push(JSON.parse(JSON.stringify(HVAC_DEMO_PROJECT))); added = true;
+    }
+    if (!ST.estimates[HVAC_DEMO_PID] || !(ST.estimates[HVAC_DEMO_PID].groups || []).length) {
+      ST.estimates[HVAC_DEMO_PID] = JSON.parse(JSON.stringify(HVAC_DEMO_ESTIMATE)); added = true;
+    }
+    ST._hvacDemoSeeded = true;
+    if (added && typeof _invalidateProjectSubCache === 'function') _invalidateProjectSubCache();
+  } catch (e) { console.warn('HVAC demo seed skipped:', e); }
+}
+</script>
+<script>
+// ============================================================
 // STATE
 // ============================================================
 let ST = {
@@ -5709,6 +5824,8 @@ let _lastRenderedTab = null;
 let _lastOverlaySig = '';
 function render() {
   if (typeof installGlobalErrorHandler === 'function') installGlobalErrorHandler();
+  // Pre-load the HVAC subcontractor demo (no-op on every other workspace).
+  if (typeof seedHvacDemoOnce === 'function') seedHvacDemoOnce();
   // Invalidate memoization caches at the start of each render
   _invalidateProjectSubCache();
   // Reset the take-off skip flag; buildEstTakeoff() re-asserts it this pass if
@@ -8195,7 +8312,7 @@ function cmdItems(query) {
   const push = (label, sub, run, kind) => out.push({ label, sub, run, kind: kind || 'action' });
 
   // ── Navigation ──────────────────────────────────────────────────────────
-  const TABS = [['today','Today'],['projects','Projects'],['subs','Subcontractors'],['files','Files'],['builder','Builder'],['overview','Overview'],['settings','Settings']];
+  const TABS = [['today','Today'],['projects','Projects'],['subs',dirLabels().plural],['files','Files'],['builder','Builder'],['overview','Overview'],['settings','Settings']];
   for (const [id, lbl] of TABS) push(`Go to ${lbl}`, 'tab · ' + id, () => setTab(id), 'nav');
 
   // ── Projects ────────────────────────────────────────────────────────────
@@ -8269,7 +8386,7 @@ function cmdItems(query) {
 
   // ── Quick actions ───────────────────────────────────────────────────────
   push('Add new project', 'action', () => { tryAddProject(); }, 'action');
-  push('Add new subcontractor', 'action', () => { setTab('subs'); ST.addSubModal = true; render(); }, 'action');
+  push(isSubAccount() ? 'Add new GC / supplier' : 'Add new subcontractor', 'action', () => { setTab('subs'); ST.addSubModal = true; render(); }, 'action');
   push('Bulk edit markup', 'Builder action', () => { const pid = ST.builderSelProj || ST.selProj; if (!pid) { alert('Pick a project in Builder first.'); return; } setTab('builder'); ST.bulkEditDialog = { pid }; render(); }, 'action');
   push('Save estimate as template', 'Builder action', () => { const pid = ST.builderSelProj || ST.selProj; if (!pid) { alert('Pick a project in Builder first.'); return; } setTab('builder'); ST.templateSaveDialog = pid; render(); }, 'action');
   push('Apply estimate template', 'Builder action', () => { const pid = ST.builderSelProj || ST.selProj; if (!pid) { alert('Pick a project in Builder first.'); return; } setTab('builder'); ST.templatePicker = pid; render(); }, 'action');
@@ -9301,7 +9418,7 @@ function buildSidebar() {
   const allItems = [
     { id:'today',    label:'Today',          icon:'sun',          count: '' },
     { id:'projects', label:'Projects',       icon:'home',         count: cProjects },
-    { id:'subs',     label:'Subcontractors', icon:'users',        count: cSubs },
+    { id:'subs',     label:dirLabels().plural, icon:'users',        count: cSubs },
     { id:'estimator',label:'Estimator',      icon:'ruler',        count: '' },
     { id:'schedule', label:'Schedule',       icon:'calendar-range',count: '' },
     { id:'dailylog', label:'Daily Log',      icon:'clipboard-list',count: '' },
@@ -9996,7 +10113,7 @@ function buildSubsTab() {
         <div class="search-wrap">
           <div class="search-box">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-            <input id="search-subs" placeholder="Company, category, contact..." value="${esc(ST.subQ)}" oninput="ST.subQ=this.value;render()">
+            <input id="search-subs" placeholder="${esc(dirLabels().searchPh)}" value="${esc(ST.subQ)}" oninput="ST.subQ=this.value;render()">
           </div>
         </div>
         <div class="filter-bar">
@@ -10016,9 +10133,9 @@ function buildSubsTab() {
         })()}
         <button class="add-btn" onclick="ST.addSubModal=true;render()">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
-          Add subcontractor
+          ${esc(dirLabels().add)}
         </button>
-        <div class="sec-label">Subcontractors (${filtered.length})</div>
+        <div class="sec-label">${esc(dirLabels().plural)} (${filtered.length})</div>
         <div class="list-scroll">
           ${filtered.map(s => {
             const codes = subCodes(s);
@@ -10040,7 +10157,7 @@ function buildSubsTab() {
         </div>
       </div>
       <div class="detail-panel">
-        ${ST.selSub ? buildSubDetail(allSubs().find(s=>s.id===ST.selSub)) : '<div class="empty">← Select a subcontractor</div>'}
+        ${ST.selSub ? buildSubDetail(allSubs().find(s=>s.id===ST.selSub)) : `<div class="empty">${esc(dirLabels().selectHint)}</div>`}
       </div>
     </div>`;
 }
@@ -10767,7 +10884,7 @@ function buildOverviewTab() {
     <div class="overview-panel">
       <div style="font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.12em;color:var(--text3);text-transform:uppercase;margin-bottom:14px">Summary</div>
       <div class="overview-stats">
-        <div class="ov-stat"><div class="ov-num" style="color:var(--green)">${activeSubs}</div><div class="ov-label">Active Subcontractors</div></div>
+        <div class="ov-stat"><div class="ov-num" style="color:var(--green)">${activeSubs}</div><div class="ov-label">${esc(dirLabels().activeStat)}</div></div>
         <div class="ov-stat"><div class="ov-num" style="color:var(--blue)">${selProj ? (projBidsLogged||'0') : '—'}</div><div class="ov-label">Bids Logged${selProj?` · ${esc(selProj.name)}`:' · select a project'}</div></div>
         <div class="ov-stat"><div class="ov-num" style="color:var(--green);font-size:28px">${selProj && projLowestTotal ? fmt$(projLowestTotal) : '—'}</div><div class="ov-label">Selected Total${selProj?'':' · click a project below'}</div></div>
       </div>
@@ -11357,8 +11474,8 @@ function buildAddSubModal() {
   const selectedCodes = ST.addSubSelCodes || [];
   return `<div class="backdrop" onclick="if(event.target===this){ST.addSubModal=false;ST.addSubDivFilter='';ST.addSubSelCodes=[];render()}">
     <div class="modal modal-wide">
-      <div class="modal-title">Add Subcontractor</div>
-      <div class="modal-sub">New contractor to the database</div>
+      <div class="modal-title">${esc(dirLabels().add)}</div>
+      <div class="modal-sub">${isSubAccount() ? 'New GC or supplier in your directory' : 'New contractor to the database'}</div>
       <div class="mrow">
         <div><div class="modal-label">Company *</div><input type="text" class="minp" id="ns-company" placeholder="Company name"></div>
         <div><div class="modal-label">Contact</div><input type="text" class="minp" id="ns-contact" placeholder="Contact name"></div>
@@ -11412,7 +11529,7 @@ function buildAddSubModal() {
 
       <div class="modal-btns">
         <button class="btn btn-ghost" onclick="ST.addSubModal=false;ST.addSubDivFilter='';ST.addSubSelCodes=[];render()">Cancel</button>
-        <button class="btn btn-amber" onclick="confirmAddSub()">Add Subcontractor</button>
+        <button class="btn btn-amber" onclick="confirmAddSub()">${esc(dirLabels().add)}</button>
       </div>
     </div>
   </div>`;
@@ -14037,7 +14154,7 @@ const SUB_TRADE_PACKS = {
   fire_sprinklers: { label: 'Fire Sprinklers', categories: ['DESIGN & SUBMITTALS','UNDERGROUND SUPPLY','OVERHEAD PIPING','BRANCH LINES','SPRINKLER HEADS','FIRE PUMP','BACKFLOW PREVENTER','INSPECTOR TEST & DRAIN','HANGERS & SEISMIC BRACING','INSPECTION & SIGN-OFF'], calculators: ['fire_sprinklers'] },
   concrete: { label: 'Concrete', categories: ['FOOTINGS','FOUNDATION WALLS','SLAB ON GRADE','ELEVATED SLABS','COLUMNS & BEAMS','REINFORCING STEEL','FORMWORK','PUMP & PLACE','FINISHING','CURING & SEALING'], calculators: ['concrete'] },
   drywall: { label: 'Drywall & Framing', categories: ['METAL FRAMING','INSULATION','BOARD HANGING','TAPE & MUD','LEVEL-5 FINISH','CEILINGS','SOFFITS & BULKHEADS','ACCESS PANELS','PATCH & REPAIR'], calculators: ['gypsum'] },
-  hvac: { label: 'HVAC', categories: ['LOAD CALCS & DESIGN','EQUIPMENT SET','DUCTWORK','REGISTERS & GRILLES','REFRIGERANT LINES','CONTROLS & THERMOSTATS','EXHAUST & VENTILATION','TEST & BALANCE','START-UP'], calculators: ['hvac'] },
+  hvac: { label: 'HVAC', categories: ['LOAD CALCS & PERMITS','AIR HANDLERS','CONDENSERS / HEAT PUMPS','REFRIGERANT LINE SETS','DUCTWORK','LINEAR DIFFUSER BOXES','SUPPLY & RETURN GRILLES','CUSTOM PLENUMS','CONDENSATE DRAINS','CONTROLS & THERMOSTATS','EXHAUST & VENTILATION','CRANE / RIGGING','INSTALLATION LABOR','TEST, BALANCE & START-UP'], calculators: ['hvac'] },
   plumbing: { label: 'Plumbing', categories: ['UNDERGROUND ROUGH','WATER SUPPLY ROUGH','DWV ROUGH','GAS PIPING','FIXTURE SET','WATER HEATER','TRIM & FINISH','BACKFLOW & TEST','INSPECTION'], calculators: ['plumbing'] },
   electrical: { label: 'Electrical', categories: ['TEMP POWER','SERVICE & PANELS','BRANCH ROUGH-IN','LOW VOLTAGE / DATA','DEVICES & TRIM','FIXTURES','PANEL SCHEDULE & LABELING','TEST & SIGN-OFF'], calculators: ['electrical'] },
   roofing: { label: 'Roofing', categories: ['TEAR-OFF','DECK PREP','UNDERLAYMENT','FLASHING & EDGE METAL','FIELD MEMBRANE','PENETRATIONS & CURBS','GUTTERS & DOWNSPOUTS','WARRANTY INSPECTION'], calculators: ['roofing'] },
@@ -14052,6 +14169,22 @@ function wsAccountType(wsId) { const ws = ST.workspaces?.[wsId || ST.activeWorks
 function wsSubTrade(wsId) { const ws = ST.workspaces?.[wsId || ST.activeWorkspace]; return (ws && ws.accountType === 'sub') ? (ws.subTrade || null) : null; }
 function isSubAccount(wsId) { return wsAccountType(wsId) === 'sub'; }
 function getActiveTradePack() { return getTradePack(wsSubTrade()); }
+
+// ── Directory vocabulary ─────────────────────────────────────────────────────
+// A General Contractor manages SUBCONTRACTORS. A subcontractor (e.g. an HVAC
+// shop) doesn't — it works *for* GCs and *buys from* suppliers. So on a sub
+// workspace the same directory reads as "GC's & Suppliers". One helper drives
+// every label (nav, tab header, add button, modals, quick actions) so the
+// product reads correctly for whichever account type is active.
+function dirLabels() {
+  return isSubAccount()
+    ? { plural: "GC's & Suppliers", singular: 'GC / Supplier', lower: 'GC or supplier',
+        add: 'Add GC / supplier', selectHint: '← Select a GC or supplier',
+        searchPh: 'Company, trade, contact…', activeStat: 'Active GCs & Suppliers' }
+    : { plural: 'Subcontractors', singular: 'Subcontractor', lower: 'subcontractor',
+        add: 'Add subcontractor', selectHint: '← Select a subcontractor',
+        searchPh: 'Company, category, contact…', activeStat: 'Active Subcontractors' };
+}
 
 // Specialized budget calculator is a SUB tool; GCs don't see it (master "see all" reveals everything).
 function hasBudgetCalculator() { if (AUTH.isMaster && ST.masterSeeAll) return true; return isSubAccount(); }
@@ -19437,19 +19570,24 @@ const DEFAULT_PRICING_CATALOG = {
     { code: 'fs-test',           name: 'Inspector test & sign-off',  sub: 'Final acceptance',           unit: 'EA', perUnit: 380.00,  matchTags: ['test','inspection','sign-off'] },
   ],
   hvac: [
-    { code: 'hv-ac-unit',    name: 'Condensing unit (AC)',     sub: 'Split system · 2-5 ton',     unit: 'EA', perUnit: 4200.00, matchTags: ['condenser','ac','condensing','unit'] },
-    { code: 'hv-furnace',    name: 'Furnace / air handler',    sub: 'Gas 80% or AHU',             unit: 'EA', perUnit: 2600.00, matchTags: ['furnace','air handler','ahu'] },
-    { code: 'hv-heatpump',   name: 'Heat pump system',         sub: 'Ducted split',               unit: 'EA', perUnit: 6500.00, matchTags: ['heat pump','heatpump'] },
+    { code: 'hv-ahu-35',     name: 'Air handler · 3.5 ton',    sub: 'Mitsubishi · ducted',        unit: 'EA', perUnit: 3200.00, matchTags: ['air handler','ahu','3.5 ton','3 5 ton','handler'] },
+    { code: 'hv-ahu-4',      name: 'Air handler · 4 ton',      sub: 'Mitsubishi · ducted',        unit: 'EA', perUnit: 3600.00, matchTags: ['air handler','ahu','4 ton'] },
+    { code: 'hv-cond-35',    name: 'Heat pump condenser · 3.5 ton', sub: 'Mitsubishi · outdoor',  unit: 'EA', perUnit: 4200.00, matchTags: ['condenser','condensing','heat pump','heatpump','outdoor','unit'] },
     { code: 'hv-minisplit',  name: 'Mini-split (ductless)',    sub: 'Per indoor head',            unit: 'EA', perUnit: 2800.00, matchTags: ['mini split','ductless','minisplit'] },
-    { code: 'hv-duct',       name: 'Ductwork',                 sub: 'Sheet metal / flex',         unit: 'LF', perUnit: 28.00,   matchTags: ['duct','ductwork'] },
-    { code: 'hv-supply-reg', name: 'Supply register',          sub: 'Ceiling / wall diffuser',    unit: 'EA', perUnit: 45.00,   matchTags: ['supply','register','diffuser'] },
-    { code: 'hv-return',     name: 'Return air grille',        sub: 'Filter back',                unit: 'EA', perUnit: 120.00,  matchTags: ['return','grille'] },
-    { code: 'hv-lineset',    name: 'Refrigerant line set',     sub: 'Insulated',                  unit: 'LF', perUnit: 22.00,   matchTags: ['line set','lineset','refrigerant'] },
-    { code: 'hv-condensate', name: 'Condensate drain',         sub: 'PVC + pump if req',          unit: 'LF', perUnit: 8.00,    matchTags: ['condensate','drain'] },
-    { code: 'hv-tstat',      name: 'Thermostat',               sub: 'Smart / zoning',             unit: 'EA', perUnit: 320.00,  matchTags: ['thermostat','tstat','control'] },
-    { code: 'hv-permit',     name: 'Title-24 + Manual J + permit', sub: 'Load calc & submittal',  unit: 'EA', perUnit: 650.00,  matchTags: ['title 24','load calc','permit','manual j'] },
-    { code: 'hv-crane',      name: 'Crane / rooftop rigging',  sub: 'Set heavy equipment',        unit: 'EA', perUnit: 1200.00, matchTags: ['crane','rigging','rooftop'] },
-    { code: 'hv-tab',        name: 'Test, balance & start-up', sub: 'Airflow commissioning',      unit: 'EA', perUnit: 480.00,  matchTags: ['balance','tab','commission','start-up','startup'] },
+    { code: 'hv-lineset',    name: 'Copper refrigerant line set', sub: 'Insulated · handler→cond', unit: 'LF', perUnit: 22.00,   matchTags: ['line set','lineset','refrigerant','copper','copper line'] },
+    { code: 'hv-duct',       name: 'R-8 flexible duct',        sub: 'Insulated flex run',         unit: 'LF', perUnit: 14.00,   matchTags: ['duct','ductwork','flex','r-8','r8'] },
+    { code: 'hv-linbox-4',   name: 'Linear diffuser box · 4 ft', sub: 'Insulated supply box',     unit: 'EA', perUnit: 280.00,  matchTags: ['linear','box','diffuser box','4ft','4 ft','defuser'] },
+    { code: 'hv-linbox-2',   name: 'Linear diffuser box · 2 ft', sub: 'Restroom supply box',      unit: 'EA', perUnit: 180.00,  matchTags: ['linear','box','restroom','2ft','2 ft'] },
+    { code: 'hv-supply-reg', name: 'Linear supply vent / diffuser', sub: 'Slot diffuser face',    unit: 'EA', perUnit: 95.00,   matchTags: ['supply','register','vent','diffuser','linear'] },
+    { code: 'hv-return',     name: 'Return air grille',        sub: 'Filter back',                unit: 'EA', perUnit: 160.00,  matchTags: ['return','grille'] },
+    { code: 'hv-plenum',     name: 'Custom insulated plenum',  sub: 'Supply + return · per system', unit: 'EA', perUnit: 850.00, matchTags: ['plenum','plenums','supply plenum','return plenum'] },
+    { code: 'hv-condensate', name: 'Condensate drain to sink', sub: 'PVC + pump if req',          unit: 'EA', perUnit: 220.00,  matchTags: ['condensate','condensation','drain','sink'] },
+    { code: 'hv-tstat',      name: 'Smart thermostat',         sub: 'Zoning · per system',        unit: 'EA', perUnit: 320.00,  matchTags: ['thermostat','tstat','control'] },
+    { code: 'hv-tstat-wire', name: 'Thermostat wire / low-volt', sub: 'Control wiring run',       unit: 'EA', perUnit: 180.00,  matchTags: ['thermostat wire','wire','low voltage','wiring'] },
+    { code: 'hv-permit',     name: 'Title-24 + Manual J + permit', sub: 'Load calc & submittal',  unit: 'EA', perUnit: 1800.00, matchTags: ['title 24','load calc','permit','manual j','design'] },
+    { code: 'hv-crane',      name: 'Crane / rooftop rigging',  sub: 'Set heavy equipment',        unit: 'EA', perUnit: 1800.00, matchTags: ['crane','rigging','rooftop'] },
+    { code: 'hv-labor',      name: 'Installation labor',       sub: 'Equipment set, duct, line sets', unit: 'LS', perUnit: 50000.00, matchTags: ['labor','install','installation','crew'] },
+    { code: 'hv-tab',        name: 'Test, balance & start-up', sub: 'Airflow commissioning',      unit: 'EA', perUnit: 1600.00, matchTags: ['balance','tab','commission','start-up','startup'] },
   ],
   concrete: [
     { code: 'conc-footing',       name: 'Footings · concrete',     sub: 'All-in place · per CY',     unit: 'CY', perUnit: 290.00, matchTags: ['footing','footings','grade beam'] },
