@@ -3971,8 +3971,12 @@ const SUBS_BASE = [{"id": "m0000", "div": "DIVISION 09", "divName": "FINISHES", 
 // directory, one demo project, and a fully built Builder estimate
 // that mirrors EMC HVAC's $148,400 linear-diffuser job in NOVANTU
 // format. Flip HVAC_DEMO_SEED to false to ship a blank workspace.
+//
+// OFF for the live trial: the prospect starts blank — he creates his
+// one project, adds his own GC's & suppliers, and builds his estimate.
+// The HVAC cost-code catalog and the "GC's & Suppliers" relabel stay on.
 // ============================================================
-const HVAC_DEMO_SEED = true;
+const HVAC_DEMO_SEED = false;
 const HVAC_DEMO_PID = 'hvac-demo-bfd';
 
 // GC's & Suppliers an HVAC sub actually works with (names/phones/emails are
@@ -5882,6 +5886,7 @@ function render() {
     ST.bulkEditDialog ? 'bulk' : '',
     ST.cmdOpen ? 'cmd' : '',
     ST.upsellModal ? 'upsell' : '',
+    ST.subSummaryModal ? 'subsum' : '',
   ].filter(Boolean).join('|');
   const overlayJustOpened = overlaySig && overlaySig !== _lastOverlaySig;
   _lastOverlaySig = overlaySig;
@@ -7337,8 +7342,10 @@ function buildBuilderPrintView() {
 
         <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);padding-bottom:4px;border-bottom:1px solid var(--border);margin-top:4px">Company</div>
 
-        <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Company name</div>
-          <input type="text" class="minp" value="${esc(pi.companyName||'')}" placeholder="e.g. Summit Builders Inc." onblur="settingsSetPath(['print','companyName'], this.value)" style="width:100%;box-sizing:border-box"></div>
+        <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Company name ${canEditBranding() ? '' : '<span style="color:var(--amber);letter-spacing:.04em">· PAID</span>'}</div>
+          ${canEditBranding()
+            ? `<input type="text" class="minp" value="${esc(pi.companyName||'')}" placeholder="e.g. Summit Builders Inc." onblur="settingsSetPath(['print','companyName'], this.value)" style="width:100%;box-sizing:border-box">`
+            : `<input type="text" class="minp" value="${esc(pi.companyName||'')}" disabled title="Editing your company name is available on paid plans" onclick="ST.upsellModal={reason:'branding'};render()" style="width:100%;box-sizing:border-box;cursor:pointer;opacity:.6"><div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px">Upgrade to set this — <span style="color:var(--amber);cursor:pointer" onclick="ST.upsellModal={reason:'branding'};render()">see plans →</span></div>`}</div>
 
         <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Address <span style="color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0">(one line each)</span></div>
           <textarea class="minp" rows="3" onblur="settingsSetPath(['print','companyAddress'], this.value)" placeholder="127 Arena Street&#10;El Segundo, CA 90245&#10;USA" style="width:100%;box-sizing:border-box;font-family:var(--mono);font-size:12px;resize:vertical;line-height:1.5">${esc(pi.companyAddress||'')}</textarea></div>
@@ -8068,7 +8075,9 @@ function buildSettingsTab() {
 
     <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Brand</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Resell-ready — wordmark, logo, accent.</div></div>
       <div style="border:1px solid var(--border);background:var(--bg);padding:18px 22px;display:grid;grid-template-columns:1fr 1fr;gap:18px">
-        <div><div class="modal-label">Wordmark</div><input type="text" class="minp" value="${esc(s.brand?.wordmark||'')}" placeholder="NOVANTU" onblur="settingsSetPath(['brand','wordmark'], this.value)"></div>
+        <div><div class="modal-label">Company name (wordmark) ${canEditBranding() ? '' : '<span style="font-family:var(--mono);font-size:9px;color:var(--amber);letter-spacing:.04em">· PAID</span>'}</div>${canEditBranding()
+          ? `<input type="text" class="minp" value="${esc(s.brand?.wordmark||'')}" placeholder="NOVANTU" onblur="settingsSetPath(['brand','wordmark'], this.value)">`
+          : `<input type="text" class="minp" value="${esc(s.brand?.wordmark||'')}" disabled title="Editing your company name is available on paid plans" onclick="ST.upsellModal={reason:'branding'};render()" style="cursor:pointer;opacity:.6"><div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px">Upgrade to rename — <span style="color:var(--amber);cursor:pointer" onclick="ST.upsellModal={reason:'branding'};render()">see plans →</span></div>`}</div>
         <div><div class="modal-label">Subtitle (optional)</div><input type="text" class="minp" value="${esc(s.brand?.subtitle||'')}" placeholder="Estimating Suite" onblur="settingsSetPath(['brand','subtitle'], this.value)"></div>
         <div><div class="modal-label">Accent color</div><div style="display:flex;gap:8px;align-items:center"><input type="color" value="${esc(s.brand?.accentColor||'#c44a2c')}" onchange="settingsSetPath(['brand','accentColor'], this.value)" style="width:48px;height:32px;border:1px solid var(--border);cursor:pointer;padding:0"><input type="text" class="minp" value="${esc(s.brand?.accentColor||'')}" placeholder="#c44a2c" onblur="settingsSetPath(['brand','accentColor'], this.value)" style="flex:1;font-family:var(--mono)">${s.brand?.accentColor ? `<button class="btn btn-ghost btn-sm" onclick="settingsSetPath(['brand','accentColor'], '')">✕</button>` : ''}</div></div>
         <div><div class="modal-label">Logo</div><div style="display:flex;gap:8px;align-items:center">${s.brand?.logoData ? `<img src="${s.brand.logoData}" style="height:32px;border:1px solid var(--border)">` : '<span style="font-family:var(--mono);font-size:11px;color:var(--text3);font-style:italic">No logo</span>'}<button class="btn btn-ghost btn-sm" onclick="settingsUploadLogo()">${s.brand?.logoData?'Replace':'Upload'}</button>${s.brand?.logoData ? `<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="settingsSetPath(['brand','logoData'], '')">Remove</button>` : ''}</div></div>
@@ -8927,6 +8936,11 @@ function pdfPreview() {
 }
 
 function settingsSetPath(path, value) {
+  // Company-name / wordmark editing is a paid feature — block it on the trial.
+  const key = (path || []).join('.');
+  if ((key === 'brand.wordmark' || key === 'print.companyName') && !canEditBranding()) {
+    ST.upsellModal = { reason: 'branding' }; render(); return;
+  }
   if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   let obj = ST.settings;
   for (let i = 0; i < path.length - 1; i++) {
@@ -9609,6 +9623,7 @@ function buildApp() {
       ${ST.editSubModal ? buildEditSubModal() : ''}
       ${ST.followUpModal ? buildFollowUpModal() : ''}
       ${ST.usersModal ? buildUsersModal() : ''}
+      ${ST.subSummaryModal ? buildSubSummaryModal() : ''}
     </div>`;
 }
 
@@ -9885,6 +9900,8 @@ function buildSubProjectDetail(p) {
       </div>
     </div>
 
+    ${buildSubGcDeliverySection(p)}
+
     ${buildClientShareSectionV2(p)}
     ${buildProjectFilesSection(p)}
     ${buildThreadsSection(p)}
@@ -9912,6 +9929,212 @@ function buildSubProjectDetail(p) {
         <button class="edit-btn" onclick="ST.editComments='${p.id}';render()" style="align-self:flex-start">✎ Edit notes</button>
       `}
     </div>`;
+}
+
+// ── Subcontractor → GC delivery & follow-up ──────────────────────────────────
+// A sub doesn't level subs — it pitches ONE estimate to ONE GC and chases it.
+// This block gives each project a GC contact, one-click estimate PDF + pre-filled
+// email (mailto, since the trial has no Send Center), follow-up logging, and an
+// auto Summary that proves the platform tracks the whole pursuit in one place.
+function subGcGet(pid) { return (ST.overrides[pid] && ST.overrides[pid]._gc) || {}; }
+function subGcSet(pid, field, val) {
+  if (!ST.overrides[pid]) ST.overrides[pid] = {};
+  if (!ST.overrides[pid]._gc) ST.overrides[pid]._gc = {};
+  ST.overrides[pid]._gc[field] = val;
+  saveSt();
+}
+function subDeliveryGet(pid) {
+  const d = (ST.overrides[pid] && ST.overrides[pid]._delivery) || {};
+  return { sends: Array.isArray(d.sends) ? d.sends : [], followUps: Array.isArray(d.followUps) ? d.followUps : [] };
+}
+function subDeliveryEnsure(pid) {
+  if (!ST.overrides[pid]) ST.overrides[pid] = {};
+  if (!ST.overrides[pid]._delivery) ST.overrides[pid]._delivery = { sends: [], followUps: [] };
+  const d = ST.overrides[pid]._delivery;
+  if (!Array.isArray(d.sends)) d.sends = [];
+  if (!Array.isArray(d.followUps)) d.followUps = [];
+  return d;
+}
+function subLogSend(pid, to, subject) {
+  const d = subDeliveryEnsure(pid);
+  d.sends.push({ ts: new Date().toISOString(), to: to || '', subject: subject || '', channel: 'email' });
+  saveSt(); render();
+}
+function subLogFollowUp(pid) {
+  const raw = prompt('Follow-up note (e.g. "Called — GC reviewing", "Left voicemail", "GC asked for revised duct count"):', '');
+  if (raw === null) return;            // user cancelled
+  const note = raw.trim();
+  if (!note) return;                   // empty — nothing to log
+  const d = subDeliveryEnsure(pid);
+  d.followUps.push({ ts: new Date().toISOString(), note });
+  saveSt(); render();
+  showToast('Follow-up logged.', 'success');
+}
+function subSenderName() {
+  return (getSettings().print?.companyName) || (getSettings().brand?.wordmark) || (ST.workspaces?.[ST.activeWorkspace]?.name) || 'our company';
+}
+
+// Build the auto-summary of everything done on the job, for the Summary modal,
+// the email body, and the clipboard. forEmail = plain text suited to an email.
+function subSummaryText(pid, { forEmail = false } = {}) {
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  const gc = subGcGet(pid);
+  const d = subDeliveryGet(pid);
+  const t = builderTotals(pid);
+  const groups = (ST.estimates[pid]?.groups || []);
+  const lastSend = d.sends[d.sends.length - 1];
+  const lastFu = d.followUps[d.followUps.length - 1];
+  const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString(); } catch (_e) { return iso; } };
+  const L = [];
+  if (forEmail) {
+    L.push(`Hi ${gc.contact || gc.company || 'there'},`);
+    L.push('');
+    L.push(`Please find our estimate for ${p.name}.`);
+    L.push('');
+    L.push(`Estimate total: ${fmt$(t.client)}  (${t.itemCount} line item${t.itemCount===1?'':'s'} across ${groups.length} cost code${groups.length===1?'':'s'})`);
+    L.push('');
+    L.push('The full breakdown is in the attached PDF.');
+    L.push('');
+    L.push('Thank you,');
+    L.push(subSenderName());
+  } else {
+    L.push(`Project: ${p.name}`);
+    L.push(`GC: ${gc.company || '—'}${gc.contact ? ' · ' + gc.contact : ''}`);
+    L.push(`Estimate: ${fmt$(t.client)} · ${t.itemCount} line item${t.itemCount===1?'':'s'} · ${groups.length} cost code${groups.length===1?'':'s'}`);
+    L.push(`Your margin: ${fmt$(t.markup)}${t.client>0 ? ' (' + ((t.markup/t.client)*100).toFixed(1) + '%)' : ''}`);
+    L.push('');
+    L.push(lastSend ? `Last sent: ${fmtDate(lastSend.ts)} → ${lastSend.to || gc.email || 'GC'} (email)` : 'Estimate not sent yet.');
+    L.push(`Follow-ups: ${d.followUps.length}${lastFu ? ' · last ' + fmtDate(lastFu.ts) + (lastFu.note ? ' — ' + lastFu.note : '') : ''}`);
+    L.push(`Channel: ${gc.email || gc.phone || '—'}`);
+  }
+  return L.join('\n');
+}
+
+function subEmailToGC(pid) {
+  const gc = subGcGet(pid);
+  if (!gc.email) { showToast('Add the GC email first.', 'warn'); return; }
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  const subject = `Estimate — ${p.name} — ${subSenderName()}`;
+  const body = subSummaryText(pid, { forEmail: true });
+  subLogSend(pid, gc.email, subject); // record before navigating
+  window.location.href = `mailto:${encodeURIComponent(gc.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  showToast('Opened your email with the estimate filled in. Attach the PDF and send.', 'success');
+}
+
+function subGenerateEstimatePDF(pid) {
+  const est = ST.estimates[pid];
+  if (!est || !(est.groups || []).length) {
+    showToast('Build the estimate in the Builder first (add cost codes & items).', 'warn');
+    setTab('builder'); ST.builderSelProj = pid; render();
+    return;
+  }
+  ST.builderSelProj = pid;
+  setTab('builder');
+  ST.builderPrintMode = true; ST.builderPrintEditPanel = false;
+  render();
+  setTimeout(() => { try { window.print(); } catch (_e) {} }, 350);
+}
+
+function subCopySummary(pid) {
+  const txt = subSummaryText(pid);
+  try {
+    navigator.clipboard.writeText(txt).then(
+      () => showToast('Summary copied to clipboard.', 'success'),
+      () => showToast('Could not copy — select and copy manually.', 'warn')
+    );
+  } catch (_e) { showToast('Could not copy — select and copy manually.', 'warn'); }
+}
+
+function buildSubGcDeliverySection(p) {
+  const pid = p.id;
+  const gc = subGcGet(pid);
+  const d = subDeliveryGet(pid);
+  const t = builderTotals(pid);
+  const hasEstimate = (ST.estimates[pid]?.groups || []).length > 0;
+  const lastSend = d.sends[d.sends.length - 1];
+  const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString(); } catch (_e) { return iso; } };
+  const fld = (label, field, ph, type) => `<div style="display:flex;flex-direction:column;gap:3px;min-width:0">
+      <div style="font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">${label}</div>
+      <input type="${type||'text'}" value="${esc(gc[field]||'')}" placeholder="${esc(ph)}"
+        onchange="subGcSet('${pid}','${field}',this.value)"
+        style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:6px 9px;font-size:12px;color:var(--text);font-family:var(--sans);outline:none;width:100%;box-sizing:border-box">
+    </div>`;
+
+  return `
+    <div class="cats-section">
+      <div class="sec-heading" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <span>General Contractor · delivery & follow-up</span>
+        <button class="btn btn-ghost btn-sm" onclick="ST.subSummaryModal='${pid}';render()" title="Auto-summary of the whole pursuit">▤ Summary</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:4px 0 12px">
+        ${fld('GC company', 'company', 'e.g. Summit Ridge Builders')}
+        ${fld('Contact', 'contact', 'e.g. Marcus Hale')}
+        ${fld('Email', 'email', 'bids@gc.com', 'email')}
+        ${fld('Phone', 'phone', '818-555-0000', 'tel')}
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding-bottom:10px">
+        <button class="btn btn-ghost btn-sm" onclick="subGenerateEstimatePDF('${pid}')" title="Open the builder estimate as a printable PDF"${hasEstimate?'':' style="opacity:.6"'}>↓ Estimate PDF</button>
+        <button class="btn btn-amber btn-sm" onclick="subEmailToGC('${pid}')" title="Open your email with the estimate + summary pre-filled">✉ Email to GC</button>
+        <button class="btn btn-ghost btn-sm" onclick="subLogFollowUp('${pid}')" title="Log a call / email you made to chase this estimate">＋ Log follow-up</button>
+      </div>
+
+      <div style="display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--text2);border-top:1px dashed var(--border);padding-top:10px">
+        <div><span style="color:var(--text3)">Estimate</span> · <b style="color:var(--green)">${fmt$(t.client)}</b></div>
+        <div><span style="color:var(--text3)">Last sent</span> · ${lastSend ? esc(fmtDate(lastSend.ts)) : '<span style="color:var(--amber)">not sent</span>'}</div>
+        <div><span style="color:var(--text3)">Follow-ups</span> · <b>${d.followUps.length}</b></div>
+      </div>
+    </div>`;
+}
+
+function buildSubSummaryModal() {
+  const pid = ST.subSummaryModal;
+  const p = allProjects().find(x => x.id === pid);
+  if (!p) return '';
+  const gc = subGcGet(pid);
+  const d = subDeliveryGet(pid);
+  const t = builderTotals(pid);
+  const groups = (ST.estimates[pid]?.groups || []);
+  const fmtDate = (iso) => { try { return new Date(iso).toLocaleString(); } catch (_e) { return iso; } };
+  const lastSend = d.sends[d.sends.length - 1];
+  const daysSinceSend = lastSend ? Math.floor((Date.now() - new Date(lastSend.ts).getTime()) / 86400000) : null;
+  const row = (label, val) => `<div style="display:flex;justify-content:space-between;gap:14px;padding:9px 0;border-bottom:1px solid var(--border)">
+      <span style="font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">${label}</span>
+      <span style="font-size:13px;color:var(--ink-900);text-align:right">${val}</span></div>`;
+  return `<div class="backdrop" onclick="if(event.target===this){ST.subSummaryModal=null;render()}">
+    <div class="modal" style="max-width:520px" onclick="event.stopPropagation()">
+      <div class="modal-title">Estimate summary</div>
+      <div class="modal-sub">${esc(p.name)}</div>
+
+      <div style="margin:14px 0 6px">
+        ${row('GC', esc(gc.company || '—') + (gc.contact ? ' · ' + esc(gc.contact) : ''))}
+        ${row('Estimate total', `<b style="color:var(--green)">${fmt$(t.client)}</b>`)}
+        ${row('Your margin (profit)', `<b>${fmt$(t.markup)}</b>${t.client>0 ? ` · ${((t.markup/t.client)*100).toFixed(1)}%` : ''}`)}
+        ${row('Scope', `${t.itemCount} line item${t.itemCount===1?'':'s'} · ${groups.length} cost code${groups.length===1?'':'s'}`)}
+        ${row('Last sent', lastSend ? `${esc(fmtDate(lastSend.ts))} → ${esc(lastSend.to || gc.email || 'GC')}${daysSinceSend!=null ? ` · ${daysSinceSend} day${daysSinceSend===1?'':'s'} ago` : ''}` : '<span style="color:var(--amber)">Not sent yet</span>')}
+        ${row('Follow-ups', `${d.followUps.length}` + (d.followUps.length ? ` · last: ${esc(fmtDate(d.followUps[d.followUps.length-1].ts))}` : ''))}
+        ${row('Channel', esc(gc.email || gc.phone || '—'))}
+      </div>
+
+      ${d.followUps.length ? `<div style="margin:10px 0 4px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">Follow-up log</div>
+        <div style="max-height:140px;overflow:auto;display:flex;flex-direction:column;gap:4px">
+          ${d.followUps.slice().reverse().map(f => `<div style="font-size:11.5px;color:var(--text2);display:flex;gap:8px"><span style="font-family:var(--mono);font-size:10px;color:var(--text3);white-space:nowrap">${esc(fmtDate(f.ts))}</span><span>${esc(f.note||'(no note)')}</span></div>`).join('')}
+        </div>
+      </div>` : ''}
+
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text3);background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;margin-top:12px;line-height:1.6">
+        Estimate, GC contact, delivery and every follow-up — tracked in one place. No spreadsheets, no lost threads, faster turnaround on the bids that win you work.
+      </div>
+
+      <div class="modal-btns" style="margin-top:16px">
+        <button class="btn btn-ghost" onclick="subCopySummary('${pid}')">⧉ Copy summary</button>
+        <button class="btn btn-ghost" onclick="subGenerateEstimatePDF('${pid}')">↓ Estimate PDF</button>
+        <button class="btn btn-amber" onclick="ST.subSummaryModal=null;subEmailToGC('${pid}')">✉ Email to GC</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 function buildArchSet(p) {
@@ -11196,6 +11419,7 @@ async function runBidLeveling(pid, projName, cat) {
     ST.bidLeveling[key] = { status:'error', error:'Need at least 2 bids to level.', ts:Date.now() };
     render(); return;
   }
+  if (!trialGuardAI()) return; // free-trial AI cap
 
   ST.bidLeveling[key] = { status:'running', stage:'Reading the bids…', result:null, error:null, ts:Date.now() };
   render();
@@ -11451,12 +11675,25 @@ function buildUpsellModal() {
   // Paid plans to show as upgrade options (exclude trial / free)
   const paidPlans = SUBSCRIPTION_PLANS.filter(p => p.price > 0);
   const isMaster = AUTH.isMaster;
+  const reason = ST.upsellModal?.reason || 'projects';
+  const SUB = {
+    projects: `Your current plan includes ${max} project${max===1?'':'s'}. Upgrade to manage your whole pipeline — unlimited projects, plus more tools.`,
+    ai:       `Your free trial includes ${TRIAL_LIMITS.aiCalls} AI actions (Ask AI, Read Plans, Compare Plans). Upgrade for higher limits and the full estimating workflow.`,
+    plans:    `Your free trial lets you upload ${TRIAL_LIMITS.planUploads} plan PDFs. Upgrade to upload your whole set and run AI take-off across every sheet.`,
+    branding: `Editing your company name & branding is available on paid plans. Upgrade to white-label your estimates and portal.`,
+  };
+  const TITLE = {
+    projects: `You've reached your ${planName} limit`,
+    ai:       `You've used your trial AI actions`,
+    plans:    `You've reached your trial upload limit`,
+    branding: `Branding is a paid feature`,
+  };
   return `<div class="backdrop" onclick="if(event.target===this){ST.upsellModal=null;render()}">
     <div class="modal" style="max-width:480px" onclick="event.stopPropagation()">
       <div style="text-align:center;margin-bottom:6px">
         <div style="font-size:30px;line-height:1;margin-bottom:12px">↑</div>
-        <div class="modal-title" style="text-align:center">You've reached your ${planName} limit</div>
-        <div class="modal-sub" style="text-align:center;margin-top:6px">Your current plan includes ${max} project${max===1?'':'s'}. Upgrade to manage your whole pipeline — unlimited projects, plus more tools.</div>
+        <div class="modal-title" style="text-align:center">${TITLE[reason] || TITLE.projects}</div>
+        <div class="modal-sub" style="text-align:center;margin-top:6px">${SUB[reason] || SUB.projects}</div>
       </div>
 
       <div style="display:flex;flex-direction:column;gap:10px;margin:20px 0 8px">
@@ -11926,6 +12163,7 @@ async function estAddPlan(pid) {
     showToast('Only PDF files are accepted.', 'error');
     return;
   }
+  if (!trialGuardPlanUpload()) return; // free-trial upload cap
 
   // Hard 25-page limit per file — read page count before accepting
   if (window.pdfjsLib) {
@@ -12136,6 +12374,7 @@ async function estSendMessage(pid) {
   const input = document.getElementById('est-chat-input');
   const text = (input?.value || '').trim();
   if (!text) return;
+  if (!trialGuardAI()) return; // free-trial AI cap
 
   const chat = estGetChat(pid);
   chat.push({ role: 'user', content: text, ts: Date.now() });
@@ -12377,6 +12616,7 @@ function buildEstAskAI(p, e) {
         </div>
         <div style="font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:var(--text3);margin-top:6px">
           Enter ↵ to send · Shift+Enter for new line · Context: setup + plans + codes + RFIs
+          ${isTrialPlan() ? `<span style="color:${trialAILeft()<=2?'var(--amber)':'var(--text3)'}"> · Trial: ${trialAILeft()}/${TRIAL_LIMITS.aiCalls} AI actions left · ${trialUploadsLeft()}/${TRIAL_LIMITS.planUploads} uploads left</span>` : ''}
         </div>
       </div>
     </aside>
@@ -14034,6 +14274,7 @@ function toHandleDrop(ev, pid, typeId) {
       showToast('File too large (>10MB).', 'error');
       return;
     }
+    if (!trialGuardPlanUpload()) return; // free-trial upload cap
     ST.toUploading = true; render();
     try {
       const dataUrl = await new Promise((res, rej) => {
@@ -14418,6 +14659,66 @@ function tryAddProject() {
   setTab('projects');
   ST.addProjModal = true;
   render();
+}
+
+// ── Trial gating: plan id, branding lock, and AI/upload usage caps ────────────
+// The free trial is meant to *prove value*, not to be farmed for free AI. We cap
+// plan uploads and AI actions, and lock the paid-only "edit company name" control.
+// The counters live in ST.settings (synced) — a soft client-side guard, backed by
+// the server-side page cap in the ask-ai edge function for the heavy vision calls.
+// (The master preview bypasses every trial cap.)
+const TRIAL_LIMITS = { planUploads: 3, aiCalls: 10 };
+
+function currentPlanId() {
+  const ws = ST.workspaces?.[ST.activeWorkspace];
+  return (ws && ws.plan) ? ws.plan : null;
+}
+function isTrialPlan() {
+  if (AUTH.isMaster && ST.masterSeeAll) return false; // master previews the full product
+  return currentPlanId() === 'trial';
+}
+// Editing the workspace/company name (wordmark + print company name) is a paid
+// feature — locked on the free trial.
+function canEditBranding() {
+  if (AUTH.isMaster && ST.masterSeeAll) return true;
+  return !isTrialPlan();
+}
+function trialUsage() {
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  if (!ST.settings._trialUsage || typeof ST.settings._trialUsage !== 'object') {
+    ST.settings._trialUsage = { aiCalls: 0, planUploads: 0 };
+  }
+  return ST.settings._trialUsage;
+}
+function trialAILeft()    { return Math.max(0, TRIAL_LIMITS.aiCalls    - (trialUsage().aiCalls    || 0)); }
+function trialUploadsLeft(){ return Math.max(0, TRIAL_LIMITS.planUploads - (trialUsage().planUploads || 0)); }
+
+// Guard an AI action. Returns true if allowed (and books one use); else shows the
+// upsell and returns false. No-op (always allowed) off the trial plan.
+function trialGuardAI() {
+  if (!isTrialPlan()) return true;
+  const u = trialUsage();
+  if ((u.aiCalls || 0) >= TRIAL_LIMITS.aiCalls) {
+    ST.upsellModal = { reason: 'ai' };
+    render();
+    return false;
+  }
+  u.aiCalls = (u.aiCalls || 0) + 1;
+  saveSt();
+  return true;
+}
+// Guard a plan-PDF upload. Same contract as trialGuardAI.
+function trialGuardPlanUpload() {
+  if (!isTrialPlan()) return true;
+  const u = trialUsage();
+  if ((u.planUploads || 0) >= TRIAL_LIMITS.planUploads) {
+    ST.upsellModal = { reason: 'plans' };
+    render();
+    return false;
+  }
+  u.planUploads = (u.planUploads || 0) + 1;
+  saveSt();
+  return true;
 }
 
 
@@ -19810,6 +20111,7 @@ async function toUploadAndOpen(pid, typeId) {
       showToast('File too large (>10MB). Use a single-sheet PDF for take-off.', 'error');
       return;
     }
+    if (!trialGuardPlanUpload()) return; // free-trial upload cap
     try {
       ST.toUploading = true; render();
       const dataUrl = await new Promise((res, rej) => {
@@ -19963,6 +20265,7 @@ async function readPlansForProject(pid, opts = {}) {
     showToast('Upload a PDF first in Plan Sets.', 'warn');
     return;
   }
+  if (!trialGuardAI()) return; // free-trial AI cap
 
   // Pick the plan: prefer "A" architectural with a binary; else first with a binary
   let plan = (e.plans || []).find(pl => pl.discipline === 'A' && hasPlanBinary(pl))
@@ -20136,6 +20439,7 @@ async function runPlanDiff(pid) {
     showToast('Both plans need their PDF stored. Re-upload if needed.', 'warn');
     return;
   }
+  if (!trialGuardAI()) return; // free-trial AI cap
 
   if (!ST.planDiff) ST.planDiff = {};
   ST.planDiff[pid] = { status:'running', stage:'Reading both plan sets…', result:null, error:null, oldId, newId, ts:Date.now() };
