@@ -2286,9 +2286,9 @@ body[data-theme="hc"] {
 .to-calc-rows{flex:1;min-height:0;overflow-y:auto;background:var(--bg)}
 .to-calc-row{
   display:grid;
-  grid-template-columns:22px 1fr 70px 28px 78px;
+  grid-template-columns:20px minmax(0,1fr) 54px 26px 64px;
   gap:6px;align-items:center;
-  padding:9px 12px 9px 8px;
+  padding:9px 10px 9px 8px;
   border-bottom:1px solid var(--border);
   transition:background .12s, opacity .12s;
 }
@@ -2314,7 +2314,7 @@ body[data-theme="hc"] {
 .to-calc-itm-name{
   font-family:var(--sans);font-size:12px;font-weight:500;color:var(--ink-900);
   letter-spacing:-.005em;line-height:1.25;
-  min-width:0;flex:1 1 auto;overflow-wrap:anywhere;
+  min-width:0;overflow-wrap:break-word;word-break:normal;
 }
 .to-calc-name > div{min-width:0}
 .to-calc-unit-price{
@@ -4804,8 +4804,18 @@ async function flushSave() {
   }
 
   const ws = ST.activeWorkspace;
-  const dirty = [...SAVE_STATE.pendingKeys];
+  let dirty = [...SAVE_STATE.pendingKeys];
   SAVE_STATE.pendingKeys.clear();
+
+  // While the AI is streaming into ST.estimator[pid].aiChat, DON'T save (or
+  // merge) the `estimator` key. flushSave's 3-way merge reassigns ST.estimator
+  // to a fresh object, which would orphan the in-flight stream and blank the
+  // chat. Defer it — estSendMessage calls saveSt() again on 'done'.
+  if (ST.estimatorAIStreaming && dirty.includes('estimator')) {
+    SAVE_STATE.pendingKeys.add('estimator');
+    dirty = dirty.filter(k => k !== 'estimator');
+    if (dirty.length === 0) return;
+  }
 
   // ── Merge-on-save ─────────────────────────────────────────────────────
   // Re-fetch the latest remote value for each dirty key, then merge OUR
@@ -4977,6 +4987,10 @@ function handleRemoteStateChange(payload) {
   if (!row || !row.key) return;
   const k = row.key;
   if (!(k in APP_STATE_KEYS)) return;
+  // Never let a remote push rebase `estimator` while we're streaming an AI reply
+  // into it — that would orphan the in-flight message and blank the chat. The
+  // next save/reload reconciles collaborators' changes after the stream ends.
+  if (k === 'estimator' && ST.estimatorAIStreaming) return;
   // app_state.value is NOT NULL, so a null/absent value here means the broadcast was
   // truncated (oversized). Never overwrite local state with a truncated payload.
   if (row.value === null || row.value === undefined) return;
@@ -11913,13 +11927,13 @@ async function estAddPlan(pid) {
     return;
   }
 
-  // Hard 15-page limit — read page count before accepting
+  // Hard 25-page limit per file — read page count before accepting
   if (window.pdfjsLib) {
     try {
       const buf = await f.arrayBuffer();
       const doc = await pdfjsLib.getDocument({ data: buf }).promise;
-      if (doc.numPages > 15) {
-        showToast(`This PDF has ${doc.numPages} pages. Novantu accepts max 15 per file — split it into architectural, structural, MEP, etc. and upload each separately.`, 'error');
+      if (doc.numPages > MAX_AI_PAGES_PER_PLAN) {
+        showToast(`This PDF has ${doc.numPages} pages. Novantu accepts max ${MAX_AI_PAGES_PER_PLAN} per file — split it into architectural, structural, MEP, etc. and upload each separately.`, 'error');
         return;
       }
     } catch (err) {
@@ -11929,8 +11943,9 @@ async function estAddPlan(pid) {
 
   const e = getEstProj(pid);
   const disc = discSel?.value || 'A';
+  const planId = 'pln_' + Date.now() + Math.random().toString(36).slice(2, 6);
   const meta = {
-    id: 'pln_' + Date.now() + Math.random().toString(36).slice(2, 6),
+    id: planId,
     discipline: disc,
     name: f.name,
     size: f.size,
@@ -11948,33 +11963,46 @@ async function estAddPlan(pid) {
     render();
   };
 
-  // Files ≤5MB get stored as base64 data URLs so the user can download them
-  // back later. Larger files just record metadata — until Supabase Storage
-  // is wired in, those PDFs aren't persisted in the browser.
-  const EMBED_LIMIT = 5 * 1024 * 1024;
-  if (f.size <= EMBED_LIMIT) {
-    const reader = new FileReader();
-    reader.onload = (ev) => { meta.dataUrl = ev.target.result; finish(); };
-    reader.onerror = () => { showToast('Failed to read file — metadata recorded only.', 'warn'); finish(); };
-    reader.readAsDataURL(f);
-  } else {
-    showToast('PDF over 5 MB — metadata only (binary not stored yet).', 'warn');
+  // Upload the bytes to Supabase Storage; keep the dataUrl in the session cache
+  // (for instant download/preview) and store only the short path in state. If
+  // Storage is unreachable, fall back to embedding ≤10 MB inline so nothing is lost.
+  ST.toUploading = true; render();
+  try {
+    const dataUrl = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result); r.onerror = rej;
+      r.readAsDataURL(f);
+    });
+    const pdfPath = await uploadPlanPdf(f, pid, 'planset');
+    _PLAN_BLOBS[planId] = dataUrl;
+    if (pdfPath) meta.pdfPath = pdfPath;
+    else if (f.size <= 10 * 1024 * 1024) meta.dataUrl = dataUrl;   // inline fallback
+    else showToast('PDF over 10 MB and Storage is unreachable — metadata only.', 'warn');
+    ST.toUploading = false;
+    finish();
+  } catch (err) {
+    ST.toUploading = false;
+    showToast('Failed to read/upload file — metadata recorded only.', 'warn');
     finish();
   }
 }
 
-function estDownloadPlan(pid, planId) {
+async function estDownloadPlan(pid, planId) {
   const e = getEstProj(pid);
   const pl = e.plans.find(p => p.id === planId);
-  if (!pl || !pl.dataUrl) { showToast('No file binary stored — only metadata was saved.', 'warn'); return; }
+  if (!pl || !hasPlanBinary(pl)) { showToast('No file binary stored — only metadata was saved.', 'warn'); return; }
+  const durl = await resolvePlanDataUrl(pl);
+  if (!durl) { showToast('Could not load the PDF from storage.', 'warn'); return; }
   const a = document.createElement('a');
-  a.href = pl.dataUrl; a.download = pl.name || 'plan.pdf';
+  a.href = durl; a.download = pl.name || 'plan.pdf';
   document.body.appendChild(a); a.click(); a.remove();
 }
 
 function estRemovePlan(pid, planId) {
   showConfirm('Remove this plan set entry?', () => {
     const e = getEstProj(pid);
+    const pl = e.plans.find(p => p.id === planId);
+    if (pl) deletePlanPdf(pl); // best-effort Storage cleanup
     e.plans = e.plans.filter(p => p.id !== planId);
     // Invalidate render cache for this plan (frees memory)
     if (typeof invalidatePlanRenderCache === 'function') invalidatePlanRenderCache(planId);
@@ -12114,9 +12142,15 @@ async function estSendMessage(pid) {
   if (input) input.value = '';
   ST.estimatorAIStreaming = true;
 
-  // Add an empty assistant message that we'll fill in as tokens arrive
-  const assistantIdx = chat.length;
-  chat.push({ role: 'assistant', content: '', ts: Date.now(), streaming: true });
+  // Add an empty assistant message that we'll fill in as tokens arrive.
+  // CRITICAL: address it by a STABLE id, never by a captured array reference.
+  // A save/merge or realtime push can reassign ST.estimator[pid] to a fresh
+  // object mid-stream — appending to the old captured array would then write to
+  // an orphaned object and the visible chat (read from the live array) would
+  // appear to wipe. msg() always re-reads the current array and finds by id.
+  const msgId = 'ai_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  chat.push({ id: msgId, role: 'assistant', content: '', ts: Date.now(), streaming: true });
+  const msg = () => estGetChat(pid).find(m => m.id === msgId);
   saveSt(); render(); estScrollChat();
 
   // ── Render uploaded plans to images (in-memory cache) ──────────────────────
@@ -12124,37 +12158,40 @@ async function estSendMessage(pid) {
   let planImages = [];
   try {
     const e = getEstProj(pid);
-    const hasUploaded = (e.plans || []).some(pl => pl.dataUrl);
+    const hasUploaded = (e.plans || []).some(pl => hasPlanBinary(pl));
     if (hasUploaded) {
       // Stream the progress into the assistant message placeholder so the user
       // sees "Reading X of Y pages…" before tokens arrive.
       const setStatus = (s) => {
-        chat[assistantIdx].content = s;
+        const m = msg(); if (m) m.content = s;
         const el = document.getElementById('est-chat-stream-target');
         if (el) el.textContent = s;
         estScrollChat();
       };
       setStatus('✦ Reading uploaded plans…');
-      const { images, totalPages } = await renderAllProjectPlans(pid, ({ done, total, cur }) => {
+      const { images, totalPages, truncated } = await renderAllProjectPlans(pid, ({ done, total, cur }) => {
         setStatus(`✦ Reading ${done} of ${total} pages…${cur ? ' (' + cur + ')' : ''}`);
       });
       planImages = images;
+      if (truncated) showToast(`Large plan set — only the first ${MAX_AI_PAGES_PER_PLAN} pages per sheet were sent to the AI.`, 'info');
       setStatus(`✦ Read ${totalPages} pages — asking Claude…`);
     }
   } catch (err) {
     console.warn('Plan render failed, continuing without vision:', err);
-    chat[assistantIdx].content = '';
+    const m = msg(); if (m) m.content = '';
   }
 
   // Reset content for streaming
-  chat[assistantIdx].content = '';
+  { const m = msg(); if (m) m.content = ''; }
   const streamEl = document.getElementById('est-chat-stream-target');
   if (streamEl) streamEl.textContent = '';
 
-  // Build messages array (only role + content for the API)
-  const messages = chat.slice(0, assistantIdx).map(m => ({
-    role: m.role, content: m.content,
-  }));
+  // Build messages array (only role + content) up to — but not including — the
+  // streaming placeholder, located fresh by id (the array may have been rebased).
+  const liveChat = estGetChat(pid);
+  const phIdx = liveChat.findIndex(m => m.id === msgId);
+  const messages = liveChat.slice(0, phIdx < 0 ? liveChat.length : phIdx)
+    .map(m => ({ role: m.role, content: m.content }));
 
   const EDGE_URL = `${SUPABASE_URL}/functions/v1/ask-ai`;
 
@@ -12174,9 +12211,7 @@ async function estSendMessage(pid) {
 
     if (!res.ok) {
       const err = await res.text();
-      chat[assistantIdx].content = `△ Error ${res.status}: ${err}`;
-      chat[assistantIdx].streaming = false;
-      chat[assistantIdx].error = true;
+      const m = msg(); if (m) { m.content = `△ Error ${res.status}: ${err}`; m.streaming = false; m.error = true; }
       ST.estimatorAIStreaming = false;
       saveSt(); render(); return;
     }
@@ -12199,29 +12234,25 @@ async function estSendMessage(pid) {
         try { evt = JSON.parse(line.slice(6)); } catch { continue; }
 
         if (evt.type === 'delta') {
-          chat[assistantIdx].content += evt.text;
+          const m = msg(); if (m) m.content += evt.text;
           // Live-update the DOM directly for smooth streaming
           // (avoid full re-render on every token — that would cause flicker)
           const el = document.getElementById('est-chat-stream-target');
-          if (el) el.textContent = chat[assistantIdx].content;
+          if (el && m) el.textContent = m.content;
           estScrollChat();
         } else if (evt.type === 'done') {
-          chat[assistantIdx].streaming = false;
+          const m = msg(); if (m) m.streaming = false;
           ST.estimatorAIStreaming = false;
           saveSt(); render(); estScrollChat();
         } else if (evt.type === 'error') {
-          chat[assistantIdx].content = `△ ${evt.message}`;
-          chat[assistantIdx].streaming = false;
-          chat[assistantIdx].error = true;
+          const m = msg(); if (m) { m.content = `△ ${evt.message}`; m.streaming = false; m.error = true; }
           ST.estimatorAIStreaming = false;
           saveSt(); render();
         }
       }
     }
   } catch (err) {
-    chat[assistantIdx].content = `△ Network error: ${err.message}`;
-    chat[assistantIdx].streaming = false;
-    chat[assistantIdx].error = true;
+    const m = msg(); if (m) { m.content = `△ Network error: ${err.message}`; m.streaming = false; m.error = true; }
     ST.estimatorAIStreaming = false;
     saveSt(); render();
   }
@@ -12702,8 +12733,8 @@ function toSelectPlan(pid, planId) {
   const e = getEstProj(pid);
   const pl = e.plans.find(p => p.id === planId);
   if (!pl) return;
-  if (!pl.dataUrl) {
-    showToast('This plan has no stored PDF binary. Re-upload the file (≤5MB) to use Take-off.', 'warn');
+  if (!hasPlanBinary(pl)) {
+    showToast('This plan has no stored PDF binary. Re-upload the file to use Take-off.', 'warn');
     return;
   }
   ST.toActivePlan = { pid, planId, discipline: pl.discipline, name: pl.name };
@@ -12716,7 +12747,7 @@ function toSelectPlan(pid, planId) {
   _TO.pdfDoc = null; _TO.loadedPlanId = null; _TO.loadingPlanId = null;
   saveSt();
   toRefreshChrome();
-  toLoadPDFAndRender(pl.dataUrl, planId);
+  resolvePlanDataUrl(pl).then(durl => { if (durl) toLoadPDFAndRender(durl, planId); });
 }
 
 function toChangePage(delta) {
@@ -13472,7 +13503,7 @@ function toBuildSidebar(p, e) {
     <div class="to-sidebar-section">
       <div class="to-sidebar-label">Plan sets · ${allPlans.length}</div>
       ${allPlans.map(pl => {
-        const hasBin = !!pl.dataUrl;
+        const hasBin = hasPlanBinary(pl);
         const isActive = active?.planId === pl.id;
         return `<button class="to-page-btn${isActive?' on':''}" onclick="toSelectPlan('${p.id}','${pl.id}')"
           ${!hasBin?'title="No binary — re-upload" style="opacity:.45"':''}>
@@ -13539,6 +13570,7 @@ function toResetSession() {
       const plan = e.plans.find(pl => pl.id === planId);
       if (plan?.takeoffType) {
         // Auto-cleanup take-off-created plans
+        deletePlanPdf(plan); // best-effort Storage cleanup
         e.plans = e.plans.filter(pl => pl.id !== planId);
       }
     }
@@ -13665,7 +13697,7 @@ function toOpenSaved(pid, typeId) {
   const e = getEstProj(pid);
   ST.toTakeoffType = typeId;
   // Try to find a plan linked to this type (uploaded specifically for this take-off)
-  const linkedPlan = (e.plans || []).find(pl => pl.takeoffType === typeId && pl.dataUrl);
+  const linkedPlan = (e.plans || []).find(pl => pl.takeoffType === typeId && hasPlanBinary(pl));
   if (linkedPlan) {
     ST.toActivePlan = { pid, planId: linkedPlan.id, discipline: linkedPlan.discipline, name: linkedPlan.name };
     _TO.pdfDoc = null;
@@ -13692,6 +13724,7 @@ function toDeleteSaved(pid, typeId) {
   const e = getEstProj(pid);
   if (e.plans) {
     const before = e.plans.length;
+    e.plans.filter(pl => pl.takeoffType === typeId).forEach(deletePlanPdf); // best-effort Storage cleanup
     e.plans = e.plans.filter(pl => !(pl.takeoffType === typeId));
     if (before !== e.plans.length && typeof invalidatePlanRenderCache === 'function') {
       // Best-effort cache invalidation across removed plans
@@ -13766,11 +13799,8 @@ function toBuildDetailPanel(p, e) {
             <input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toCalcSetEnabled('${p.id}','${typeId}','${r.code}',this.checked)">
           </label>
           <div class="to-calc-name">
-            <div style="display:flex;align-items:baseline;gap:6px">
-              <span class="to-calc-itm-name">${esc(r.name)}</span>
-              <span class="to-calc-unit-price">${fmt$(r.perUnit)}/${esc(r.unit)}</span>
-            </div>
-            <div class="to-calc-itm-sub">${esc(r.sub || '')}</div>
+            <div class="to-calc-itm-name">${esc(r.name)}</div>
+            <div class="to-calc-itm-sub">${fmt$(r.perUnit)}/${esc(r.unit)}${r.sub ? ' · ' + esc(r.sub) : ''}</div>
           </div>
           <div class="to-calc-qty-cell">
             <input type="number" step="0.01" min="0"
@@ -13956,11 +13986,14 @@ function buildEstTakeoff(p, e) {
   _TO_RENDER_SKIP = false;
   _TO.mounted = true;
 
-  setTimeout(() => {
+  setTimeout(async () => {
     const planId = ST.toActivePlan?.planId;
     if (planId && _TO.loadedPlanId !== planId && _TO.loadingPlanId !== planId) {
       const pl = e.plans.find(x => x.id === planId);
-      if (pl?.dataUrl) toLoadPDFAndRender(pl.dataUrl, planId);
+      if (pl && hasPlanBinary(pl)) {
+        const durl = await resolvePlanDataUrl(pl);
+        if (durl) toLoadPDFAndRender(durl, planId);
+      }
     } else if (_TO.pdfDoc) {
       toRenderCurrentPage();
     }
@@ -14011,7 +14044,9 @@ function toHandleDrop(ev, pid, typeId) {
       const e = getEstProj(pid);
       if (!e.plans) e.plans = [];
       const planId = 'plan_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5);
-      const plan = { id: planId, name: file.name.replace(/\.pdf$/i,''), discipline: 'A', size: file.size, ts: new Date().toISOString(), dataUrl, takeoffType: typeId };
+      const pdfPath = await uploadPlanPdf(file, pid, typeId);
+      _PLAN_BLOBS[planId] = dataUrl;
+      const plan = { id: planId, name: file.name.replace(/\.pdf$/i,''), discipline: 'A', size: file.size, ts: new Date().toISOString(), takeoffType: typeId, ...(pdfPath ? { pdfPath } : { dataUrl }) };
       e.plans.push(plan);
       ST.toTakeoffType = typeId;
       ST.toActivePlan = { pid, planId, discipline: 'A', name: plan.name };
@@ -19786,14 +19821,18 @@ async function toUploadAndOpen(pid, typeId) {
       const e = getEstProj(pid);
       if (!e.plans) e.plans = [];
       const planId = 'plan_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+      // Upload bytes to Storage; keep them in the session cache for instant render.
+      // Only fall back to embedding base64 in state if Storage is unreachable.
+      const pdfPath = await uploadPlanPdf(file, pid, typeId);
+      _PLAN_BLOBS[planId] = dataUrl;
       const plan = {
         id: planId,
         name: file.name.replace(/\.pdf$/i, ''),
         discipline: 'A',
         size: file.size,
         ts: new Date().toISOString(),
-        dataUrl,
         takeoffType: typeId,
+        ...(pdfPath ? { pdfPath } : { dataUrl }),
       };
       e.plans.push(plan);
       ST.toTakeoffType = typeId;
@@ -19827,26 +19866,34 @@ async function toUploadAndOpen(pid, typeId) {
 // ============================================================
 
 const _PLAN_RENDER_CACHE = {};
+// The AI reads at most this many pages PER PLAN (per category). Keeps token cost
+// and latency bounded on big sets — anything past 25 is dropped with a warning.
+const MAX_AI_PAGES_PER_PLAN = 25;
 
-// Get total page count across all plans of a project that have a stored binary
+// Get total page count across all plans of a project that have a stored binary.
+// Resolves bytes from Storage (or legacy inline) and caps each plan at 25 pages.
 async function getProjectPlanPageInfo(pid) {
   const e = getEstProj(pid);
-  if (!e?.plans) return { totalPages: 0, plans: [] };
-  if (!window.pdfjsLib) return { totalPages: 0, plans: [] };
+  if (!e?.plans) return { totalPages: 0, plans: [], truncated: false };
+  if (!window.pdfjsLib) return { totalPages: 0, plans: [], truncated: false };
   const list = [];
-  let totalPages = 0;
+  let totalPages = 0, truncated = false;
   for (const pl of e.plans) {
-    if (!pl.dataUrl) continue;
+    if (!hasPlanBinary(pl)) continue;
+    const durl = await resolvePlanDataUrl(pl);
+    if (!durl) continue;
     try {
-      const data = atob(pl.dataUrl.split(',')[1]);
+      const data = atob(durl.split(',')[1]);
       const doc = await pdfjsLib.getDocument({ data }).promise;
-      list.push({ planId: pl.id, name: pl.name, discipline: pl.discipline, pages: doc.numPages, dataUrl: pl.dataUrl });
-      totalPages += doc.numPages;
+      let pages = doc.numPages;
+      if (pages > MAX_AI_PAGES_PER_PLAN) { truncated = true; pages = MAX_AI_PAGES_PER_PLAN; }
+      list.push({ planId: pl.id, name: pl.name, discipline: pl.discipline, pages, dataUrl: durl });
+      totalPages += pages;
     } catch (err) {
       console.warn('Could not read plan page count:', pl.name, err);
     }
   }
-  return { totalPages, plans: list };
+  return { totalPages, plans: list, truncated };
 }
 
 // Render a single page of a PDF to JPEG base64 (cached in memory)
@@ -19871,7 +19918,7 @@ async function renderPlanPage(planId, pageNum, dataUrl) {
 
 // Render all pages of all plans in a project, with progress callback
 async function renderAllProjectPlans(pid, onProgress) {
-  const { totalPages, plans } = await getProjectPlanPageInfo(pid);
+  const { totalPages, plans, truncated } = await getProjectPlanPageInfo(pid);
   const result = [];
   let done = 0;
   for (const pl of plans) {
@@ -19884,7 +19931,7 @@ async function renderAllProjectPlans(pid, onProgress) {
       if (onProgress) onProgress({ done, total: totalPages, cached, cur: pl.name + ' p.' + pg });
     }
   }
-  return { images: result, totalPages };
+  return { images: result, totalPages, truncated };
 }
 
 // Clear cache for a specific plan (called when a plan is removed/re-uploaded)
@@ -19917,12 +19964,11 @@ async function readPlansForProject(pid, opts = {}) {
     return;
   }
 
-  // Pick the plan: prefer "A" architectural with dataUrl; else first plan with dataUrl
-  let plan = (e.plans || []).find(pl => pl.discipline === 'A' && pl.dataUrl)
-          || (e.plans || []).find(pl => pl.dataUrl);
+  // Pick the plan: prefer "A" architectural with a binary; else first with a binary
+  let plan = (e.plans || []).find(pl => pl.discipline === 'A' && hasPlanBinary(pl))
+          || (e.plans || []).find(pl => hasPlanBinary(pl));
   if (opts.planId) plan = e.plans.find(pl => pl.id === opts.planId) || plan;
   if (!plan) { showToast('No PDF binary available. Re-upload a PDF first.', 'warn'); return; }
-  if (!plan.dataUrl) { showToast('PDF has no binary stored. Re-upload it.', 'warn'); return; }
 
   const startPage = opts.startPage || 1;
   const pagesToRead = opts.pagesToRead || 3;
@@ -19935,7 +19981,9 @@ async function readPlansForProject(pid, opts = {}) {
     if (!window.pdfjsLib) {
       throw new Error('PDF.js not loaded');
     }
-    const loadingTask = pdfjsLib.getDocument({ data: atob(plan.dataUrl.split(',')[1]) });
+    const planDataUrl = await resolvePlanDataUrl(plan);
+    if (!planDataUrl) { ST.readPlansStatus = null; render(); showToast('Could not load the PDF from storage. Re-upload it.', 'warn'); return; }
+    const loadingTask = pdfjsLib.getDocument({ data: atob(planDataUrl.split(',')[1]) });
     const pdfDoc = await loadingTask.promise;
     const maxPage = Math.min(pdfDoc.numPages, startPage + pagesToRead - 1);
     const images = [];
@@ -20033,7 +20081,7 @@ async function readPlansForProject(pid, opts = {}) {
 // ── Build the "Read Plans" button + recent result indicator ──────────────────
 function buildReadPlansButton(pid, opts = {}) {
   const e = getEstProj(pid);
-  const hasPdf = (e.plans || []).some(pl => pl.dataUrl);
+  const hasPdf = (e.plans || []).some(pl => hasPlanBinary(pl));
   const st = ST.readPlansStatus;
   const isRunning = st && st.pid === pid && st.running;
   const last = e.codeNotes?._readPlans;
@@ -20084,8 +20132,8 @@ async function runPlanDiff(pid) {
 
   const oldPlan = (e.plans || []).find(p => p.id === oldId);
   const newPlan = (e.plans || []).find(p => p.id === newId);
-  if (!oldPlan?.dataUrl || !newPlan?.dataUrl) {
-    showToast('Both plans need their PDF stored (≤5 MB). Re-upload if needed.', 'warn');
+  if (!oldPlan || !newPlan || !hasPlanBinary(oldPlan) || !hasPlanBinary(newPlan)) {
+    showToast('Both plans need their PDF stored. Re-upload if needed.', 'warn');
     return;
   }
 
@@ -20094,8 +20142,11 @@ async function runPlanDiff(pid) {
   render();
 
   try {
-    const oldB64 = oldPlan.dataUrl.split(',')[1];
-    const newB64 = newPlan.dataUrl.split(',')[1];
+    const oldUrl = await resolvePlanDataUrl(oldPlan);
+    const newUrl = await resolvePlanDataUrl(newPlan);
+    if (!oldUrl || !newUrl) throw new Error('Could not load one of the PDFs from storage.');
+    const oldB64 = oldUrl.split(',')[1];
+    const newB64 = newUrl.split(',')[1];
 
     ST.planDiff[pid].stage = 'Comparing revisions…';
     render();
@@ -20122,7 +20173,7 @@ async function runPlanDiff(pid) {
 }
 
 function buildPlanDiffCard(p, e) {
-  const plansWithBin = (e.plans || []).filter(pl => pl.dataUrl);
+  const plansWithBin = (e.plans || []).filter(pl => hasPlanBinary(pl));
   const diff = getPlanDiff(p.id);
   const running = diff && diff.status === 'running';
 
@@ -20617,7 +20668,7 @@ function buildEstPlans(p, e, activeDiscIds) {
                 </td>
                 <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;font-family:var(--mono);font-size:10px;color:var(--text3)">${(pl.size/1024).toFixed(0)} KB</td>
                 <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap">
-                  ${pl.dataUrl?`<button onclick="estDownloadPlan('${p.id}','${pl.id}')" title="Download stored PDF" style="background:transparent;border:1px solid var(--border);color:var(--text3);padding:2px 8px;font-family:var(--mono);font-size:10px;cursor:pointer;border-radius:2px;margin-right:4px">↓</button>`:''}
+                  ${hasPlanBinary(pl)?`<button onclick="estDownloadPlan('${p.id}','${pl.id}')" title="Download stored PDF" style="background:transparent;border:1px solid var(--border);color:var(--text3);padding:2px 8px;font-family:var(--mono);font-size:10px;cursor:pointer;border-radius:2px;margin-right:4px">↓</button>`:''}
                   <button onclick="estRemovePlan('${p.id}','${pl.id}')" title="Remove" style="background:transparent;border:1px solid var(--border);color:var(--text3);padding:2px 8px;font-family:var(--mono);font-size:10px;cursor:pointer;border-radius:2px">✕</button>
                 </td>
               </tr>`).join('')}
@@ -21021,6 +21072,78 @@ async function uploadBidPdf(file, sid, projName, cat) {
     return null;
   }
   return { path, name: file.name };
+}
+
+// ============================================================
+// PLAN PDF STORAGE — Supabase Storage (reuses the bid-pdfs bucket)
+// ────────────────────────────────────────────────────────────
+// Take-off / Plan-Set PDFs used to be embedded as base64 inside the synced
+// `estimator` app_state blob. That made saves fail (oversized jsonb), truncated
+// the realtime broadcast, and made plans vanish. Now the bytes go to Supabase
+// Storage and only a short `pdfPath` rides in app_state. A session-only cache
+// (_PLAN_BLOBS) holds the dataUrl in memory so the just-uploaded sheet renders
+// instantly without a round-trip. Legacy inline `dataUrl` / `_idbKey` plans
+// still resolve transparently, so nothing breaks if Storage isn't reachable.
+// ============================================================
+const PLAN_PDF_BUCKET = BID_PDF_BUCKET; // 'bid-pdfs' — already has authenticated INSERT/SELECT policies
+const _PLAN_BLOBS = {};                 // { [planId]: dataUrl } — never persisted
+
+// Does this plan have bytes we can reach (storage path, session cache, or legacy inline)?
+function hasPlanBinary(pl) {
+  return !!(pl && (pl.pdfPath || pl.dataUrl || _PLAN_BLOBS[pl.id] || pl._idbKey));
+}
+
+// Upload a plan PDF File to Storage. Returns the storage path, or null on failure.
+async function uploadPlanPdf(file, pid, typeId) {
+  if (!file || !sb) return null;
+  try {
+    const ws = ST.activeWorkspace || 'ws';
+    const safeT = String(typeId || 'plan').replace(/[^a-z0-9]/gi, '_').slice(0, 24);
+    const ts = Date.now();
+    const safeName = String(file.name || 'plan.pdf').replace(/[^a-z0-9._-]/gi, '_').slice(-60);
+    const path = `plans/${ws}/${pid}/${safeT}/${ts}_${safeName}`;
+    const { error } = await sb.storage.from(PLAN_PDF_BUCKET).upload(path, file, {
+      contentType: 'application/pdf', upsert: true,
+    });
+    if (error) { console.warn('Plan PDF upload failed:', error); return null; }
+    return path;
+  } catch (e) { console.warn('uploadPlanPdf error:', e); return null; }
+}
+
+// Resolve a plan's bytes as a dataUrl: session cache → legacy inline → IDB → Storage.
+async function resolvePlanDataUrl(pl) {
+  if (!pl) return null;
+  if (_PLAN_BLOBS[pl.id]) return _PLAN_BLOBS[pl.id];
+  if (pl.dataUrl) return pl.dataUrl;                                   // legacy inline
+  if (pl._idbKey && typeof pdfRetrieve === 'function') {               // legacy IndexedDB
+    const d = await pdfRetrieve(pl._idbKey);
+    if (d) { _PLAN_BLOBS[pl.id] = d; return d; }
+  }
+  if (pl.pdfPath && sb) {                                              // Supabase Storage
+    try {
+      const { data, error } = await sb.storage.from(PLAN_PDF_BUCKET).createSignedUrl(pl.pdfPath, 3600);
+      if (error) throw error;
+      const resp = await fetch(data.signedUrl);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const blob = await resp.blob();
+      const durl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result); r.onerror = rej;
+        r.readAsDataURL(blob);
+      });
+      _PLAN_BLOBS[pl.id] = durl;
+      return durl;
+    } catch (e) { console.warn('resolvePlanDataUrl: storage fetch failed for', pl.pdfPath, e); return null; }
+  }
+  return null;
+}
+
+// Delete a plan PDF from Storage (best-effort).
+async function deletePlanPdf(pl) {
+  if (pl && _PLAN_BLOBS[pl.id]) delete _PLAN_BLOBS[pl.id];
+  if (!pl || !pl.pdfPath || !sb) return;
+  try { await sb.storage.from(PLAN_PDF_BUCKET).remove([pl.pdfPath]); }
+  catch (e) { console.warn('Could not delete plan PDF:', e); }
 }
 
 // When a storage call fails, figure out WHY and show a useful message.
