@@ -4684,6 +4684,10 @@ async function loadSt() {
     // aiChat lives inside ST.estimator[pid].aiChat — persisted as part of the
     // estimator blob. Clear streaming flags on load (in case of hard reload mid-stream).
     ST.estimatorAIStreaming = false;
+    // Ephemeral, non-persisted AI scratch state — drop it on every workspace load
+    // so a draft (or its loading flag) can NEVER bleed from one workspace into another.
+    ST.estimatorDraft = null;
+    ST.estimatorDraftLoading = null;
     if (ST.estimator) {
       for (const pid of Object.keys(ST.estimator)) {
         const e = ST.estimator[pid];
@@ -5894,6 +5898,7 @@ function render() {
     ST.cmdOpen ? 'cmd' : '',
     ST.upsellModal ? 'upsell' : '',
     ST.subSummaryModal ? 'subsum' : '',
+    ST.estimatorDraft ? 'aidraft' : '',
   ].filter(Boolean).join('|');
   const overlayJustOpened = overlaySig && overlaySig !== _lastOverlaySig;
   _lastOverlaySig = overlaySig;
@@ -7218,11 +7223,19 @@ function buildBuilderGroupModal() {
     <div class="modal">
       <div class="modal-title">${isEdit ? 'Rename cost code' : 'Add cost code'}</div>
       <div class="modal-sub">${esc(proj?.name||'')}</div>
-      ${!isEdit ? `<div class="modal-label" style="margin-top:14px">CSI division preset</div><select class="msel" onchange="if(this.value){const parts=this.value.split('|||');document.getElementById('bg-code').value=parts[0];document.getElementById('bg-title').value=parts[1]||''}"><option value="">— Custom —</option>${Object.keys(DIV_CODES).sort().map(d => `<option value="${d}|||${esc(DIV_NAMES?.[d]||'')}">${esc(divLabel(d))}</option>`).join('')}</select>` : ''}
+      ${(() => {
+        if (isEdit) return '';
+        const presets = costCodePresets();
+        if (presets) {
+          const label = (wsSubTrade()==='hvac') ? 'HVAC cost code' : 'Cost code preset';
+          return `<div class="modal-label" style="margin-top:14px">${label}</div><select class="msel" onchange="if(this.value){const parts=this.value.split('|||');document.getElementById('bg-code').value=parts[0];document.getElementById('bg-title').value=parts[1]||''}"><option value="">— Custom —</option>${presets.map(c => `<option value="${esc(c.code)}|||${esc(c.title)}">${esc(c.code)} · ${esc(c.title)}</option>`).join('')}</select>`;
+        }
+        return `<div class="modal-label" style="margin-top:14px">CSI division preset</div><select class="msel" onchange="if(this.value){const parts=this.value.split('|||');document.getElementById('bg-code').value=parts[0];document.getElementById('bg-title').value=parts[1]||''}"><option value="">— Custom —</option>${Object.keys(DIV_CODES).sort().map(d => `<option value="${d}|||${esc(DIV_NAMES?.[d]||'')}">${esc(divLabel(d))}</option>`).join('')}</select>`;
+      })()}
       <div class="modal-label" style="margin-top:12px">Code *</div>
-      <input type="text" class="modal-input" id="bg-code" value="${esc(g?.code||'')}" placeholder="e.g. DIVISION 01">
+      <input type="text" class="modal-input" id="bg-code" value="${esc(g?.code||'')}" placeholder="${costCodePresets()?(wsSubTrade()==='hvac'?'e.g. 23 81.13':'e.g. code'):'e.g. DIVISION 01'}">
       <div class="modal-label">Title</div>
-      <input type="text" class="modal-input" id="bg-title" value="${esc(g?.title||'')}" placeholder="e.g. General Requirements">
+      <input type="text" class="modal-input" id="bg-title" value="${esc(g?.title||'')}" placeholder="${costCodePresets()?(wsSubTrade()==='hvac'?'e.g. Air Handlers':'e.g. title'):'e.g. General Requirements'}">
       <div class="modal-btns"><button class="btn btn-ghost" onclick="ST.builderAddGroup=null;ST.builderEditGroup=null;render()">Cancel</button><button class="btn btn-amber" onclick="${isEdit?'builderRenameGroup()':`builderSaveGroup('${pid}')`}">${isEdit?'Rename':'Add'}</button></div>
     </div>
   </div>`;
@@ -9653,6 +9666,7 @@ function buildApp() {
       ${ST.usersModal ? buildUsersModal() : ''}
       ${ST.subSummaryModal ? buildSubSummaryModal() : ''}
       ${ST.trialWelcome ? buildTrialWelcomeModal() : ''}
+      ${ST.estimatorDraft ? buildDraftReviewModal() : ''}
     </div>`;
 }
 
@@ -12424,6 +12438,29 @@ function estChatKeydown(e, pid) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); estSendMessage(pid); }
 }
 
+// The active workspace's OWN price list — the codes, products and unit prices the
+// AI is allowed to use when drafting. Scoped to this workspace's trade calculators
+// only, so two workspaces never see each other's pricing.
+function aiPriceList() {
+  if (typeof getCalculatorTypes !== 'function') return [];
+  const out = [];
+  for (const t of getCalculatorTypes()) {
+    for (const row of getPricingForType(t.id)) {
+      out.push({ code: row.code, name: row.name, sub: row.sub || '', unit: row.unit, perUnit: row.perUnit });
+    }
+  }
+  return out;
+}
+// Compact snapshot of what's already in the Builder for this project.
+function builderEstimateSummary(pid) {
+  const est = ST.estimates[pid] || { groups: [] };
+  const t = builderTotals(pid);
+  return {
+    groups: (est.groups || []).map(g => ({ code: g.code, title: g.title, items: (g.items || []).length })),
+    itemCount: t.itemCount, total: t.client,
+  };
+}
+
 // ── Build context payload sent to the Edge Function ──────────────────────────
 function estBuildContext(pid) {
   const e = getEstProj(pid);
@@ -12438,10 +12475,16 @@ function estBuildContext(pid) {
     }
   }
   const openRfis = reviewItems.filter(r => r.status === 'RFI');
+  const pack = getActiveTradePack();
 
   return {
     projectName: p.name,
     setup: e.setup || {},
+    isSub: isSubAccount(),
+    trade: pack ? pack.label : (isSubAccount() ? 'Subcontractor' : 'General Contractor'),
+    // Only a sub's own trade price list rides along (keeps context lean + isolated).
+    priceList: isSubAccount() ? aiPriceList() : [],
+    currentEstimate: builderEstimateSummary(pid),
     plans: (e.plans || []).map(pl => ({
       discipline: pl.discipline, name: pl.name,
       sheetGuess: pl.sheetGuess || '', size: pl.size,
@@ -12591,8 +12634,180 @@ function estClearChat(pid) {
   });
 }
 
+// ── AI draft estimate ─────────────────────────────────────────────────────────
+// "Make me a draft using my prices and my products." The AI proposes line items
+// pulled ONLY from this workspace's own price list; we map every returned code
+// back to a real catalog row (dropping anything off-list), then show a review
+// modal before a single line ever lands in the Builder. Fully reviewable, and it
+// can never reach into another workspace's data — the price list is this one's.
+function parseAIJson(text) {
+  if (!text) return null;
+  let t = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  const m = t.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try { return JSON.parse(m[0]); } catch (_e) {}
+  try { return JSON.parse(m[0].replace(/,\s*([}\]])/g, '$1')); } catch (_e) {}
+  return null;
+}
+
+// Call ask-ai and return the full completion text (no streaming UI).
+async function aiCompleteText(pid, userPrompt) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+    body: JSON.stringify({ projectContext: estBuildContext(pid), messages: [{ role: 'user', content: userPrompt }] }),
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '', full = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+      if (evt.type === 'delta') full += evt.text;
+      else if (evt.type === 'error') throw new Error(evt.message || 'AI error');
+    }
+  }
+  return full;
+}
+
+async function estDraftEstimate(pid) {
+  if (ST.estimatorAIStreaming || ST.estimatorDraftLoading) return;
+  const priceList = aiPriceList();
+  if (!priceList.length) { showToast('Set your unit prices first in Settings → Take-off prices.', 'warn'); return; }
+  if (!trialGuardAI()) return; // free-trial AI cap
+  ST.estimatorDraftLoading = pid; render();
+  try {
+    const tradeLabel = (getActiveTradePack()?.label) || 'trade';
+    const plj = priceList.map(r => `${r.code} | ${r.name} | ${r.unit} | ${r.perUnit}`).join('\n');
+    const prompt = `Draft a complete ${tradeLabel} estimate for this project as STRICT JSON ONLY — no prose, no code fences.
+Use ONLY these price-list items (format: CODE | name | unit | unitPrice):
+${plj}
+
+Rules:
+- Every item.code MUST be exactly one of the CODEs above (copy it verbatim).
+- Infer realistic quantities from the project name, setup and any plans in context.
+- Group items under sensible cost codes (a short code + title per group).
+- Do NOT invent prices or products that aren't in the list.
+
+Return EXACTLY this shape and nothing else:
+{"groups":[{"code":"<cost code>","title":"<group title>","items":[{"code":"<price list code>","qty":<number>}]}],"notes":"<one short line of quantity assumptions>"}`;
+    const text = await aiCompleteText(pid, prompt);
+    const parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.groups)) throw new Error('Could not read a draft from the AI. Try again.');
+    const byCode = {}; priceList.forEach(r => { byCode[r.code] = r; });
+    const groups = [];
+    for (const g of parsed.groups) {
+      const items = [];
+      for (const it of (g.items || [])) {
+        const row = byCode[it && it.code];
+        if (!row) continue; // enforce: only this workspace's own products
+        items.push({ code: row.code, name: row.name, qty: Math.max(0, Number(it.qty) || 0), unit: row.unit, unitCost: row.perUnit });
+      }
+      if (items.length) groups.push({ code: (g.code || '').toString(), title: (g.title || '').toString(), items });
+    }
+    if (!groups.length) throw new Error('The AI did not return usable items from your price list.');
+    ST.estimatorDraft = { pid, groups, notes: (parsed.notes || '').toString(), ts: Date.now() };
+  } catch (err) {
+    showToast('Draft failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.estimatorDraftLoading = null;
+    render();
+  }
+}
+
+function draftEditQty(gi, ii, val) {
+  const d = ST.estimatorDraft; if (!d) return;
+  const it = d.groups?.[gi]?.items?.[ii]; if (!it) return;
+  it.qty = Math.max(0, Number(val) || 0);
+  render();
+}
+function draftDropItem(gi, ii) {
+  const d = ST.estimatorDraft; if (!d) return;
+  if (d.groups?.[gi]?.items) d.groups[gi].items.splice(ii, 1);
+  if (d.groups[gi] && !d.groups[gi].items.length) d.groups.splice(gi, 1);
+  if (!d.groups.length) ST.estimatorDraft = null;
+  render();
+}
+
+function estApplyDraft(pid, mode) {
+  const d = ST.estimatorDraft; if (!d || d.pid !== pid) return;
+  builderEnsure(pid);
+  const mk = (typeof getSettings === 'function' && getSettings().defaultMarkup) ? getSettings().defaultMarkup : {};
+  const baseMarkup = Number(mk.Materials) || 0;
+  let seq = 0;
+  const uid = (pfx) => pfx + Date.now().toString(36) + '_' + (seq++).toString(36) + Math.random().toString(36).slice(2, 5);
+  const newGroups = d.groups.map(g => ({
+    id: uid('g_'), code: g.code, title: g.title,
+    items: (g.items || []).map(it => ({
+      id: uid('i_'), code: it.code, title: it.name, description: '',
+      qty: Number(it.qty) || 0, unit: it.unit, unitCost: Number(it.unitCost) || 0,
+      costType: 'Materials', markup: baseMarkup, taxable: false,
+    })),
+  }));
+  if (mode === 'replace') ST.estimates[pid].groups = newGroups;
+  else ST.estimates[pid].groups.push(...newGroups);
+  ST.estimatorDraft = null;
+  saveSt();
+  setTab('builder'); ST.builderSelProj = pid; render();
+  showToast('Draft added to the Builder — review markup and adjust.', 'success');
+}
+
+function buildDraftReviewModal() {
+  const d = ST.estimatorDraft; if (!d) return '';
+  const proj = allProjects().find(x => x.id === d.pid);
+  let grand = 0;
+  const groupsHtml = d.groups.map((g, gi) => {
+    let gTotal = 0;
+    const rows = g.items.map((it, ii) => {
+      const line = (Number(it.qty) || 0) * (Number(it.unitCost) || 0);
+      gTotal += line;
+      return `<div style="display:grid;grid-template-columns:1fr 70px 52px 90px 90px 28px;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:0"><div style="font-size:12px;color:var(--ink-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.name)}</div><div style="font-family:var(--mono);font-size:9px;color:var(--text3)">${esc(it.code)}</div></div>
+        <input type="number" min="0" step="any" value="${esc(String(it.qty))}" onchange="draftEditQty(${gi},${ii},this.value)" style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:4px 6px;font-family:var(--mono);font-size:12px;text-align:right;color:var(--text);outline:none">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text3)">${esc(it.unit)}</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--text3);text-align:right">${fmt$(it.unitCost)}</div>
+        <div style="font-family:var(--mono);font-size:12px;color:var(--ink-900);text-align:right">${fmt$(line)}</div>
+        <button onclick="draftDropItem(${gi},${ii})" title="Remove" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px">✕</button>
+      </div>`;
+    }).join('');
+    grand += gTotal;
+    return `<div style="margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--ink-700);padding-bottom:4px;margin-bottom:4px">
+        <div style="font-size:12px;font-weight:600;color:var(--ink-900)">${esc(g.code)} ${esc(g.title)}</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--text2)">${fmt$(gTotal)}</div>
+      </div>
+      ${rows}
+    </div>`;
+  }).join('');
+  return `<div class="backdrop" onclick="if(event.target===this){ST.estimatorDraft=null;render()}">
+    <div class="modal modal-wide" style="max-width:680px" onclick="event.stopPropagation()">
+      <div class="modal-title">✨ AI draft estimate</div>
+      <div class="modal-sub">${esc(proj?.name || '')} · built from your price list · review before adding</div>
+      ${d.notes ? `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;margin:12px 0;line-height:1.5">${esc(d.notes)}</div>` : ''}
+      <div style="max-height:46vh;overflow:auto;margin:10px 0;padding-right:4px">${groupsHtml || '<div style="color:var(--text3);font-style:italic;padding:20px;text-align:center">No items left.</div>'}</div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;border-top:2px solid var(--ink-700);padding-top:10px;margin-top:4px">
+        <span style="font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text2)">Builder cost</span>
+        <span style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--ink-900)">${fmt$(grand)}</span>
+      </div>
+      <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:6px">Markup is applied per item in the Builder after you add it.</div>
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="ST.estimatorDraft=null;render()">Discard</button>
+        <button class="btn btn-ghost" onclick="estApplyDraft('${d.pid}','replace')" title="Replace the current estimate with this draft">Replace estimate</button>
+        <button class="btn btn-amber" onclick="estApplyDraft('${d.pid}','append')">Add to Builder →</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 // ── Suggested starter prompts ─────────────────────────────────────────────────
-const EST_PROMPTS = [
+const EST_PROMPTS_GC = [
   'What codes apply to this project and why?',
   'Review my open RFI items and suggest email language.',
   'Are there any coordination issues I should flag before bidding?',
@@ -12600,6 +12815,18 @@ const EST_PROMPTS = [
   'Summarize what\'s missing from my plan review.',
   'What CALGreen requirements apply to this project?',
 ];
+const EST_PROMPTS_HVAC = [
+  'Draft an estimate from my price list for this project.',
+  'What size system would you start with for this space, and why?',
+  'Help me size the ductwork — CFM and main trunk.',
+  'How many supply registers and returns should this layout need?',
+  'What Title-24 / Manual J items should I include in my bid?',
+  'Write a short scope-of-work note for this estimate.',
+];
+function estPrompts() {
+  return (isSubAccount() && wsSubTrade() === 'hvac') ? EST_PROMPTS_HVAC : EST_PROMPTS_GC;
+}
+const EST_PROMPTS = EST_PROMPTS_GC; // back-compat alias
 
 // ── Render the Ask AI panel ───────────────────────────────────────────────────
 function buildEstAskAI(p, e) {
@@ -12657,6 +12884,7 @@ function buildEstAskAI(p, e) {
           Ask AI &nbsp;<span style="font-weight:400;color:var(--text2);font-size:12px">/ ${esc(p.name)}</span>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
+          ${isSubAccount() ? `<button onclick="estDraftEstimate('${p.id}')" ${ST.estimatorDraftLoading?'disabled':''} class="est-askai-close" style="font-size:11px;font-family:var(--mono);letter-spacing:.04em;padding:0 10px;background:var(--amber);color:var(--bone-50);border-color:var(--amber-border)" title="Let the AI draft an estimate from your price list">${ST.estimatorDraftLoading===p.id?'Drafting…':'✨ Draft estimate'}</button>` : ''}
           ${chat.length ? `<button onclick="estClearChat('${p.id}')" class="est-askai-close" style="font-size:11px;font-family:var(--mono);letter-spacing:.04em;padding:0 8px" title="Clear history">Clear</button>` : ''}
           <button class="est-askai-close" onclick="estCloseAskAI()" aria-label="Close">×</button>
         </div>
@@ -12669,7 +12897,7 @@ function buildEstAskAI(p, e) {
           <div style="padding:10px 0 14px">
             <div style="font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Suggested questions</div>
             <div style="display:flex;flex-direction:column;gap:5px">
-              ${EST_PROMPTS.map(q => `
+              ${estPrompts().map(q => `
                 <button onclick="document.getElementById('est-chat-input').value=${JSON.stringify(q)};document.getElementById('est-chat-input').focus()"
                   style="text-align:left;background:var(--bg1);border:1px solid var(--border);border-radius:var(--r2);padding:8px 12px;font-family:var(--sans);font-size:11px;color:var(--text2);cursor:pointer;transition:all .12s;line-height:1.4"
                   onmouseover="this.style.borderColor='var(--amber)';this.style.color='var(--text)'"
@@ -14530,6 +14758,38 @@ function wsAccountType(wsId) { const ws = ST.workspaces?.[wsId || ST.activeWorks
 function wsSubTrade(wsId) { const ws = ST.workspaces?.[wsId || ST.activeWorkspace]; return (ws && ws.accountType === 'sub') ? (ws.subTrade || null) : null; }
 function isSubAccount(wsId) { return wsAccountType(wsId) === 'sub'; }
 function getActiveTradePack() { return getTradePack(wsSubTrade()); }
+
+// ── Builder cost-code presets ────────────────────────────────────────────────
+// A GC picks CSI divisions in "Add cost code"; an HVAC sub never touches those.
+// These are the cost codes an HVAC sub actually bills under (CSI 23-series),
+// aligned with SUB_TRADE_PACKS.hvac.categories and the take-off catalog.
+const HVAC_COST_CODES = [
+  { code: '23 08.00', title: 'Load Calcs & Permits' },
+  { code: '23 81.13', title: 'Air Handlers' },
+  { code: '23 81.26', title: 'Condensers / Heat Pumps' },
+  { code: '23 23.00', title: 'Refrigerant Line Sets' },
+  { code: '23 31.00', title: 'Ductwork' },
+  { code: '23 37.13', title: 'Linear Diffuser Boxes' },
+  { code: '23 37.16', title: 'Supply & Return Grilles' },
+  { code: '23 33.13', title: 'Custom Plenums' },
+  { code: '23 05.16', title: 'Condensate Drains' },
+  { code: '23 09.00', title: 'Controls & Thermostats' },
+  { code: '23 34.00', title: 'Exhaust & Ventilation' },
+  { code: '23 05.13', title: 'Crane / Rigging' },
+  { code: '01 70.00', title: 'Installation Labor' },
+  { code: '23 08.13', title: 'Test, Balance & Start-up' },
+];
+// Presets for the "Add cost code" picker: HVAC subs get HVAC codes, other subs
+// get their trade pack's categories, GCs get null (fall back to CSI divisions).
+function costCodePresets() {
+  if (!isSubAccount()) return null;
+  if (wsSubTrade() === 'hvac') return HVAC_COST_CODES.slice();
+  const pack = getActiveTradePack();
+  if (pack && Array.isArray(pack.categories)) {
+    return pack.categories.map(c => ({ code: c, title: c }));
+  }
+  return null;
+}
 
 // ── Directory vocabulary ─────────────────────────────────────────────────────
 // A General Contractor manages SUBCONTRACTORS. A subcontractor (e.g. an HVAC
