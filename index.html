@@ -1969,7 +1969,7 @@ body[data-theme="hc"] {
 .est-askai-backdrop{position:fixed;inset:0;background:rgba(20,18,15,.28);z-index:300}
 .est-askai-backdrop.just-opened{animation:est-fade .15s ease-out}
 @keyframes est-fade{from{opacity:0}to{opacity:1}}
-.est-askai-panel{position:fixed;top:0;right:0;bottom:0;width:380px;max-width:90vw;background:var(--bg);border-left:1px solid var(--border);z-index:301;display:flex;flex-direction:column}
+.est-askai-panel{position:fixed;top:0;right:0;bottom:0;width:460px;max-width:94vw;background:var(--bg);border-left:1px solid var(--border);z-index:301;display:flex;flex-direction:column}
 .est-askai-backdrop.just-opened + .est-askai-panel,.est-askai-panel.just-opened{animation:est-slide .2s cubic-bezier(.2,0,0,1)}
 @keyframes est-slide{from{transform:translateX(100%)}to{transform:translateX(0)}}
 .est-askai-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border)}
@@ -4329,7 +4329,7 @@ const BID_PDF_BUCKET = 'bid-pdfs';
 // While PAYMENT_LINK_URL is empty, the welcome screen will show
 // only the "Sign in" button and hide the subscription option.
 // ============================================================
-const PAYMENT_LINK_URL = '';   // ← PASTE YOUR PAYONEER PAYMENT LINK HERE
+const PAYMENT_LINK_URL = '';   // ← PASTE YOUR PAYMENT LINK HERE (login "Subscribe" screen)
 const PLAN_NAME = 'NOVANTU · Monthly Plan';
 const PLAN_PRICE = '$XXX USD / month';
 const PLAN_FEATURES = [
@@ -4340,6 +4340,38 @@ const PLAN_FEATURES = [
   'All your team members included',
   'Priority email support'
 ];
+
+// ── Billing / checkout links (provider-agnostic) ─────────────────────────────
+// Paste a HOSTED-CHECKOUT URL per plan. Any provider works — the app just opens
+// the link: Stripe Payment Link / Checkout, Lemon Squeezy, Paddle, or a Payoneer
+// "request a payment" link. Leave a field blank to fall back to "Contact to
+// upgrade" (email). Annual is optional (the plan recommends 2 months free).
+//
+// RECOMMENDATION (see NOVANTU PLAN.pdf): for recurring SaaS billed from Colombia
+// to US contractors WITHOUT forming a US LLC yet, use a Merchant-of-Record —
+// Lemon Squeezy (a Stripe company) or Paddle: hosted branded checkout +
+// subscriptions + tax handled + payout via Payoneer/bank, looks fully pro. A raw
+// Payoneer link works as a stop-gap for the first founder client but isn't a
+// subscription. Graduate to Stripe (via Stripe Atlas LLC) once revenue justifies
+// it — that's what the business plan ultimately calls for. (Tax: confirm with an
+// accountant; this isn't tax advice.)
+const BILLING = {
+  provider: 'Secure checkout',   // label shown under the buttons
+  founderUrl: '',                // optional "$99/mo founder" link
+  plans: {
+    starter:    { monthly: '', annual: '' },
+    pro:        { monthly: '', annual: '' },
+    enterprise: { monthly: '', annual: '' },
+  },
+};
+function planCheckoutUrl(planId, cycle) {
+  const p = BILLING.plans && BILLING.plans[planId];
+  if (!p) return '';
+  return (cycle === 'annual' ? p.annual : p.monthly) || p.monthly || '';
+}
+function anyCheckoutConfigured() {
+  return Object.keys(BILLING.plans || {}).some(id => planCheckoutUrl(id, 'monthly'));
+}
 // ============================================================
 // ============================================================
 // Create Supabase client (defensive — handles CDN load failures)
@@ -4688,6 +4720,7 @@ async function loadSt() {
     // so a draft (or its loading flag) can NEVER bleed from one workspace into another.
     ST.estimatorDraft = null;
     ST.estimatorDraftLoading = null;
+    ST.subSendingEmail = null;
     if (ST.estimator) {
       for (const pid of Object.keys(ST.estimator)) {
         const e = ST.estimator[pid];
@@ -5430,7 +5463,7 @@ function buildPricingScreen() {
       Continue to payment →
     </a>
     <div style="font-family:var(--mono);font-size:10px;color:var(--ink-500);margin-top:14px;text-align:center;line-height:1.6;letter-spacing:.02em">
-      Secure payment via Payoneer · Cards, ACH, bank transfer<br>
+      Secure checkout · Cards & bank transfer<br>
       Once your payment is confirmed, we'll create your account and email your login details within 1 business day.
     </div>
     <div style="border-top:1px solid var(--nv-line);margin-top:22px;padding-top:14px;text-align:center">
@@ -10062,6 +10095,78 @@ function subEmailToGC(pid) {
   showToast('Opened your email with the estimate filled in. Attach the PDF and send.', 'success');
 }
 
+// The estimate as a plain-text email body — cover note + line-item breakdown +
+// total. nvEmailHtml() wraps this in the branded NOVANTU template when sending.
+function subEstimateEmailBody(pid) {
+  const gc = subGcGet(pid);
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  const est = ST.estimates[pid] || { groups: [] };
+  const t = builderTotals(pid);
+  const L = [];
+  L.push(`Hi ${gc.contact || gc.company || 'there'},`);
+  L.push('');
+  L.push(`Please find our estimate for ${p.name} below.`);
+  L.push('');
+  for (const g of (est.groups || [])) {
+    const gt = builderGroupTotals(pid, g.id);
+    L.push(`${g.code ? g.code + ' · ' : ''}${g.title || ''} — ${fmt$(gt.client)}`);
+    for (const it of (g.items || [])) {
+      const qty = Number(it.qty || 0), uc = Number(it.unitCost || 0), mk = Number(it.markup || 0);
+      const line = qty * uc * (1 + mk / 100);
+      L.push(`   • ${it.title || it.code} — ${qty} ${it.unit || ''} — ${fmt$(line)}`);
+    }
+  }
+  L.push('');
+  L.push(`TOTAL: ${fmt$(t.client)}`);
+  L.push('');
+  L.push('Happy to walk through any line. Thank you for the opportunity.');
+  L.push('');
+  L.push(subSenderName());
+  return L.join('\n');
+}
+
+// Send the estimate straight from the user's connected Gmail (the "linked"
+// send, like Enterprise) — capped on the free trial.
+async function subSendEstimateEmail(pid) {
+  const gc = subGcGet(pid);
+  if (!gc.email) { showToast('Add the GC / client email first.', 'warn'); return; }
+  const est = ST.estimates[pid];
+  if (!est || !(est.groups || []).length) { showToast('Build the estimate in the Builder first.', 'warn'); setTab('builder'); ST.builderSelProj = pid; render(); return; }
+  const uid = AUTH.user?.id;
+  if (!uid) { showToast('Sign in first.', 'warn'); return; }
+  // Must have Gmail connected. If we don't know yet, check; if not connected, guide.
+  const gst = ST.gmailStatus?.[uid];
+  if (!gst || !gst.checked) { showToast('Checking your email connection…', 'info'); gmailCheckStatus(); return; }
+  if (!gst.connected) {
+    showToast('Connect your Gmail first (Settings → Email · Send from your Gmail), then try again.', 'warn');
+    return;
+  }
+  if (!trialGuardEmail()) return; // free-trial email cap
+
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  const subject = `Estimate — ${p.name} — ${subSenderName()}`;
+  const body = subEstimateEmailBody(pid);
+  ST.subSendingEmail = pid; render();
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/gmail/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify({
+        userId: uid, to: gc.email, subject, body,
+        html: nvEmailHtml(body), fromName: subSenderName(),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    subLogSend(pid, gc.email, subject);
+    showToast(`Estimate emailed to ${gc.email} from ${gst.email || 'your Gmail'}.`, 'success');
+  } catch (e) {
+    showToast('Send failed: ' + (e.message || e), 'error');
+  } finally {
+    ST.subSendingEmail = null; render();
+  }
+}
+
 function subGenerateEstimatePDF(pid) {
   const est = ST.estimates[pid];
   if (!est || !(est.groups || []).length) {
@@ -10094,6 +10199,13 @@ function buildSubGcDeliverySection(p) {
   const hasEstimate = (ST.estimates[pid]?.groups || []).length > 0;
   const lastSend = d.sends[d.sends.length - 1];
   const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString(); } catch (_e) { return iso; } };
+  const uid = AUTH.user?.id;
+  const gmailReady = !!(uid && ST.gmailStatus?.[uid]?.connected);
+  const sending = ST.subSendingEmail === pid;
+  // Auto-check the Gmail connection once so the send button reflects reality.
+  if (uid && !(ST.gmailStatus?.[uid]?.checked) && !(ST.gmailStatus?.[uid]?.checking)) {
+    setTimeout(() => { if (!(ST.gmailStatus?.[uid]?.checked)) gmailCheckStatus(); }, 50);
+  }
   const fld = (label, field, ph, type) => `<div style="display:flex;flex-direction:column;gap:3px;min-width:0">
       <div style="font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">${label}</div>
       <input type="${type||'text'}" value="${esc(gc[field]||'')}" placeholder="${esc(ph)}"
@@ -10115,10 +10227,16 @@ function buildSubGcDeliverySection(p) {
         ${fld('Phone', 'phone', '818-555-0000', 'tel')}
       </div>
 
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding-bottom:10px">
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding-bottom:6px">
+        <button class="btn btn-amber btn-sm" onclick="subSendEstimateEmail('${pid}')" ${sending?'disabled':''} title="Send the estimate straight from your connected email">${sending?'Sending…':'✉ Send estimate'}</button>
         <button class="btn btn-ghost btn-sm" onclick="subGenerateEstimatePDF('${pid}')" title="Open the builder estimate as a printable PDF"${hasEstimate?'':' style="opacity:.6"'}>↓ Estimate PDF</button>
-        <button class="btn btn-amber btn-sm" onclick="subEmailToGC('${pid}')" title="Open your email with the estimate + summary pre-filled">✉ Email estimate</button>
+        <button class="btn btn-ghost btn-sm" onclick="subEmailToGC('${pid}')" title="Open it in your own mail app instead (attach the PDF)">✉ Open in mail app</button>
         <button class="btn btn-ghost btn-sm" onclick="subLogFollowUp('${pid}')" title="Log a call / email you made to chase this estimate">＋ Log follow-up</button>
+      </div>
+      <div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);padding-bottom:10px;line-height:1.5">
+        ${gmailReady
+          ? `Sends from your connected email${isTrialPlan() ? ` · trial: ${trialEmailsLeft()}/${TRIAL_LIMITS.emails} sends left` : ''}`
+          : `<span style="color:var(--amber)">Connect your email</span> in Settings → Email to send directly — or use “Open in mail app”.`}
       </div>
 
       <div style="display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--text2);border-top:1px dashed var(--border);padding-top:10px">
@@ -11728,6 +11846,7 @@ function buildTrialWelcomeModal() {
           ${inc('<b>1 project</b> end-to-end')}
           ${inc(`<b>${TRIAL_LIMITS.aiCalls} AI actions</b> — Ask AI, Read Plans, Compare Plans`)}
           ${inc(`<b>${TRIAL_LIMITS.planUploads} plan PDFs</b> for AI take-off (25 pages each)`)}
+          ${inc(`<b>${TRIAL_LIMITS.emails} emails</b> sent from your own address`)}
           ${inc('Full <b>Builder estimate</b> → PDF → email to your GC')}
           ${inc('GC follow-up tracking + auto <b>Summary</b>')}
         </div>
@@ -11735,13 +11854,13 @@ function buildTrialWelcomeModal() {
           <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">Unlock by upgrading</div>
           ${lock('<b>Unlimited</b> projects')}
           ${lock('Your own <b>company name</b> & branding on PDFs')}
-          ${lock('<b>Send Center</b> — email straight from NOVANTU')}
+          ${lock('<b>Unlimited</b> email sends')}
           ${lock('Multiple <b>team users</b>')}
         </div>
       </div>
 
       <div style="font-family:var(--mono);font-size:10px;color:var(--text2);background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:9px 12px;margin-top:8px;line-height:1.6">
-        Usage remaining: <b>${trialAILeft()}/${TRIAL_LIMITS.aiCalls}</b> AI actions · <b>${trialUploadsLeft()}/${TRIAL_LIMITS.planUploads}</b> uploads. You'll see this live in the app.
+        Usage remaining: <b>${trialAILeft()}/${TRIAL_LIMITS.aiCalls}</b> AI · <b>${trialUploadsLeft()}/${TRIAL_LIMITS.planUploads}</b> uploads · <b>${trialEmailsLeft()}/${TRIAL_LIMITS.emails}</b> emails. You'll see this live in the app.
       </div>
 
       <div class="modal-btns" style="margin-top:16px">
@@ -11763,14 +11882,17 @@ function buildUpsellModal() {
     projects: `Your current plan includes ${max} project${max===1?'':'s'}. Upgrade to manage your whole pipeline — unlimited projects, plus more tools.`,
     ai:       `Your free trial includes ${TRIAL_LIMITS.aiCalls} AI actions (Ask AI, Read Plans, Compare Plans). Upgrade for higher limits and the full estimating workflow.`,
     plans:    `Your free trial lets you upload ${TRIAL_LIMITS.planUploads} plan PDFs. Upgrade to upload your whole set and run AI take-off across every sheet.`,
+    emails:   `Your free trial includes ${TRIAL_LIMITS.emails} emails sent from NOVANTU. Upgrade to send unlimited estimates & follow-ups from your own address.`,
     branding: `Editing your company name & branding is available on paid plans. Upgrade to white-label your estimates and portal.`,
   };
   const TITLE = {
     projects: `You've reached your ${planName} limit`,
     ai:       `You've used your trial AI actions`,
     plans:    `You've reached your trial upload limit`,
+    emails:   `You've used your trial email sends`,
     branding: `Branding is a paid feature`,
   };
+  const hasCheckout = anyCheckoutConfigured();
   return `<div class="backdrop" onclick="if(event.target===this){ST.upsellModal=null;render()}">
     <div class="modal" style="max-width:480px" onclick="event.stopPropagation()">
       <div style="text-align:center;margin-bottom:6px">
@@ -11780,24 +11902,30 @@ function buildUpsellModal() {
       </div>
 
       <div style="display:flex;flex-direction:column;gap:10px;margin:20px 0 8px">
-        ${paidPlans.map(p => `
+        ${paidPlans.map(p => {
+          const url = planCheckoutUrl(p.id, 'monthly');
+          return `
           <div style="display:flex;align-items:center;gap:12px;padding:13px 15px;border:1px solid var(--border);border-radius:var(--r2);background:var(--bg1)">
-            <div style="flex:1">
+            <div style="flex:1;min-width:0">
               <div style="font-family:var(--sans);font-weight:700;font-size:14px;color:var(--ink-900)">${p.name} <span style="font-family:var(--mono);font-weight:400;font-size:11px;color:var(--text3)">· unlimited projects</span></div>
               <div style="font-family:var(--mono);font-size:10.5px;color:var(--text3);margin-top:2px">${esc(p.tagline)}</div>
             </div>
             <div style="font-family:var(--sans);font-weight:800;font-size:18px;color:var(--ink-900);white-space:nowrap">$${p.price}<span style="font-family:var(--mono);font-size:11px;font-weight:400;color:var(--text3)">/mo</span></div>
-          </div>`).join('')}
+            ${url ? `<a class="btn btn-amber btn-sm" href="${esc(url)}" target="_blank" rel="noopener" onclick="setTimeout(()=>{ST.upsellModal=null;render()},150)" style="text-decoration:none;white-space:nowrap">Choose →</a>` : ''}
+          </div>`;
+        }).join('')}
       </div>
+
+      ${hasCheckout ? `<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);text-align:center;margin:2px 0 2px">${esc(BILLING.provider)} · cancel anytime${BILLING.founderUrl?` · <a href="${esc(BILLING.founderUrl)}" target="_blank" rel="noopener" style="color:var(--amber)">founder $99/mo</a>`:''}</div>` : ''}
 
       ${isMaster ? `
         <div style="font-family:var(--mono);font-size:10px;color:var(--text3);background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:10px 12px;margin:6px 0 4px">
-          You're the master. To upgrade this client, open <strong>Workspace settings → plan</strong> and switch them to a paid plan.
+          You're the master. After a client pays, open <strong>Workspace settings → plan</strong> and switch them to the paid plan.
         </div>` : ''}
 
       <div class="modal-btns" style="margin-top:16px">
         <button class="btn btn-ghost" onclick="ST.upsellModal=null;render()">Maybe later</button>
-        <a class="btn btn-amber" href="mailto:kisedaniel@gmail.com?subject=${encodeURIComponent('Upgrade my Novantu plan')}&body=${encodeURIComponent("Hi — I'd like to upgrade my Novantu plan to add more projects.\n\nWorkspace: " + (ws?.name||'') )}" onclick="setTimeout(()=>{ST.upsellModal=null;render()},100)">Contact to upgrade →</a>
+        ${hasCheckout ? '' : `<a class="btn btn-amber" href="mailto:${esc(NV_CONTACT_EMAIL)}?subject=${encodeURIComponent('Upgrade my Novantu plan')}&body=${encodeURIComponent("Hi — I'd like to upgrade my Novantu plan.\n\nWorkspace: " + (ws?.name||'') )}" onclick="setTimeout(()=>{ST.upsellModal=null;render()},100)">Contact to upgrade →</a>`}
       </div>
     </div>
   </div>`;
@@ -12789,7 +12917,7 @@ function buildDraftReviewModal() {
   return `<div class="backdrop" onclick="if(event.target===this){ST.estimatorDraft=null;render()}">
     <div class="modal modal-wide" style="max-width:680px" onclick="event.stopPropagation()">
       <div class="modal-title">✨ AI draft estimate</div>
-      <div class="modal-sub">${esc(proj?.name || '')} · built from your price list · review before adding</div>
+      <div class="modal-sub">${esc(proj?.name || '')} · built from your take-off prices · review before adding</div>
       ${d.notes ? `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;margin:12px 0;line-height:1.5">${esc(d.notes)}</div>` : ''}
       <div style="max-height:46vh;overflow:auto;margin:10px 0;padding-right:4px">${groupsHtml || '<div style="color:var(--text3);font-style:italic;padding:20px;text-align:center">No items left.</div>'}</div>
       <div style="display:flex;justify-content:space-between;align-items:baseline;border-top:2px solid var(--ink-700);padding-top:10px;margin-top:4px">
@@ -12854,7 +12982,7 @@ function buildEstAskAI(p, e) {
         <div style="width:26px;height:26px;border-radius:50%;flex-shrink:0;background:${isUser?'var(--amber)':'var(--bg3)'};border:1px solid ${isUser?'var(--amber-border)':'var(--border)'};display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9px;font-weight:600;color:${isUser?'var(--bone-50)':'var(--text2)'};margin-top:2px">
           ${isUser?'YOU':'AI'}
         </div>
-        <div style="max-width:88%;background:${isUser?'var(--bg3)':'var(--bg1)'};border:1px solid var(--border);border-radius:${isUser?'10px 2px 10px 10px':'2px 10px 10px 10px'};padding:10px 12px;font-family:var(--sans);font-size:12px;color:var(--text);line-height:1.55">
+        <div style="max-width:92%;background:${isUser?'var(--bg3)':'var(--bg1)'};border:1px solid var(--border);border-radius:${isUser?'10px 2px 10px 10px':'2px 10px 10px 10px'};padding:11px 14px;font-family:var(--sans);font-size:12.5px;color:var(--text);line-height:1.6">
           ${isStreamingThis
             ? `<span id="est-chat-stream-target">${fmt(msg.content)}</span><span class="est-cursor">▋</span>`
             : `<span>${fmt(msg.content)}</span>`}
@@ -12884,11 +13012,19 @@ function buildEstAskAI(p, e) {
           Ask AI &nbsp;<span style="font-weight:400;color:var(--text2);font-size:12px">/ ${esc(p.name)}</span>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
-          ${isSubAccount() ? `<button onclick="estDraftEstimate('${p.id}')" ${ST.estimatorDraftLoading?'disabled':''} class="est-askai-close" style="font-size:11px;font-family:var(--mono);letter-spacing:.04em;padding:0 10px;background:var(--amber);color:var(--bone-50);border-color:var(--amber-border)" title="Let the AI draft an estimate from your price list">${ST.estimatorDraftLoading===p.id?'Drafting…':'✨ Draft estimate'}</button>` : ''}
           ${chat.length ? `<button onclick="estClearChat('${p.id}')" class="est-askai-close" style="font-size:11px;font-family:var(--mono);letter-spacing:.04em;padding:0 8px" title="Clear history">Clear</button>` : ''}
           <button class="est-askai-close" onclick="estCloseAskAI()" aria-label="Close">×</button>
         </div>
       </div>
+
+      ${isSubAccount() ? `
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg1)">
+        <button onclick="estDraftEstimate('${p.id}')" ${ST.estimatorDraftLoading?'disabled':''}
+          style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:${ST.estimatorDraftLoading===p.id?'var(--bg2)':'var(--amber)'};color:${ST.estimatorDraftLoading===p.id?'var(--text3)':'var(--bone-50)'};border:1px solid var(--amber-border);border-radius:var(--r2);padding:9px 12px;font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.04em;cursor:${ST.estimatorDraftLoading===p.id?'wait':'pointer'}"
+          title="Let the AI draft an estimate from your take-off price list">
+          ${ST.estimatorDraftLoading===p.id?'<span class="rp-spinner"></span> Drafting from your prices…':'✨ Draft estimate from my take-off prices'}
+        </button>
+      </div>` : ''}
 
       ${ctxBar}
 
@@ -12929,7 +13065,7 @@ function buildEstAskAI(p, e) {
         </div>
         <div style="font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:var(--text3);margin-top:6px">
           Enter ↵ to send · Shift+Enter for new line · Context: setup + plans + codes + RFIs
-          ${isTrialPlan() ? `<span style="color:${trialAILeft()<=2?'var(--amber)':'var(--text3)'}"> · Trial: ${trialAILeft()}/${TRIAL_LIMITS.aiCalls} AI actions left · ${trialUploadsLeft()}/${TRIAL_LIMITS.planUploads} uploads left</span>` : ''}
+          ${isTrialPlan() ? `<span style="color:${trialAILeft()<=2?'var(--amber)':'var(--text3)'}"> · Trial: ${trialAILeft()}/${TRIAL_LIMITS.aiCalls} AI · ${trialUploadsLeft()}/${TRIAL_LIMITS.planUploads} uploads · ${trialEmailsLeft()}/${TRIAL_LIMITS.emails} emails left</span>` : ''}
         </div>
       </div>
     </aside>
@@ -15012,7 +15148,7 @@ function tryAddProject() {
 // The counters live in ST.settings (synced) — a soft client-side guard, backed by
 // the server-side page cap in the ask-ai edge function for the heavy vision calls.
 // (The master preview bypasses every trial cap.)
-const TRIAL_LIMITS = { planUploads: 3, aiCalls: 10 };
+const TRIAL_LIMITS = { planUploads: 3, aiCalls: 10, emails: 5 };
 let _trialWelcomeShownSession = false; // gate so the welcome modal shows once per login
 
 function currentPlanId() {
@@ -15032,12 +15168,13 @@ function canEditBranding() {
 function trialUsage() {
   if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   if (!ST.settings._trialUsage || typeof ST.settings._trialUsage !== 'object') {
-    ST.settings._trialUsage = { aiCalls: 0, planUploads: 0 };
+    ST.settings._trialUsage = { aiCalls: 0, planUploads: 0, emails: 0 };
   }
   return ST.settings._trialUsage;
 }
 function trialAILeft()    { return Math.max(0, TRIAL_LIMITS.aiCalls    - (trialUsage().aiCalls    || 0)); }
 function trialUploadsLeft(){ return Math.max(0, TRIAL_LIMITS.planUploads - (trialUsage().planUploads || 0)); }
+function trialEmailsLeft() { return Math.max(0, TRIAL_LIMITS.emails     - (trialUsage().emails     || 0)); }
 
 // Guard an AI action. Returns true if allowed (and books one use); else shows the
 // upsell and returns false. No-op (always allowed) off the trial plan.
@@ -15063,6 +15200,19 @@ function trialGuardPlanUpload() {
     return false;
   }
   u.planUploads = (u.planUploads || 0) + 1;
+  saveSt();
+  return true;
+}
+// Guard a NOVANTU-sent (linked Gmail) email. Same contract.
+function trialGuardEmail() {
+  if (!isTrialPlan()) return true;
+  const u = trialUsage();
+  if ((u.emails || 0) >= TRIAL_LIMITS.emails) {
+    ST.upsellModal = { reason: 'emails' };
+    render();
+    return false;
+  }
+  u.emails = (u.emails || 0) + 1;
   saveSt();
   return true;
 }
