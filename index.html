@@ -4707,6 +4707,8 @@ async function loadSt() {
     ST.estimatorDraft = null;
     ST.estimatorDraftLoading = null;
     ST.subSendingEmail = null;
+    ST.estEmailReview = null;
+    if (typeof _estPortalChecked !== 'undefined' && _estPortalChecked.clear) _estPortalChecked.clear();
     if (ST.estimator) {
       for (const pid of Object.keys(ST.estimator)) {
         const e = ST.estimator[pid];
@@ -5153,9 +5155,11 @@ async function initAuth() {
     const h = window.location.hash || '';
     const sm = h.match(/^#sub\/(.+)$/);
     const om = h.match(/^#owner\/(.+)$/);
-    if (sm) { ST.subPortalView = { token: sm[1], step: 'pick', pickedSid: null }; ST.ownerPortalView = null; portalLoad(sm[1]); }
-    else if (om) { ST.ownerPortalView = { token: om[1] }; ST.subPortalView = null; }
-    else { ST.subPortalView = null; ST.ownerPortalView = null; }
+    const em = h.match(/^#estimate\/(.+)$/);
+    if (sm) { ST.subPortalView = { token: sm[1], step: 'pick', pickedSid: null }; ST.ownerPortalView = null; ST.estPortalView = null; portalLoad(sm[1]); }
+    else if (om) { ST.ownerPortalView = { token: om[1] }; ST.subPortalView = null; ST.estPortalView = null; }
+    else if (em) { ST.estPortalView = { token: em[1] }; ST.subPortalView = null; ST.ownerPortalView = null; estPortalLoad(em[1]); }
+    else { ST.subPortalView = null; ST.ownerPortalView = null; ST.estPortalView = null; }
   }
   checkSubHash();
   window.addEventListener('hashchange', () => { checkSubHash(); render(); });
@@ -5915,6 +5919,7 @@ function render() {
     ST.upsellModal ? 'upsell' : '',
     ST.subSummaryModal ? 'subsum' : '',
     ST.estimatorDraft ? 'aidraft' : '',
+    ST.estEmailReview ? 'emailrev' : '',
   ].filter(Boolean).join('|');
   const overlayJustOpened = overlaySig && overlaySig !== _lastOverlaySig;
   _lastOverlaySig = overlaySig;
@@ -6840,7 +6845,7 @@ function builderImportFromBids(pid) {
     if ((g.items||[]).some(it => it.code === cat)) continue;
     const eff = Number(sel.bid.discPrice || sel.bid.price || 0);
     g.items = g.items || [];
-    g.items.push({ id: 'i_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), code: cat, title: cat, description: 'From selected bid · ' + sel.sub.company + (sel.bid.comments ? ' · ' + sel.bid.comments : ''), qty: 1, unit: 'lot', unitCost: eff, costType: 'Subcontractor', markup: 0, taxable: false });
+    g.items.push({ id: 'i_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), code: cat, title: cat, description: 'From selected bid · ' + sel.sub.company + (sel.bid.comments ? ' · ' + sel.bid.comments : ''), qty: 1, unit: 'lot', unitCost: eff, costType: 'Subcontractor', markup: (Number(getSettings().defaultMarkup?.Subcontractor) || 0), taxable: false });
     added++;
   }
   if (added === 0) { alert('No selected bids to import.'); return; }
@@ -6877,7 +6882,8 @@ function priceBookInsert(pid) {
     let g = est.groups.find(x => x.code === code);
     if (!g) { g = { id: 'g_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), code, title: code, items: [] }; est.groups.push(g); }
     g.items = g.items || [];
-    g.items.push({ id: 'i_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), code: it.cat || '', title: it.title, description: '', qty: 1, unit: it.unit || '', unitCost: Number(it.unitCost) || 0, costType: it.costType || 'None', markup: (getSettings().defaultMarkup?.[it.costType] || 0), taxable: false });
+    const pbCt = it.costType || 'Materials';
+    g.items.push({ id: 'i_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), code: it.cat || '', title: it.title, description: '', qty: 1, unit: it.unit || '', unitCost: Number(it.unitCost) || 0, costType: pbCt, markup: (Number(getSettings().defaultMarkup?.[pbCt]) || 0), taxable: false });
     added++;
   }
   ST.priceBookModal = null; saveSt(); render();
@@ -7106,7 +7112,7 @@ function tradeCalcAdd() {
   if (!g) { g = { id: 'g_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), code, title: code, items: [] }; est.groups.push(g); }
   const defTitle = { volume: 'Concrete', area: 'Area', linear: 'Linear run', schedule: 'Openings' }[m.type] || 'Take-off';
   g.items = g.items || [];
-  g.items.push({ id: 'i_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), code: cat || '', title: (m._desc || '').trim() || defTitle, description: 'Calculated take-off', qty: c.qty, unit: c.unit, unitCost: f(m._uc), costType: 'None', markup: (getSettings().defaultMarkup?.['None'] || 0), taxable: false });
+  g.items.push({ id: 'i_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), code: cat || '', title: (m._desc || '').trim() || defTitle, description: 'Calculated take-off', qty: c.qty, unit: c.unit, unitCost: f(m._uc), costType: 'Equipment', markup: (Number(getSettings().defaultMarkup?.Equipment) || 0), taxable: false });
   ST.tradeCalcModal = null; saveSt(); render();
   showToast(`Added ${c.qty} ${c.unit} to the estimate.`, 'success');
 }
@@ -7795,6 +7801,8 @@ async function subPortalDeclineSubmit() {
 }
 
 const PORTAL_FN = (typeof SUPABASE_URL !== 'undefined' ? SUPABASE_URL : '') + '/functions/v1/portal';
+const ESTIMATE_PORTAL_FN = (typeof SUPABASE_URL !== 'undefined' ? SUPABASE_URL : '') + '/functions/v1/estimate-portal';
+const _estPortalChecked = new Set(); // pids whose portal status we've pulled this session
 
 // Load the portal snapshot from the server (works with no account).
 async function portalLoad(token) {
@@ -7940,6 +7948,207 @@ function buildPortalMessaging(token, sid) {
     <div class="foot"><input type="text" placeholder="Type a message…" class="minp" style="flex:1" onkeydown="if(event.key==='Enter')portalSendChat('${token}','${sid}',this)"><button class="btn btn-accent btn-sm" onclick="portalSendChat('${token}','${sid}',this.previousElementSibling)">Send →</button></div>
   </div>`;
 }
+
+// ============================================================
+// ESTIMATE DELIVERY PORTAL (GC / owner facing) — mirrors the sub portal
+// ────────────────────────────────────────────────────────────
+// The sub sends an estimate; the GC/owner opens #estimate/<token>, sees the
+// breakdown, sets the outcome (waiting/awarded/lost) and can leave a message —
+// no account. Backed by the 'estimate-portal' edge function + estimate_deliveries.
+// Degrades gracefully: if the backend isn't deployed, the link just won't resolve
+// and the email still sends with the breakdown in its body.
+// ============================================================
+
+// Snapshot the current Builder estimate into the portal's group shape.
+function estPortalBuildGroups(pid) {
+  const est = ST.estimates[pid] || { groups: [] };
+  return (est.groups || []).map(g => {
+    const gt = builderGroupTotals(pid, g.id);
+    return {
+      code: g.code || '', title: g.title || '', total: gt.client,
+      items: (g.items || []).map(it => {
+        const qty = Number(it.qty || 0), uc = Number(it.unitCost || 0), mk = Number(it.markup || 0);
+        return { title: it.title || it.code || '', qty, unit: it.unit || '', line: qty * uc * (1 + mk / 100) };
+      }),
+    };
+  });
+}
+
+// Create / update the delivery row and return the shareable link (or null on failure).
+async function estPortalEnsure(pid) {
+  if (!sb || !AUTH.session || !ST.activeWorkspace) return null;
+  const d = subDeliveryEnsure(pid);
+  if (!d.token) d.token = 'e_' + Math.random().toString(36).slice(2, 12);
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  const gc = subGcGet(pid);
+  const t = builderTotals(pid);
+  const row = {
+    token: d.token, workspace_id: ST.activeWorkspace, pid,
+    project_name: p.name || '', sender_name: subSenderName(),
+    gc_company: gc.company || '', gc_contact: gc.contact || '', gc_email: gc.email || '',
+    total: t.client, groups: estPortalBuildGroups(pid), status: d.status || 'open',
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    const { error } = await sb.from('estimate_deliveries').upsert(row, { onConflict: 'token' });
+    if (error) throw error;
+    saveSt();
+    return window.location.origin + window.location.pathname + '#estimate/' + d.token;
+  } catch (e) {
+    console.warn('estPortalEnsure failed (estimate link disabled until backend deployed):', e?.message || e);
+    return null;
+  }
+}
+
+// Pull the GC/owner's response (status + messages) back into the sub's project.
+async function estPortalRefresh(pid, force) {
+  const d = subDeliveryGet(pid);
+  if (!d.token) return;
+  if (!force && _estPortalChecked.has(pid)) return;
+  _estPortalChecked.add(pid);
+  try {
+    const res = await fetch(`${ESTIMATE_PORTAL_FN}/load?token=${encodeURIComponent(d.token)}`, {
+      headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+    });
+    const data = await res.json();
+    if (!data.ok) return;
+    const dd = subDeliveryEnsure(pid);
+    let changed = false;
+    if (data.status && data.status !== 'open' && data.status !== dd.status) {
+      subSetStatus(pid, data.status); changed = true; // mirrors to bid stage too
+    }
+    const msgs = (data.messages || []).filter(m => m.sender === 'client');
+    if (JSON.stringify(msgs) !== JSON.stringify(dd.portalMessages || [])) { dd.portalMessages = msgs; changed = true; }
+    if (changed) { saveSt(); render(); }
+  } catch (_e) { /* offline / not deployed — ignore */ }
+}
+
+// ── Public portal data (GC/owner side) ───────────────────────────────────────
+async function estPortalLoad(token) {
+  if (!token) return;
+  if (!ST.estPortalData) ST.estPortalData = {};
+  if (ST.estPortalData[token]?.loading) return;
+  ST.estPortalData[token] = { ...(ST.estPortalData[token] || {}), loading: true };
+  render();
+  try {
+    const res = await fetch(`${ESTIMATE_PORTAL_FN}/load?token=${encodeURIComponent(token)}`, {
+      headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) { ST.estPortalData[token] = { loading: false, ok: false, error: data.error || 'expired' }; render(); return; }
+    ST.estPortalData[token] = { loading: false, ok: true, ...data };
+  } catch (e) {
+    ST.estPortalData[token] = { loading: false, ok: false, error: e.message };
+  }
+  render();
+}
+
+async function estPortalSetStatus(token, status) {
+  try {
+    const res = await fetch(`${ESTIMATE_PORTAL_FN}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify({ token, status }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'failed');
+    if (ST.estPortalData?.[token]) ST.estPortalData[token].status = status;
+    render();
+  } catch (e) { showToast('Could not save: ' + e.message, 'error'); }
+}
+
+async function estPortalPostMessage(token, inputEl) {
+  if (!inputEl) return;
+  const text = (inputEl.value || '').trim();
+  if (!text) return;
+  const pd = ST.estPortalData?.[token];
+  const author = pd?.gc?.company || 'Client';
+  inputEl.value = '';
+  try {
+    const res = await fetch(`${ESTIMATE_PORTAL_FN}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify({ token, author, text }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'failed');
+    if (pd) pd.messages = [...(pd.messages || []), { sender: 'client', author, text, created_at: new Date().toISOString() }];
+    render();
+  } catch (e) { showToast('Could not send: ' + e.message, 'error'); }
+}
+
+function buildEstimatePortal() {
+  const v = ST.estPortalView;
+  const pd = (ST.estPortalData || {})[v.token];
+  const wm = esc((pd && pd.sender) || 'NOVANTU');
+  const shell = (inner) => `<div class="sp-page"><div class="sp-wrap">${inner}</div></div>`;
+  const kicker = `<div class="sp-kicker"><span class="sq"></span><span class="brk">[</span> <b>${wm}</b> <span class="brk">/</span> ESTIMATE <span class="brk">]</span></div>`;
+
+  if (!pd || pd.loading) return shell(buildPortalLoader(wm));
+  if (!pd.ok) {
+    return shell(`<div class="sp-result">${kicker}
+      <div class="sp-stamp dead"><span class="corner tl"></span><span class="corner br"></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 5 L19 19 M19 5 L5 19"></path></svg></div>
+      <h1>Link expired</h1>
+      <p>This estimate link is no longer valid. Reach out to the sender for a fresh one.</p>
+      <div class="after">ERROR · TOKEN_EXPIRED · ${esc(v.token)}</div>
+    </div>`);
+  }
+
+  const projName = pd.project?.name || '';
+  const status = pd.status || 'open';
+  const groups = pd.groups || [];
+  const msgs = pd.messages || [];
+  const statusBtn = (k, label, col) => `<button onclick="estPortalSetStatus('${esc(v.token)}','${k}')" style="font-family:var(--mono);font-size:12px;padding:9px 14px;border:1px solid ${status===k?col:'var(--line2,#c7bda4)'};background:${status===k?col:'transparent'};color:${status===k?'#fff':'inherit'};border-radius:8px;cursor:pointer">${label}</button>`;
+
+  return shell(`
+    ${kicker}
+    <h1 class="sp-h1">Estimate for ${esc(projName)}</h1>
+    <div class="sp-meta"><b>From ${esc(pd.sender || '')}</b>${pd.gc?.company?`<span class="sep">·</span>for ${esc(pd.gc.company)}`:''}</div>
+
+    <div class="sp-card">
+      <div class="sp-card-head"><span class="modal-label">Estimate</span><span class="modal-label" style="color:var(--fg-4)">${groups.length} COST CODE${groups.length===1?'':'S'}</span></div>
+      <div class="sp-card-body" style="padding-top:8px">
+        ${groups.length ? groups.map(g => `
+          <div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--line,#d8cfba);padding-bottom:3px;margin-bottom:4px">
+              <b style="font-size:13px">${esc(g.code||'')} ${esc(g.title||'')}</b>
+              <b style="font-family:var(--mono);font-size:12px">${estFmtMoney(g.total)}</b>
+            </div>
+            ${(g.items||[]).map(it => `<div style="display:flex;justify-content:space-between;gap:10px;font-size:12.5px;color:var(--ink2,#3a352d);padding:2px 0"><span>${esc(it.title)}${it.qty?` <span style="color:#8a857a">· ${it.qty} ${esc(it.unit||'')}</span>`:''}</span><span style="font-family:var(--mono)">${estFmtMoney(it.line)}</span></div>`).join('')}
+          </div>`).join('') : '<div style="color:#8a857a;font-style:italic">No line items.</div>'}
+        <div style="display:flex;justify-content:space-between;align-items:center;border-top:2px solid var(--ink,#181613);padding-top:10px;margin-top:6px">
+          <span style="font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase">Total</span>
+          <span style="font-family:var(--sans);font-weight:800;font-size:22px">${estFmtMoney(pd.total)}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sp-card">
+      <div class="sp-card-head"><span class="modal-label">Your decision</span></div>
+      <div class="sp-card-body" style="display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${statusBtn('waiting','Still reviewing','#c8780f')}
+          ${statusBtn('awarded','Awarded ✓','#3d6e4a')}
+          ${statusBtn('lost','Going another way','#c44a2c')}
+        </div>
+        <div>
+          <div class="modal-label" style="margin-bottom:6px">Leave a message</div>
+          <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
+            ${msgs.map(m => `<div style="font-size:12.5px;color:var(--ink2,#3a352d)"><b style="font-family:var(--mono);font-size:10px;color:#8a857a">${m.sender==='client'?'You':esc(pd.sender||'Sender')}:</b> ${esc(m.text)}</div>`).join('') || '<div style="font-size:12px;color:#8a857a;font-style:italic">No messages yet.</div>'}
+          </div>
+          <div style="display:flex;gap:8px">
+            <input id="estp-msg" type="text" placeholder="Add a message…" style="flex:1;border:1px solid var(--line2,#c7bda4);border-radius:8px;padding:9px 11px;font-family:var(--sans);font-size:13px;outline:none" onkeydown="if(event.key==='Enter')estPortalPostMessage('${esc(v.token)}',this)">
+            <button class="btn btn-primary" onclick="estPortalPostMessage('${esc(v.token)}',document.getElementById('estp-msg'))">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="after" style="text-align:center">Sent securely with NOVANTU · ${esc(pd.sender||'')}</div>
+  `);
+}
+function estFmtMoney(n) { const v = Math.round(Number(n)||0); return '$' + v.toLocaleString(); }
 
 function buildSubPortal() {
   const v = ST.subPortalView;
@@ -9611,6 +9820,7 @@ function buildTopBar({recentBids, totalBids, userDisplay}) {
 function buildApp() {
   if (ST.subPortalView) return buildSubPortal();
   if (ST.ownerPortalView) return buildOwnerPortalV2();
+  if (ST.estPortalView) return buildEstimatePortal();
   if (!AUTH.loaded && !window.BYPASS_LOGIN) return '<div style="padding:40px;font-family:var(--mono);color:var(--text3)">Loading…</div>';
   if (!AUTH.session && !window.BYPASS_LOGIN) return buildLoginScreen();
 
@@ -9688,6 +9898,7 @@ function buildApp() {
       ${ST.subSummaryModal ? buildSubSummaryModal() : ''}
       ${ST.trialWelcome ? buildTrialWelcomeModal() : ''}
       ${ST.estimatorDraft ? buildDraftReviewModal() : ''}
+      ${ST.estEmailReview ? buildEstEmailReviewModal() : ''}
     </div>`;
 }
 
@@ -10007,7 +10218,13 @@ function subGcSet(pid, field, val) {
 }
 function subDeliveryGet(pid) {
   const d = (ST.overrides[pid] && ST.overrides[pid]._delivery) || {};
-  return { sends: Array.isArray(d.sends) ? d.sends : [], followUps: Array.isArray(d.followUps) ? d.followUps : [] };
+  return {
+    sends: Array.isArray(d.sends) ? d.sends : [],
+    followUps: Array.isArray(d.followUps) ? d.followUps : [],
+    status: d.status || '',
+    token: d.token || '',
+    portalMessages: Array.isArray(d.portalMessages) ? d.portalMessages : [],
+  };
 }
 function subDeliveryEnsure(pid) {
   if (!ST.overrides[pid]) ST.overrides[pid] = {};
@@ -10032,8 +10249,59 @@ function subLogFollowUp(pid) {
   saveSt(); render();
   showToast('Follow-up logged.', 'success');
 }
+function subSetStatus(pid, status) {
+  const d = subDeliveryEnsure(pid);
+  d.status = status || '';
+  // Mirror onto the bid stage so the project board reflects the outcome.
+  if (typeof setBidStage === 'function') {
+    if (status === 'awarded') setBidStage(pid, 'awarded');
+    else if (status === 'lost') setBidStage(pid, 'lost');
+    else if (status === 'waiting') setBidStage(pid, 'submitted');
+  }
+  saveSt(); render();
+  if (status) showToast('Outcome set: ' + status + '.', 'success');
+}
 function subSenderName() {
   return (getSettings().print?.companyName) || (getSettings().brand?.wordmark) || (ST.workspaces?.[ST.activeWorkspace]?.name) || 'our company';
+}
+
+// Review-before-send: show the estimate email exactly as it will go out, with a
+// reminder to confirm the template/branding, then send from the connected Gmail.
+function buildEstEmailReviewModal() {
+  const pid = ST.estEmailReview; if (!pid) return '';
+  const p = allProjects().find(x => x.id === pid); if (!p) return '';
+  const gc = subGcGet(pid);
+  const uid = AUTH.user?.id;
+  const gmailReady = !!(uid && ST.gmailStatus?.[uid]?.connected);
+  const hasEstimate = (ST.estimates[pid]?.groups || []).length > 0;
+  const subject = `Estimate — ${p.name} — ${subSenderName()}`;
+  const body = subEstimateEmailBody(pid);
+  return `<div class="backdrop" onclick="if(event.target===this){ST.estEmailReview=null;render()}">
+    <div class="modal modal-wide" style="max-width:600px" onclick="event.stopPropagation()">
+      <div class="modal-title">Review estimate email</div>
+      <div class="modal-sub">Check it reads right under your brand before it goes out.</div>
+
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px">
+        <div><div class="modal-label">To</div><div style="font-family:var(--mono);font-size:12px;color:${gc.email?'var(--ink-900)':'var(--amber)'}">${esc(gc.email || 'Add the GC / client email above first')}</div></div>
+        <div><div class="modal-label">From</div><div style="font-family:var(--mono);font-size:12px;color:var(--ink-900)">${esc(subSenderName())}${gmailReady ? ' · ' + esc(ST.gmailStatus[uid].email||'your Gmail') : '<span style="color:var(--amber)"> · connect your email in Settings → Email</span>'}</div></div>
+        <div><div class="modal-label">Subject</div><div style="font-family:var(--mono);font-size:12px;color:var(--ink-900)">${esc(subject)}</div></div>
+        <div><div class="modal-label">Message <span style="color:var(--text3)">(your template — the full estimate breakdown is included)</span></div>
+          <pre style="background:var(--bg1);border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;font-family:var(--mono);font-size:11px;color:var(--text);white-space:pre-wrap;max-height:32vh;overflow:auto;margin:0">${esc(body)}</pre>
+        </div>
+      </div>
+
+      <div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:10px;line-height:1.6">
+        Tip — set your company name, logo & accent in <span style="color:var(--amber)">Settings → Brand</span> so the email is on-brand. Need to change the contact? Edit it on the project, then reopen this.
+        ${hasEstimate ? '' : '<br><span style="color:var(--amber)">⚠ This project has no Builder estimate yet — build it first so the breakdown isn\'t empty.</span>'}
+      </div>
+
+      <div class="modal-btns" style="margin-top:16px">
+        <button class="btn btn-ghost" onclick="ST.estEmailReview=null;render()">Cancel</button>
+        <button class="btn btn-ghost" onclick="ST.estEmailReview=null;subGenerateEstimatePDF('${pid}')">↓ Estimate PDF</button>
+        <button class="btn btn-amber" ${gc.email && gmailReady ? '' : 'disabled title="Add the email and connect your Gmail first"'} onclick="ST.estEmailReview=null;subSendEstimateEmail('${pid}')">✓ Looks good — send</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 // Build the auto-summary of everything done on the job, for the Summary modal,
@@ -10072,15 +10340,17 @@ function subSummaryText(pid, { forEmail = false } = {}) {
   return L.join('\n');
 }
 
-function subEmailToGC(pid) {
+async function subEmailToGC(pid) {
   const gc = subGcGet(pid);
   if (!gc.email) { showToast('Add the GC email first.', 'warn'); return; }
   const p = allProjects().find(x => x.id === pid) || { name: pid };
   const subject = `Estimate — ${p.name} — ${subSenderName()}`;
-  const body = subSummaryText(pid, { forEmail: true });
+  const link = await estPortalEnsure(pid);
+  let body = subEstimateEmailBody(pid);
+  if (link) body += `\n\nReview the estimate and reply online:\n${link}`;
   subLogSend(pid, gc.email, subject); // record before navigating
   window.location.href = `mailto:${encodeURIComponent(gc.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-  showToast('Opened your email with the estimate filled in. Attach the PDF and send.', 'success');
+  showToast('Opened your email with the estimate filled in.', 'success');
 }
 
 // The estimate as a plain-text email body — cover note + line-item breakdown +
@@ -10133,15 +10403,19 @@ async function subSendEstimateEmail(pid) {
 
   const p = allProjects().find(x => x.id === pid) || { name: pid };
   const subject = `Estimate — ${p.name} — ${subSenderName()}`;
-  const body = subEstimateEmailBody(pid);
   ST.subSendingEmail = pid; render();
+  // Publish the estimate to its portal and get the shareable link (a button in
+  // the email). Degrades to a body-only email if the portal backend isn't live.
+  const link = await estPortalEnsure(pid);
+  const baseBody = subEstimateEmailBody(pid);
+  const body = link ? `${baseBody}\n\nReview the estimate and reply online:\n\n${link}` : baseBody;
   try {
     const res = await fetch(`${SUPABASE_URL}/functions/v1/gmail/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
       body: JSON.stringify({
         userId: uid, to: gc.email, subject, body,
-        html: nvEmailHtml(body), fromName: subSenderName(),
+        html: nvEmailHtml(body, link ? { portalLink: link, portalLabel: 'View & respond to the estimate' } : {}), fromName: subSenderName(),
       }),
     });
     const data = await res.json();
@@ -10194,6 +10468,11 @@ function buildSubGcDeliverySection(p) {
   if (uid && !(ST.gmailStatus?.[uid]?.checked) && !(ST.gmailStatus?.[uid]?.checking)) {
     setTimeout(() => { if (!(ST.gmailStatus?.[uid]?.checked)) gmailCheckStatus(); }, 50);
   }
+  // Once sent, pull the GC/owner's portal response (status + messages) one time.
+  if (d.token && !_estPortalChecked.has(pid)) {
+    setTimeout(() => estPortalRefresh(pid), 60);
+  }
+  const portalMsgs = d.portalMessages || [];
   const fld = (label, field, ph, type) => `<div style="display:flex;flex-direction:column;gap:3px;min-width:0">
       <div style="font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">${label}</div>
       <input type="${type||'text'}" value="${esc(gc[field]||'')}" placeholder="${esc(ph)}"
@@ -10216,7 +10495,7 @@ function buildSubGcDeliverySection(p) {
       </div>
 
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding-bottom:6px">
-        <button class="btn btn-amber btn-sm" onclick="subSendEstimateEmail('${pid}')" ${sending?'disabled':''} title="Send the estimate straight from your connected email">${sending?'Sending…':'✉ Send estimate'}</button>
+        <button class="btn btn-amber btn-sm" onclick="ST.estEmailReview='${pid}';render()" ${sending?'disabled':''} title="Review your estimate email, then send it from your connected address">${sending?'Sending…':(lastSend?'✉ Send follow-up':'✉ Send estimate')}</button>
         <button class="btn btn-ghost btn-sm" onclick="subGenerateEstimatePDF('${pid}')" title="Open the builder estimate as a printable PDF"${hasEstimate?'':' style="opacity:.6"'}>↓ Estimate PDF</button>
         <button class="btn btn-ghost btn-sm" onclick="subEmailToGC('${pid}')" title="Open it in your own mail app instead (attach the PDF)">✉ Open in mail app</button>
         <button class="btn btn-ghost btn-sm" onclick="subLogFollowUp('${pid}')" title="Log a call / email you made to chase this estimate">＋ Log follow-up</button>
@@ -10227,7 +10506,26 @@ function buildSubGcDeliverySection(p) {
           : `<span style="color:var(--amber)">Connect your email</span> in Settings → Email to send directly — or use “Open in mail app”.`}
       </div>
 
-      <div style="display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--text2);border-top:1px dashed var(--border);padding-top:10px">
+      <div style="border-top:1px dashed var(--border);padding-top:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <div style="font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">Outcome${d.token?' · client can set this from the link':''}</div>
+          ${d.token ? `<button onclick="estPortalRefresh('${pid}',true)" title="Pull the client's latest reply from the portal" style="background:transparent;border:none;color:var(--text3);cursor:pointer;font-family:var(--mono);font-size:10px">⟳ check replies</button>` : ''}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${[['waiting','Waiting on owner','var(--amber)'],['awarded','Awarded ✓','var(--green)'],['lost','Lost','var(--red)']].map(([k,label,col]) => {
+            const on = (d.status||'') === k;
+            return `<button onclick="subSetStatus('${pid}','${on?'':k}')" style="font-family:var(--mono);font-size:11px;padding:6px 12px;border:1px solid ${on?col:'var(--border)'};background:${on?col:'var(--bg)'};color:${on?'#fff':'var(--text2)'};border-radius:var(--r2);cursor:pointer">${label}</button>`;
+          }).join('')}
+        </div>
+        ${portalMsgs.length ? `<div style="margin-top:10px">
+          <div style="font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">Replies from ${esc(gc.company||'the client')}</div>
+          <div style="display:flex;flex-direction:column;gap:4px;max-height:120px;overflow:auto">
+            ${portalMsgs.map(m => `<div style="font-size:12px;color:var(--text2)"><b style="font-family:var(--mono);font-size:9px;color:var(--text3)">${esc(m.author||'Client')}:</b> ${esc(m.text)}</div>`).join('')}
+          </div>
+        </div>` : ''}
+      </div>
+
+      <div style="display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:10.5px;color:var(--text2);border-top:1px dashed var(--border);padding-top:10px;margin-top:10px">
         <div><span style="color:var(--text3)">Estimate</span> · <b style="color:var(--green)">${fmt$(t.client)}</b></div>
         <div><span style="color:var(--text3)">Last sent</span> · ${lastSend ? esc(fmtDate(lastSend.ts)) : '<span style="color:var(--amber)">not sent</span>'}</div>
         <div><span style="color:var(--text3)">Follow-ups</span> · <b>${d.followUps.length}</b></div>
@@ -10256,6 +10554,7 @@ function buildSubSummaryModal() {
 
       <div style="margin:14px 0 6px">
         ${row('GC / Client', esc(gc.company || '—') + (gc.contact ? ' · ' + esc(gc.contact) : ''))}
+        ${row('Outcome', (d.status === 'awarded') ? '<b style="color:var(--green)">Awarded ✓</b>' : (d.status === 'lost') ? '<b style="color:var(--red)">Lost</b>' : (d.status === 'waiting') ? '<b style="color:var(--amber)">Waiting on owner</b>' : '<span style="color:var(--text3)">Open</span>')}
         ${row('Estimate total', `<b style="color:var(--green)">${fmt$(t.client)}</b>`)}
         ${row('Your margin (profit)', `<b>${fmt$(t.markup)}</b>${t.client>0 ? ` · ${((t.markup/t.client)*100).toFixed(1)}%` : ''}`)}
         ${row('Scope', `${t.itemCount} line item${t.itemCount===1?'':'s'} · ${groups.length} cost code${groups.length===1?'':'s'}`)}
@@ -10375,7 +10674,8 @@ function buildProjBoxes(p) {
       }
     </div>
 
-    <!-- BOX 3: PEM Manager people -->
+    ${isSubAccount() ? '' : `
+    <!-- BOX 3: PEM Manager people (GC view only — a sub bidding to a GC doesn't track this) -->
     <div class="proj-box${btEditing?' editing':''}" onclick="${btEditing?'':'openProjBox(event,\''+p.id+'\',\'bt\')'}">
       <div class="pbox-label">PEM Manager</div>
       ${btPeople.length>0 ? `<div style="margin-bottom:4px;flex-wrap:wrap;display:flex">${btPeople.map((name,i)=>`<span class="bt-chip">${esc(name)}<button onclick="event.stopPropagation();removeBTPerson('${p.id}',${i})" title="Remove">✕</button></span>`).join('')}</div>` : ''}
@@ -10389,7 +10689,7 @@ function buildProjBoxes(p) {
         </div>` :
         `<div class="pbox-val${!btPeople.length?' empty':''}">${btPeople.length ? '' : 'Click to add people'}</div>`
       }
-    </div>
+    </div>`}
   </div>`;
 }
 
@@ -11835,20 +12135,22 @@ function buildTrialWelcomeModal() {
           ${inc(`<b>${TRIAL_LIMITS.aiCalls} AI actions</b> — Ask AI, Read Plans, Compare Plans`)}
           ${inc(`<b>${TRIAL_LIMITS.planUploads} plan PDFs</b> for AI take-off (25 pages each)`)}
           ${inc(`<b>${TRIAL_LIMITS.emails} emails</b> sent from your own address`)}
+          ${inc(`<b>${TRIAL_LIMITS.contacts} contacts</b> in your directory`)}
           ${inc('Full <b>Builder estimate</b> → PDF → email to your GC')}
           ${inc('GC follow-up tracking + auto <b>Summary</b>')}
         </div>
         <div style="border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;background:var(--bg)">
           <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">Unlock by upgrading</div>
-          ${lock('<b>Unlimited</b> projects')}
+          ${lock('<b>Unlimited AI</b> on the platform + more complex AI requests')}
+          ${lock('<b>Unlimited contacts</b> — GC\'s, clients & suppliers')}
+          ${lock('<b>Unlimited</b> projects & email sends')}
           ${lock('Your own <b>company name</b> & branding on PDFs')}
-          ${lock('<b>Unlimited</b> email sends')}
-          ${lock('Multiple <b>team users</b>')}
+          ${lock('Full custom <b>catalog</b> & multiple team users')}
         </div>
       </div>
 
       <div style="font-family:var(--mono);font-size:10px;color:var(--text2);background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:9px 12px;margin-top:8px;line-height:1.6">
-        Usage remaining: <b>${trialAILeft()}/${TRIAL_LIMITS.aiCalls}</b> AI · <b>${trialUploadsLeft()}/${TRIAL_LIMITS.planUploads}</b> uploads · <b>${trialEmailsLeft()}/${TRIAL_LIMITS.emails}</b> emails. You'll see this live in the app.
+        Usage remaining: <b>${trialAILeft()}/${TRIAL_LIMITS.aiCalls}</b> AI · <b>${trialUploadsLeft()}/${TRIAL_LIMITS.planUploads}</b> uploads · <b>${trialEmailsLeft()}/${TRIAL_LIMITS.emails}</b> emails · <b>${trialContactsLeft()}/${TRIAL_LIMITS.contacts}</b> contacts. You'll see this live in the app.
       </div>
 
       <div class="modal-btns" style="margin-top:16px">
@@ -11873,6 +12175,7 @@ function buildUpsellModal() {
     emails:   `Your free trial includes ${TRIAL_LIMITS.emails} emails sent from NOVANTU. Upgrade to send unlimited estimates & follow-ups from your own address.`,
     branding: `Editing your company name & branding is available on paid plans. Upgrade to white-label your estimates and portal.`,
     catalog:  `On the trial you can tweak prices on a starter catalog. Your full product catalog — every item at your real prices — is built for you in the personalized set-up that comes with a paid plan.`,
+    contacts: `Your free trial holds ${TRIAL_LIMITS.contacts} contacts. Upgrade for an unlimited directory of GC's, clients and suppliers.`,
   };
   const TITLE = {
     projects: `You've reached your ${planName} limit`,
@@ -11881,6 +12184,7 @@ function buildUpsellModal() {
     emails:   `You've used your trial email sends`,
     branding: `Branding is a paid feature`,
     catalog:  `Your full catalog is part of the set-up`,
+    contacts: `You've reached your trial contact limit`,
   };
   const acctLabel = isSubAccount() ? 'subcontractor' : 'general contractor';
   return `<div class="backdrop" onclick="if(event.target===this){ST.upsellModal=null;render()}">
@@ -14019,16 +14323,23 @@ function toPushToBid(pid) {
     est.groups.push(grp);
   }
 
-  // Push each line as a builder item
+  // Push each line as a builder item. Take-off lines default to the Equipment
+  // cost type, so they inherit the Equipment markup % set in Settings → Default
+  // markup. That markup is still editable per item in the Builder.
+  const eqMarkup = Number(getSettings().defaultMarkup?.Equipment) || 0;
   let pushed = 0;
   lines.forEach(({ row, qty }) => {
     grp.items.push({
       id: 'i_' + Date.now() + Math.random().toString(36).slice(2, 6),
-      description: row.name + (row.sub ? ' — ' + row.sub : ''),
+      code: row.code || '',
+      title: row.name,
+      description: row.sub || '',
       qty: qty,
       unit: row.unit,
       unitCost: row.perUnit,
-      notes: '',
+      costType: 'Equipment',
+      markup: eqMarkup,
+      taxable: false,
     });
     pushed++;
   });
@@ -15141,7 +15452,10 @@ function tryAddProject() {
 // The counters live in ST.settings (synced) — a soft client-side guard, backed by
 // the server-side page cap in the ask-ai edge function for the heavy vision calls.
 // (The master preview bypasses every trial cap.)
-const TRIAL_LIMITS = { planUploads: 3, aiCalls: 10, emails: 5, catalogItems: 8 };
+const TRIAL_LIMITS = { planUploads: 3, aiCalls: 10, emails: 5, catalogItems: 8, contacts: 10 };
+// How many contacts the trial directory holds (counts non-deleted added entries).
+function trialContactCount() { return (ST.addedSubs || []).filter(s => !ST.subOverrides?.[s.id]?._deleted).length; }
+function trialContactsLeft() { return Math.max(0, TRIAL_LIMITS.contacts - trialContactCount()); }
 let _trialWelcomeShownSession = false; // gate so the welcome modal shows once per login
 
 function currentPlanId() {
@@ -21785,6 +22099,10 @@ function confirmAddProj() {
 function confirmAddSub() {
   const company = document.getElementById('ns-company')?.value?.trim();
   if (!company) { alert('Enter company name'); return; }
+  // Free-trial directory cap.
+  if (isTrialPlan() && trialContactCount() >= TRIAL_LIMITS.contacts) {
+    ST.addSubModal = false; ST.upsellModal = { reason: 'contacts' }; render(); return;
+  }
   // Subs categorize by a single role (read straight off the select); GCs use codes.
   const roleSel = document.getElementById('ns-role');
   let codes = (ST.addSubSelCodes && ST.addSubSelCodes.length) ? ST.addSubSelCodes.slice() : [];
