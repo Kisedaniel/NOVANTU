@@ -4733,6 +4733,13 @@ async function loadSt() {
     portalSyncInbox();
     // Begin live multi-editor sync for the active workspace
     startWorkspaceSync();
+    // Show the trial welcome once per login (skips paid plans & master preview).
+    try {
+      if (!_trialWelcomeShownSession && typeof isTrialPlan === 'function' && isTrialPlan()) {
+        _trialWelcomeShownSession = true;
+        ST.trialWelcome = true;
+      }
+    } catch (_e) {}
   } catch(e) {
     console.error('Load failed:', e);
     setSaveStatus('error', e.message);
@@ -6995,7 +7002,27 @@ function tcDefaultParams(type) {
   if (type === 'tile')    return { box: '' };
   return {};
 }
-function openTradeCalc(pid) { ST.tradeCalcModal = { pid, type: 'volume', rows: [tradeCalcBlankRow('volume')], waste: '', params: {} }; render(); }
+// Which calculator tabs make sense for the active workspace. An HVAC sub never
+// pours concrete or hangs drywall — narrow the picker to what HVAC actually
+// measures (zone area, duct/linear, diffuser counts) and drop the rest.
+function tradeCalcTabsFor() {
+  const ALL_GEOM = [['volume', '▣ Concrete volume'], ['area', '▦ Area / per sf'], ['linear', '— Linear'], ['schedule', '⊞ Window / door schedule']];
+  const ALL_TRADE = [['drywall', '▭ Drywall sheets'], ['paint', '▨ Paint'], ['framing', '‖ Framing studs'], ['tile', '◧ Tile / flooring']];
+  const trade = (typeof wsSubTrade === 'function') ? wsSubTrade() : null;
+  if (trade === 'hvac') {
+    return {
+      geom: [['area', '▦ Zone area / sf'], ['linear', '— Duct / linear ft'], ['schedule', '⊞ Diffuser / grille count']],
+      trade: [],
+    };
+  }
+  return { geom: ALL_GEOM, trade: ALL_TRADE };
+}
+function openTradeCalc(pid) {
+  const tabs = tradeCalcTabsFor();
+  const firstType = (tabs.geom[0] && tabs.geom[0][0]) || 'volume';
+  ST.tradeCalcModal = { pid, type: firstType, rows: [tradeCalcBlankRow(firstType)], waste: '', params: {} };
+  render();
+}
 function tradeCalcSetType(t) { const m = ST.tradeCalcModal; if (!m) return; tradeCalcReadInputs(); m.type = t; m.rows = [tradeCalcBlankRow(t)]; m.params = tcDefaultParams(t); render(); }
 function tradeCalcAddRow() { const m = ST.tradeCalcModal; if (!m) return; tradeCalcReadInputs(); m.rows.push(tradeCalcBlankRow(m.type)); render(); }
 function tradeCalcDelRow(i) { const m = ST.tradeCalcModal; if (!m) return; tradeCalcReadInputs(); m.rows.splice(i, 1); if (!m.rows.length) m.rows.push(tradeCalcBlankRow(m.type)); render(); }
@@ -7065,8 +7092,9 @@ function tradeCalcAdd() {
 function buildTradeCalcModal() {
   const m = ST.tradeCalcModal; if (!m) return '';
   const type = m.type;
-  const GEOM = [['volume', '▣ Concrete volume'], ['area', '▦ Area / per sf'], ['linear', '— Linear'], ['schedule', '⊞ Window / door schedule']];
-  const TRADE = [['drywall', '▭ Drywall sheets'], ['paint', '▨ Paint'], ['framing', '‖ Framing studs'], ['tile', '◧ Tile / flooring']];
+  const _tabs = tradeCalcTabsFor();
+  const GEOM = _tabs.geom;
+  const TRADE = _tabs.trade;
   const c = tradeCalcCompute(m);
   const p = m.params || {};
   const tabBtn = ([k, lbl]) => `<button onclick="tradeCalcSetType('${k}')" style="font-family:var(--mono);font-size:11px;padding:7px 11px;border:1px solid ${type===k?'var(--ink-900)':'var(--border)'};background:${type===k?'var(--ink-950,#181613)':'var(--bg)'};color:${type===k?'var(--bone-50,#faf8f2)':'var(--ink-900)'};cursor:pointer;white-space:nowrap">${lbl}</button>`;
@@ -7117,10 +7145,10 @@ function buildTradeCalcModal() {
     <div class="modal-title">⊟ Trade calculators</div>
     <div class="modal-sub">Measure by trade — the math each trade actually does — then drop the quantity straight into your estimate.</div>
     <div style="margin:16px 0 6px">
-      <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">Geometry</div>
+      <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">Measure</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">${GEOM.map(t => tabBtn(t)).join('')}</div>
-      <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin:12px 0 6px">By trade</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">${TRADE.map(t => tabBtn(t)).join('')}</div>
+      ${TRADE.length ? `<div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin:12px 0 6px">By trade</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${TRADE.map(t => tabBtn(t)).join('')}</div>` : ''}
     </div>
 
     <div style="padding:16px 18px;background:var(--bg1);border:1px solid var(--border);margin-top:8px">
@@ -9624,6 +9652,7 @@ function buildApp() {
       ${ST.followUpModal ? buildFollowUpModal() : ''}
       ${ST.usersModal ? buildUsersModal() : ''}
       ${ST.subSummaryModal ? buildSubSummaryModal() : ''}
+      ${ST.trialWelcome ? buildTrialWelcomeModal() : ''}
     </div>`;
 }
 
@@ -9902,9 +9931,7 @@ function buildSubProjectDetail(p) {
 
     ${buildSubGcDeliverySection(p)}
 
-    ${buildClientShareSectionV2(p)}
     ${buildProjectFilesSection(p)}
-    ${buildThreadsSection(p)}
     ${buildChangeOrdersSection(p)}
 
     <div style="padding:12px 20px 18px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -9999,7 +10026,7 @@ function subSummaryText(pid, { forEmail = false } = {}) {
     L.push(subSenderName());
   } else {
     L.push(`Project: ${p.name}`);
-    L.push(`GC: ${gc.company || '—'}${gc.contact ? ' · ' + gc.contact : ''}`);
+    L.push(`GC / Client: ${gc.company || '—'}${gc.contact ? ' · ' + gc.contact : ''}`);
     L.push(`Estimate: ${fmt$(t.client)} · ${t.itemCount} line item${t.itemCount===1?'':'s'} · ${groups.length} cost code${groups.length===1?'':'s'}`);
     L.push(`Your margin: ${fmt$(t.markup)}${t.client>0 ? ' (' + ((t.markup/t.client)*100).toFixed(1) + '%)' : ''}`);
     L.push('');
@@ -10063,12 +10090,12 @@ function buildSubGcDeliverySection(p) {
   return `
     <div class="cats-section">
       <div class="sec-heading" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-        <span>General Contractor · delivery & follow-up</span>
+        <span>Who you're bidding to · follow-up</span>
         <button class="btn btn-ghost btn-sm" onclick="ST.subSummaryModal='${pid}';render()" title="Auto-summary of the whole pursuit">▤ Summary</button>
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:4px 0 12px">
-        ${fld('GC company', 'company', 'e.g. Summit Ridge Builders')}
+        ${fld('GC / Client company', 'company', 'e.g. Summit Ridge Builders')}
         ${fld('Contact', 'contact', 'e.g. Marcus Hale')}
         ${fld('Email', 'email', 'bids@gc.com', 'email')}
         ${fld('Phone', 'phone', '818-555-0000', 'tel')}
@@ -10076,7 +10103,7 @@ function buildSubGcDeliverySection(p) {
 
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding-bottom:10px">
         <button class="btn btn-ghost btn-sm" onclick="subGenerateEstimatePDF('${pid}')" title="Open the builder estimate as a printable PDF"${hasEstimate?'':' style="opacity:.6"'}>↓ Estimate PDF</button>
-        <button class="btn btn-amber btn-sm" onclick="subEmailToGC('${pid}')" title="Open your email with the estimate + summary pre-filled">✉ Email to GC</button>
+        <button class="btn btn-amber btn-sm" onclick="subEmailToGC('${pid}')" title="Open your email with the estimate + summary pre-filled">✉ Email estimate</button>
         <button class="btn btn-ghost btn-sm" onclick="subLogFollowUp('${pid}')" title="Log a call / email you made to chase this estimate">＋ Log follow-up</button>
       </div>
 
@@ -10108,7 +10135,7 @@ function buildSubSummaryModal() {
       <div class="modal-sub">${esc(p.name)}</div>
 
       <div style="margin:14px 0 6px">
-        ${row('GC', esc(gc.company || '—') + (gc.contact ? ' · ' + esc(gc.contact) : ''))}
+        ${row('GC / Client', esc(gc.company || '—') + (gc.contact ? ' · ' + esc(gc.contact) : ''))}
         ${row('Estimate total', `<b style="color:var(--green)">${fmt$(t.client)}</b>`)}
         ${row('Your margin (profit)', `<b>${fmt$(t.markup)}</b>${t.client>0 ? ` · ${((t.markup/t.client)*100).toFixed(1)}%` : ''}`)}
         ${row('Scope', `${t.itemCount} line item${t.itemCount===1?'':'s'} · ${groups.length} cost code${groups.length===1?'':'s'}`)}
@@ -10131,7 +10158,7 @@ function buildSubSummaryModal() {
       <div class="modal-btns" style="margin-top:16px">
         <button class="btn btn-ghost" onclick="subCopySummary('${pid}')">⧉ Copy summary</button>
         <button class="btn btn-ghost" onclick="subGenerateEstimatePDF('${pid}')">↓ Estimate PDF</button>
-        <button class="btn btn-amber" onclick="ST.subSummaryModal=null;subEmailToGC('${pid}')">✉ Email to GC</button>
+        <button class="btn btn-amber" onclick="ST.subSummaryModal=null;subEmailToGC('${pid}')">✉ Email estimate</button>
       </div>
     </div>
   </div>`;
@@ -11668,6 +11695,48 @@ function buildAddProjModal() {
 // ============================================================
 // UPSELL MODAL (shown when a plan limit is reached)
 // ============================================================
+// Shown once per login for trial workspaces so the user knows exactly what the
+// free trial includes — and what upgrading unlocks. Set via ST.trialWelcome.
+function buildTrialWelcomeModal() {
+  const ws = ST.workspaces?.[ST.activeWorkspace];
+  const wsName = (ws && ws.name) || subSenderName();
+  const inc = (txt) => `<div style="display:flex;gap:9px;align-items:flex-start;padding:5px 0"><span style="color:var(--green);font-weight:700;flex-shrink:0">✓</span><span style="font-size:12.5px;color:var(--ink-900);line-height:1.45">${txt}</span></div>`;
+  const lock = (txt) => `<div style="display:flex;gap:9px;align-items:flex-start;padding:5px 0;opacity:.8"><span style="flex-shrink:0">🔒</span><span style="font-size:12.5px;color:var(--text2);line-height:1.45">${txt}</span></div>`;
+  return `<div class="backdrop" onclick="if(event.target===this){ST.trialWelcome=false;render()}">
+    <div class="modal" style="max-width:520px" onclick="event.stopPropagation()">
+      <div style="font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber)">[ Free trial ]</div>
+      <div class="modal-title" style="margin-top:4px">Welcome${wsName ? ', ' + esc(wsName) : ''}</div>
+      <div class="modal-sub">Here's everything your trial includes — build a real estimate and send it to a GC today.</div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0 6px">
+        <div style="border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;background:var(--bg1)">
+          <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">Included</div>
+          ${inc('<b>1 project</b> end-to-end')}
+          ${inc(`<b>${TRIAL_LIMITS.aiCalls} AI actions</b> — Ask AI, Read Plans, Compare Plans`)}
+          ${inc(`<b>${TRIAL_LIMITS.planUploads} plan PDFs</b> for AI take-off (25 pages each)`)}
+          ${inc('Full <b>Builder estimate</b> → PDF → email to your GC')}
+          ${inc('GC follow-up tracking + auto <b>Summary</b>')}
+        </div>
+        <div style="border:1px solid var(--border);border-radius:var(--r2);padding:12px 14px;background:var(--bg)">
+          <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">Unlock by upgrading</div>
+          ${lock('<b>Unlimited</b> projects')}
+          ${lock('Your own <b>company name</b> & branding on PDFs')}
+          ${lock('<b>Send Center</b> — email straight from NOVANTU')}
+          ${lock('Multiple <b>team users</b>')}
+        </div>
+      </div>
+
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text2);background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:9px 12px;margin-top:8px;line-height:1.6">
+        Usage remaining: <b>${trialAILeft()}/${TRIAL_LIMITS.aiCalls}</b> AI actions · <b>${trialUploadsLeft()}/${TRIAL_LIMITS.planUploads}</b> uploads. You'll see this live in the app.
+      </div>
+
+      <div class="modal-btns" style="margin-top:16px">
+        <button class="btn btn-amber" style="width:100%" onclick="ST.trialWelcome=false;setTab('projects');render()">Start estimating →</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function buildUpsellModal() {
   const max = getActiveMaxProjects();
   const ws = ST.workspaces?.[ST.activeWorkspace];
@@ -11738,6 +11807,21 @@ function buildAddSubModal() {
       <div class="modal-label">Email</div>
       <input type="email" class="minp" id="ns-email" placeholder="email@company.com">
 
+      ${isSubAccount() ? `
+      <!-- Subs categorize their directory by simple role, not CSI divisions -->
+      <div class="modal-label" style="margin-top:12px">Type</div>
+      <select class="msel" id="ns-role" style="margin-bottom:10px" onchange="ST.addSubSelCodes=this.value?[this.value]:[]">
+        ${['General Contractor','Supplier','Architect / Engineer','Other'].map(r=>`<option value="${esc(r)}"${selectedCodes[0]===r?' selected':''}>${esc(r)}</option>`).join('')}
+      </select>
+
+      <div class="modal-label">Status Note</div>
+      <select class="msel" id="ns-status" style="margin-bottom:10px">
+        <option value="">— None —</option>
+        ${['HIGHLY ACTIVE','NEW','CALL','AWARDED','GOOD PAY','SLOW PAYER','NET-30','PREFERRED','WRONG NUMBER'].map(opt =>
+          `<option value="${esc(opt)}">${esc(opt)}</option>`
+        ).join('')}
+      </select>
+      ` : `
       <!-- Cascading Division → Categories -->
       <div class="modal-label" style="margin-top:12px">Division → Categories</div>
       <div class="mrow" style="margin-bottom:8px">
@@ -11765,6 +11849,7 @@ function buildAddSubModal() {
           `<option value="${esc(opt)}">${esc(opt)}</option>`
         ).join('')}
       </select>
+      `}
 
       <div class="modal-label">Comments</div>
       <input type="text" class="minp" id="ns-comments" placeholder="Additional notes">
@@ -14668,6 +14753,7 @@ function tryAddProject() {
 // the server-side page cap in the ask-ai edge function for the heavy vision calls.
 // (The master preview bypasses every trial cap.)
 const TRIAL_LIMITS = { planUploads: 3, aiCalls: 10 };
+let _trialWelcomeShownSession = false; // gate so the welcome modal shows once per login
 
 function currentPlanId() {
   const ws = ST.workspaces?.[ST.activeWorkspace];
@@ -21293,7 +21379,10 @@ function confirmAddProj() {
 function confirmAddSub() {
   const company = document.getElementById('ns-company')?.value?.trim();
   if (!company) { alert('Enter company name'); return; }
-  const codes = (ST.addSubSelCodes && ST.addSubSelCodes.length) ? ST.addSubSelCodes.slice() : [];
+  // Subs categorize by a single role (read straight off the select); GCs use codes.
+  const roleSel = document.getElementById('ns-role');
+  let codes = (ST.addSubSelCodes && ST.addSubSelCodes.length) ? ST.addSubSelCodes.slice() : [];
+  if (roleSel && roleSel.value) codes = [roleSel.value];
   const newSub = {
     id: 'cs-'+Date.now(),
     div: ST.addSubDivFilter || '',
