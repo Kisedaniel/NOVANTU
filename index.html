@@ -4346,7 +4346,7 @@ const PLAN_FEATURES = [
 // app. In-app upsells just SHOW the right price and send the user to the landing's
 // pricing/checkout. Prices differ by account type: a GC needs more storage + AI,
 // so GC Pro/Enterprise cost more than the same plan for a sub. Standard is flat.
-const LANDING_URL = 'https://www.novantu.app/#pricing'; // ← your landing's pricing anchor
+const LANDING_URL = 'https://www.novantu.app/novantu-landing.html#pricing'; // ← landing pricing anchor
 const PLAN_PRICING = {
   // monthly (m) and annual (y) by account type
   starter:    { sub: { m: 200, y: 2100 }, gc: { m: 200, y: 2100 } }, // "Standard"
@@ -5389,9 +5389,9 @@ function buildWelcomeScreen() {
     <div class="nv-wordmark">[ NOVANTU ]</div>
     <div class="nv-tagline">The estimator's operating system.</div>
     <div class="nv-funcline">Take-offs, estimates &amp; bid leveling — in one place</div>
-    <button class="btn btn-amber" style="margin-bottom:10px" onclick="ST.authScreen='login';render()">Sign in</button>
+    <button class="btn btn-amber" onclick="ST.authScreen='login';render()">Sign in</button>
+    <div class="nv-foot" style="margin:22px 0 10px">New here?</div>
     <a class="btn nv-btn-onink" href="${esc(LANDING_URL)}" target="_blank" rel="noopener" style="text-decoration:none">See plans &amp; subscribe →</a>
-    <div class="nv-foot">New here? View plans on our site to get started.</div>
   </div></div>`;
 }
 
@@ -8156,14 +8156,16 @@ function buildSettingsTab() {
 
     ${hasFeature('estimator') ? `<div style="margin-bottom:24px" id="settings-pricing"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Take-off unit prices</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Edit unit costs that feed Estimator → Take-off line items.</div></div>
       <div style="border:1px solid var(--border);background:var(--bg);overflow:hidden">
-        ${getPricingEditorTypes().map(t => {
-          const items = getPricingForType(t.id);
+        ${(() => { const lockCatalog = isTrialPlan(); const cap = lockCatalog ? TRIAL_LIMITS.catalogItems : Infinity; return getPricingEditorTypes().map(t => {
+          const allItems = getPricingForType(t.id);
+          const items = allItems.slice(0, cap);
+          const hidden = allItems.length - items.length;
           return `
             <details style="border-bottom:1px solid var(--border)" ${ST.settingsPricingOpen===t.id?'open':''}>
               <summary style="padding:12px 18px;cursor:pointer;display:flex;align-items:center;gap:10px;user-select:none;background:var(--bg1)">
                 <span style="display:inline-flex;color:var(--ink-900)">${takeoffIcon(t.id, 20)}</span>
                 <span style="font-family:var(--sans);font-size:13px;font-weight:600;color:var(--ink-900)">${esc(t.label)}</span>
-                <span style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-left:auto">${items.length} line items</span>
+                <span style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-left:auto">${items.length}${hidden>0?' of '+allItems.length:''} line items</span>
               </summary>
               <div style="padding:6px 0">
                 <div style="display:grid;grid-template-columns:80px 1fr 1fr 60px 100px 40px;gap:8px;padding:6px 18px;font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);border-bottom:1px solid var(--border)">
@@ -8180,17 +8182,20 @@ function buildSettingsTab() {
                       <option value="EA"${it.unit==='EA'?' selected':''}>EA</option>
                     </select>
                     <div style="display:flex;align-items:center;gap:4px"><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">$</span><input type="number" step="0.01" class="minp" value="${it.perUnit}" onchange="setPricingItem('${t.id}',${i},'perUnit',this.value)" style="text-align:right;font-family:var(--mono)"></div>
-                    <button class="btn btn-ghost btn-sm" style="color:var(--red);padding:3px 6px" onclick="if(confirm('Delete this line item?'))deletePricingItem('${t.id}',${i})" title="Delete line item">✕</button>
+                    ${lockCatalog ? '<span></span>' : `<button class="btn btn-ghost btn-sm" style="color:var(--red);padding:3px 6px" onclick="if(confirm('Delete this line item?'))deletePricingItem('${t.id}',${i})" title="Delete line item">✕</button>`}
                   </div>
                 `).join('')}
+                ${hidden > 0 ? `<div style="padding:9px 18px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:10px;color:var(--text3);background:var(--bg1)">🔒 +${hidden} more item${hidden===1?'':'s'} — your full catalog is configured for you in the personalized set-up.</div>` : ''}
                 <div style="padding:8px 18px;display:flex;gap:8px;align-items:center;border-top:1px solid var(--border)">
-                  <button class="btn btn-amber btn-sm" onclick="addPricingItem('${t.id}')">+ Add line item</button>
-                  <button class="btn btn-ghost btn-sm" style="margin-left:auto;color:var(--text3)" onclick="if(confirm('Reset ${esc(t.label)} prices to defaults? Custom items will be lost.'))resetPricingForType('${t.id}')" title="Reset to defaults">↻ Reset to defaults</button>
+                  ${lockCatalog
+                    ? `<span style="font-family:var(--mono);font-size:10px;color:var(--text3)">🔒 Editing prices is open — <span style="color:var(--amber);cursor:pointer" onclick="ST.upsellModal={reason:'catalog'};render()">adding products is part of your set-up →</span></span>`
+                    : `<button class="btn btn-amber btn-sm" onclick="addPricingItem('${t.id}')">+ Add line item</button>
+                  <button class="btn btn-ghost btn-sm" style="margin-left:auto;color:var(--text3)" onclick="if(confirm('Reset ${esc(t.label)} prices to defaults? Custom items will be lost.'))resetPricingForType('${t.id}')" title="Reset to defaults">↻ Reset to defaults</button>`}
                 </div>
               </div>
             </details>
           `;
-        }).join('')}
+        }).join(''); })()}
       </div>
     </div>` : ''}
 
@@ -11867,6 +11872,7 @@ function buildUpsellModal() {
     plans:    `Your free trial lets you upload ${TRIAL_LIMITS.planUploads} plan PDFs. Upgrade to upload your whole set and run AI take-off across every sheet.`,
     emails:   `Your free trial includes ${TRIAL_LIMITS.emails} emails sent from NOVANTU. Upgrade to send unlimited estimates & follow-ups from your own address.`,
     branding: `Editing your company name & branding is available on paid plans. Upgrade to white-label your estimates and portal.`,
+    catalog:  `On the trial you can tweak prices on a starter catalog. Your full product catalog — every item at your real prices — is built for you in the personalized set-up that comes with a paid plan.`,
   };
   const TITLE = {
     projects: `You've reached your ${planName} limit`,
@@ -11874,6 +11880,7 @@ function buildUpsellModal() {
     plans:    `You've reached your trial upload limit`,
     emails:   `You've used your trial email sends`,
     branding: `Branding is a paid feature`,
+    catalog:  `Your full catalog is part of the set-up`,
   };
   const acctLabel = isSubAccount() ? 'subcontractor' : 'general contractor';
   return `<div class="backdrop" onclick="if(event.target===this){ST.upsellModal=null;render()}">
@@ -15134,7 +15141,7 @@ function tryAddProject() {
 // The counters live in ST.settings (synced) — a soft client-side guard, backed by
 // the server-side page cap in the ask-ai edge function for the heavy vision calls.
 // (The master preview bypasses every trial cap.)
-const TRIAL_LIMITS = { planUploads: 3, aiCalls: 10, emails: 5 };
+const TRIAL_LIMITS = { planUploads: 3, aiCalls: 10, emails: 5, catalogItems: 8 };
 let _trialWelcomeShownSession = false; // gate so the welcome modal shows once per login
 
 function currentPlanId() {
@@ -20493,6 +20500,9 @@ function getPricingEditorTypes() {
 }
 
 function addPricingItem(typeId) {
+  // Building out the catalog is part of the paid personalized set-up — the trial
+  // can edit existing prices but not add products (keeps the set-up valuable).
+  if (isTrialPlan()) { ST.upsellModal = { reason: 'catalog' }; render(); return; }
   if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   if (!ST.settings.takeoffPricing) ST.settings.takeoffPricing = {};
   if (!Array.isArray(ST.settings.takeoffPricing[typeId])) {
