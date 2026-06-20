@@ -8044,6 +8044,10 @@ async function estPortalLoad(token) {
 }
 
 async function estPortalSetStatus(token, status) {
+  const pd = ST.estPortalData?.[token];
+  const prev = pd ? pd.status : null;
+  // Optimistic — reflect the choice instantly, sync in the background.
+  if (pd) { pd.status = status; pd._statusSaving = true; render(); }
   try {
     const res = await fetch(`${ESTIMATE_PORTAL_FN}/status`, {
       method: 'POST',
@@ -8052,9 +8056,11 @@ async function estPortalSetStatus(token, status) {
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || 'failed');
-    if (ST.estPortalData?.[token]) ST.estPortalData[token].status = status;
-    render();
-  } catch (e) { showToast('Could not save: ' + e.message, 'error'); }
+    if (pd) { pd._statusSaving = false; render(); }
+  } catch (e) {
+    if (pd) { pd.status = prev; pd._statusSaving = false; render(); }
+    showToast('Could not save — check your connection and try again.', 'error');
+  }
 }
 
 async function estPortalPostMessage(token, inputEl) {
@@ -8064,6 +8070,9 @@ async function estPortalPostMessage(token, inputEl) {
   const pd = ST.estPortalData?.[token];
   const author = pd?.gc?.company || 'Client';
   inputEl.value = '';
+  // Optimistic — show the message immediately, mark it pending until confirmed.
+  const optimistic = { sender: 'client', author, text, created_at: new Date().toISOString(), _pending: true };
+  if (pd) { pd.messages = [...(pd.messages || []), optimistic]; render(); }
   try {
     const res = await fetch(`${ESTIMATE_PORTAL_FN}/message`, {
       method: 'POST',
@@ -8072,9 +8081,11 @@ async function estPortalPostMessage(token, inputEl) {
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || 'failed');
-    if (pd) pd.messages = [...(pd.messages || []), { sender: 'client', author, text, created_at: new Date().toISOString() }];
-    render();
-  } catch (e) { showToast('Could not send: ' + e.message, 'error'); }
+    if (pd) { delete optimistic._pending; render(); }
+  } catch (e) {
+    if (pd) { optimistic._failed = true; delete optimistic._pending; render(); }
+    showToast('Message not delivered — tap to retry.', 'error');
+  }
 }
 
 function buildEstimatePortal() {
@@ -8107,7 +8118,12 @@ function buildEstimatePortal() {
     <div class="sp-meta"><b>From ${esc(pd.sender || '')}</b>${pd.gc?.company?`<span class="sep">·</span>for ${esc(pd.gc.company)}`:''}</div>
 
     <div class="sp-card">
-      <div class="sp-card-head"><span class="modal-label">Estimate</span><span class="modal-label" style="color:var(--fg-4)">${groups.length} COST CODE${groups.length===1?'':'S'}</span></div>
+      <div class="sp-card-head"><span class="modal-label">Estimate</span>
+        <span style="display:flex;align-items:center;gap:10px">
+          <button onclick="estPortalDownloadPdf('${esc(v.token)}')" style="font-family:var(--mono);font-size:10px;letter-spacing:.04em;background:var(--ink,#181613);color:#fff;border:none;border-radius:6px;padding:5px 10px;cursor:pointer">↓ Download PDF</button>
+          <span class="modal-label" style="color:var(--fg-4)">${groups.length} COST CODE${groups.length===1?'':'S'}</span>
+        </span>
+      </div>
       <div class="sp-card-body" style="padding-top:8px">
         ${groups.length ? groups.map(g => `
           <div style="margin-bottom:12px">
@@ -8135,7 +8151,7 @@ function buildEstimatePortal() {
         <div>
           <div class="modal-label" style="margin-bottom:6px">Leave a message</div>
           <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
-            ${msgs.map(m => `<div style="font-size:12.5px;color:var(--ink2,#3a352d)"><b style="font-family:var(--mono);font-size:10px;color:#8a857a">${m.sender==='client'?'You':esc(pd.sender||'Sender')}:</b> ${esc(m.text)}</div>`).join('') || '<div style="font-size:12px;color:#8a857a;font-style:italic">No messages yet.</div>'}
+            ${msgs.map(m => `<div style="font-size:12.5px;color:${m._failed?'#c44a2c':'var(--ink2,#3a352d)'}"><b style="font-family:var(--mono);font-size:10px;color:#8a857a">${m.sender==='client'?'You':esc(pd.sender||'Sender')}:</b> ${esc(m.text)}${m._pending?' <span style="font-family:var(--mono);font-size:9px;color:#8a857a">· sending…</span>':''}${m._failed?' <span style="font-family:var(--mono);font-size:9px;color:#c44a2c">· not sent</span>':''}</div>`).join('') || '<div style="font-size:12px;color:#8a857a;font-style:italic">No messages yet.</div>'}
           </div>
           <div style="display:flex;gap:8px">
             <input id="estp-msg" type="text" placeholder="Add a message…" style="flex:1;border:1px solid var(--line2,#c7bda4);border-radius:8px;padding:9px 11px;font-family:var(--sans);font-size:13px;outline:none" onkeydown="if(event.key==='Enter')estPortalPostMessage('${esc(v.token)}',this)">
@@ -8149,6 +8165,32 @@ function buildEstimatePortal() {
   `);
 }
 function estFmtMoney(n) { const v = Math.round(Number(n)||0); return '$' + v.toLocaleString(); }
+
+// Open a clean, self-contained printable estimate in a new tab and trigger the
+// browser's print dialog (→ "Save as PDF"). No server-side PDF needed.
+function estPortalDownloadPdf(token) {
+  const pd = (ST.estPortalData || {})[token];
+  if (!pd || !pd.ok) { showToast('Estimate not loaded yet.', 'warn'); return; }
+  const e = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  const rows = (pd.groups || []).map(g => {
+    const items = (g.items || []).map(it => `<tr><td style="padding:4px 8px">${e(it.title)}</td><td style="padding:4px 8px;text-align:right;white-space:nowrap;color:#666">${it.qty ? e(it.qty) + ' ' + e(it.unit || '') : ''}</td><td style="padding:4px 8px;text-align:right;font-family:monospace">${e(estFmtMoney(it.line))}</td></tr>`).join('');
+    return `<tr><td colspan="3" style="padding:10px 8px 4px;font-weight:700;border-top:1px solid #ddd">${e(g.code || '')} ${e(g.title || '')} <span style="float:right;font-family:monospace">${e(estFmtMoney(g.total))}</span></td></tr>${items}`;
+  }).join('');
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Estimate — ${e(pd.project?.name || '')}</title></head>
+  <body style="font-family:Helvetica,Arial,sans-serif;color:#181613;padding:36px;max-width:720px;margin:0 auto">
+    <div style="border-top:3px solid #C44A2C;padding-top:14px;margin-bottom:18px">
+      <div style="font-size:20px;font-weight:800">${e(pd.sender || '')}</div>
+      <div style="color:#666;font-size:13px;margin-top:2px">Estimate · ${e(pd.project?.name || '')}${pd.gc?.company ? ' · for ' + e(pd.gc.company) : ''}</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">${rows || '<tr><td style="color:#999">No line items.</td></tr>'}</table>
+    <div style="display:flex;justify-content:space-between;border-top:2px solid #181613;margin-top:16px;padding-top:12px;font-weight:800;font-size:19px"><span>TOTAL</span><span style="font-family:monospace">${e(estFmtMoney(pd.total))}</span></div>
+    <div style="margin-top:28px;font-family:monospace;font-size:10px;color:#999;letter-spacing:.06em">SENT WITH NOVANTU</div>
+    <scr` + `ipt>window.onload=function(){setTimeout(function(){window.print();},250);};</scr` + `ipt>
+  </body></html>`;
+  const w = window.open('', '_blank');
+  if (!w) { showToast('Allow pop-ups to download the estimate PDF.', 'warn'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
 
 function buildSubPortal() {
   const v = ST.subPortalView;
