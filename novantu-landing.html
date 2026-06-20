@@ -414,6 +414,39 @@
   </div>
 </section>
 
+<!-- AI ESTIMATES FROM YOUR CATALOG -->
+<section id="ai" style="padding-top:20px">
+  <div class="wrap">
+    <div style="background:var(--bone2);border:1px solid var(--line);border-radius:var(--r2);padding:46px 44px;position:relative;overflow:hidden">
+      <div class="wl-grid">
+        <div>
+          <div class="sec-label">AI · your catalog</div>
+          <h2>Your prices in. A draft estimate out.</h2>
+          <p style="font-size:16px;color:var(--ink2);margin-top:16px;line-height:1.65">Tell the AI what the job is and it drafts the estimate for you — pulling <strong>only</strong> from your own products and unit prices, never made-up numbers. You eyeball the quantities, tweak what you want, and it drops straight into your Builder. What used to be an afternoon of typing is a minute — and every line is yours.</p>
+          <div class="wl-points" style="margin-top:22px">
+            <div class="wl-point" style="color:var(--ink2)"><span class="dot"></span><div>Builds from <strong>your</strong> take-off price list — your products, your rates.</div></div>
+            <div class="wl-point" style="color:var(--ink2)"><span class="dot"></span><div>Always reviewable — nothing lands in your estimate until you approve it.</div></div>
+            <div class="wl-point" style="color:var(--ink2)"><span class="dot"></span><div>Ask it to size a system, suggest scope, or write the cover note.</div></div>
+          </div>
+        </div>
+        <div class="how-vis">
+          <div class="mk">
+            <div class="mk-h">✨ Draft estimate <span class="mk-ai">AI</span></div>
+            <div class="mk-lines">
+              <div class="mk-line"><span>Air handler · 3.5 ton ×2</span><b>$8,320</b></div>
+              <div class="mk-line"><span>Heat-pump condenser ×3</span><b>$16,380</b></div>
+              <div class="mk-line"><span>R-8 flex duct · 600 lf</span><b>$11,340</b></div>
+              <div class="mk-line"><span>Linear diffuser boxes ×32</span><b>$12,264</b></div>
+              <div class="mk-line" style="border-bottom:none;color:var(--ink3)"><span>+ 9 more cost codes…</span><b style="color:var(--ink3)">↓</b></div>
+            </div>
+            <div class="mk-total"><span>Estimate · from your prices</span><b>$148,400</b></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- FOR SUBCONTRACTORS -->
 <section id="subs" style="padding-top:20px">
   <div class="wrap">
@@ -528,20 +561,79 @@
           <div class="mk mk-plan">
             <div class="mk-bar"><span class="mk-dot"></span><span class="mk-dot"></span><span class="mk-dot"></span><span class="mk-tt">A-201_floor-plan.pdf</span></div>
             <div class="mk-plan-body">
-              <svg viewBox="0 0 260 150" preserveAspectRatio="none" width="100%" height="150">
+              <svg viewBox="0 0 260 150" preserveAspectRatio="xMidYMid meet" width="100%" height="150">
                 <rect x="0" y="0" width="260" height="150" fill="var(--bone)"/>
-                <g stroke="var(--line2)" stroke-width="1" fill="none">
-                  <rect x="22" y="20" width="150" height="110"/>
-                  <line x1="22" y1="62" x2="100" y2="62"/><line x1="100" y1="20" x2="100" y2="130"/>
-                  <line x1="100" y1="90" x2="172" y2="90"/><rect x="116" y="38" width="40" height="34"/>
-                  <path d="M100 62 a16 16 0 0 1 16 16" stroke="var(--plano)"/>
+
+                <!-- walls (exterior + partitions), drawn thick = poché -->
+                <g stroke="var(--ink3)" stroke-width="3.4" fill="none" stroke-linejoin="miter">
+                  <rect x="20" y="20" width="152" height="108"/>
+                  <line x1="64" y1="20" x2="64" y2="74"/>
+                  <line x1="20" y1="74" x2="172" y2="74"/>
+                  <line x1="120" y1="74" x2="120" y2="128"/>
                 </g>
-                <g font-family="var(--mono)" font-size="6" fill="var(--ink3)">
-                  <rect x="184" y="20" width="54" height="110" fill="var(--bone2)" stroke="var(--line)"/>
-                  <text x="190" y="34">SHEET</text><text x="190" y="44" fill="var(--plano)">A-201</text>
-                  <line x1="190" y1="52" x2="232" y2="52" stroke="var(--line)"/>
-                  <text x="190" y="64">FLOOR</text><text x="190" y="72">PLAN</text>
-                  <text x="190" y="92">SCALE</text><text x="190" y="100">1/4"</text>
+
+                <!-- door + window openings cut out of the walls -->
+                <g stroke="var(--bone)" stroke-width="4.4" stroke-linecap="butt">
+                  <line x1="64" y1="50" x2="64" y2="62"/>
+                  <line x1="86" y1="74" x2="98" y2="74"/>
+                  <line x1="120" y1="94" x2="120" y2="106"/>
+                  <line x1="20" y1="94" x2="20" y2="108"/>
+                  <line x1="92" y1="20" x2="114" y2="20"/>
+                  <line x1="134" y1="20" x2="156" y2="20"/>
+                  <line x1="40" y1="128" x2="62" y2="128"/>
+                </g>
+
+                <!-- windows (thin pane line inside the openings) -->
+                <g stroke="var(--ink3)" stroke-width="1">
+                  <line x1="92" y1="20" x2="114" y2="20"/>
+                  <line x1="134" y1="20" x2="156" y2="20"/>
+                  <line x1="40" y1="128" x2="62" y2="128"/>
+                </g>
+
+                <!-- door leaves + swing arcs -->
+                <g stroke="var(--plano)" stroke-width="1" fill="none">
+                  <path d="M64 50 a12 12 0 0 0 -12 12"/>
+                  <path d="M86 74 a12 12 0 0 0 12 -12"/>
+                  <path d="M120 94 a12 12 0 0 1 12 12"/>
+                  <path d="M20 94 a14 14 0 0 1 14 14"/>
+                </g>
+
+                <!-- fixtures: tub + sink in the bath, kitchen counter -->
+                <g stroke="var(--line2)" stroke-width="1" fill="none">
+                  <rect x="24" y="24" width="15" height="22" rx="3"/>
+                  <circle cx="52" cy="29" r="4.5"/>
+                  <path d="M70 24 h44 M114 24 v20"/>
+                </g>
+
+                <!-- room labels -->
+                <g font-family="var(--mono)" font-size="5.6" fill="var(--ink3)" letter-spacing=".3">
+                  <text x="28" y="68">BATH</text>
+                  <text x="90" y="50">KITCHEN</text>
+                  <text x="56" y="106">LIVING</text>
+                  <text x="130" y="106">BED</text>
+                </g>
+
+                <!-- dimension line -->
+                <g stroke="var(--ink3)" stroke-width=".7">
+                  <line x1="20" y1="140" x2="172" y2="140"/>
+                  <line x1="20" y1="136.5" x2="20" y2="143.5"/>
+                  <line x1="172" y1="136.5" x2="172" y2="143.5"/>
+                </g>
+                <rect x="86" y="135.5" width="20" height="9" fill="var(--bone)"/>
+                <text x="96" y="142" font-family="var(--mono)" font-size="5.8" fill="var(--ink3)" text-anchor="middle">24'-0"</text>
+
+                <!-- title block -->
+                <rect x="184" y="20" width="56" height="108" fill="var(--bone2)" stroke="var(--ink3)" stroke-width=".8"/>
+                <line x1="184" y1="42" x2="240" y2="42" stroke="var(--line)" stroke-width=".8"/>
+                <line x1="184" y1="94" x2="240" y2="94" stroke="var(--line)" stroke-width=".8"/>
+                <g font-family="var(--mono)" font-size="5.4" fill="var(--ink3)">
+                  <text x="189" y="32">PROJECT</text>
+                  <text x="189" y="55" font-size="7" fill="var(--plano)">A-201</text>
+                  <text x="189" y="64">FLOOR PLAN</text>
+                  <text x="189" y="73">LEVEL 1</text>
+                  <text x="189" y="106">SCALE</text>
+                  <text x="189" y="114" fill="var(--ink2)">1/4" = 1'-0"</text>
+                  <text x="189" y="123">NOVANTU</text>
                 </g>
               </svg>
             </div>
@@ -655,7 +747,7 @@
       </div>
       <div class="pr-seg" role="tablist" aria-label="Billing cycle">
         <button class="pr-pill on" id="seg-m" onclick="setCycle('m')">Monthly</button>
-        <button class="pr-pill" id="seg-y" onclick="setCycle('y')">Annual · 2 months free</button>
+        <button class="pr-pill" id="seg-y" onclick="setCycle('y')">Annual</button>
       </div>
     </div>
     <p class="pr-why" id="prWhy">Same product for everyone. GC plans cost a little more on Pro &amp; Enterprise — GCs carry more projects, more plan files (storage) and run more AI (bid leveling across many subs). Standard is a flat $200 for both.</p>
@@ -664,7 +756,7 @@
       <div class="tier">
         <div class="tname">Standard</div>
         <div class="price" id="price-starter">$200<span>/mo</span></div>
-        <div class="tsub" id="sub-starter">or $2,100/yr (2 months free)</div>
+        <div class="tsub" id="sub-starter">or $2,100/yr billed yearly</div>
         <div class="tdesc">Get organized — projects, your directory and bids in one place.</div>
         <ul>
           <li><span class="ck">✓</span> Today dashboard &amp; project tracker</li>
@@ -679,7 +771,7 @@
         <div class="pop-flag">Most popular</div>
         <div class="tname">Pro</div>
         <div class="price" id="price-pro">$250<span>/mo</span></div>
-        <div class="tsub" id="sub-pro">or $2,800/yr (2 months free)</div>
+        <div class="tsub" id="sub-pro">or $2,800/yr billed yearly</div>
         <div class="tdesc">The full estimating workflow with AI — the sweet spot for most shops.</div>
         <ul>
           <li><span class="ck">✓</span> Everything in Standard</li>
@@ -693,7 +785,7 @@
       <div class="tier">
         <div class="tname">Enterprise</div>
         <div class="price" id="price-enterprise">$350<span>/mo</span></div>
-        <div class="tsub" id="sub-enterprise">or $4,000/yr (2 months free)</div>
+        <div class="tsub" id="sub-enterprise">or $4,000/yr billed yearly</div>
         <div class="tdesc">For teams that send &amp; collaborate at scale.</div>
         <ul>
           <li><span class="ck">✓</span> Everything in Pro</li>
@@ -796,7 +888,7 @@
 
       <h3>Billing &amp; cancellation</h3>
       <ul>
-        <li>Plans are billed <strong>monthly</strong> or <strong>annually</strong> (annual = 2 months free). Prices are in USD.</li>
+        <li>Plans are billed <strong>monthly</strong> or <strong>annually</strong> (annual is paid once for the year). Prices are in USD.</li>
         <li>Pricing differs by account type: a general contractor's Pro/Enterprise costs more than a subcontractor's because GCs use more storage (more projects &amp; plan files) and more AI. Standard is a flat $200 for both.</li>
         <li>The one-time set-up fee is charged once, on your first billing only. The checkout asks you to confirm whether it's already been paid.</li>
         <li><strong>Cancel anytime.</strong> Your access continues to the end of the period already paid; we don't pro-rate partial months. No long-term contract.</li>
@@ -810,7 +902,7 @@
 
       <h3>Who you're contracting with</h3>
       <div class="terms-note">
-        NOVANTU is currently operated by its independent founder and is <strong>not yet registered as a company</strong>. We will formalize NOVANTU as a registered business <strong>after our first three paying clients</strong>; at that point this agreement and your subscription transfer to that entity automatically, with no change to your price. Until then, payments are processed via Payoneer and receipts are issued by the founder personally. This page is a plain-language summary, not legal or tax advice.
+        NOVANTU is <strong>currently being formalized as a registered business</strong> — that process is underway and not yet complete. Once it's finalized, this agreement and your subscription carry over to the registered entity automatically, with no change to your price. In the meantime, payments are processed securely via Payoneer and your receipts are issued directly to you. This page is a plain-language summary, not legal or tax advice.
       </div>
 
       <div class="terms-meta">Questions before you subscribe? <a href="mailto:kisedaniel@gmail.com" style="color:var(--plano)">kisedaniel@gmail.com</a> · Last updated on subscription.</div>
@@ -891,7 +983,7 @@
       const subEl = document.getElementById('sub-' + id);
       if (subEl) {
         subEl.textContent = pCycle === 'm'
-          ? `or ${money(a.y)}/yr (2 months free)`
+          ? `or ${money(a.y)}/yr billed yearly`
           : `≈ ${money(Math.round(a.y / 12))}/mo, billed yearly`;
       }
     });
@@ -906,7 +998,7 @@
       `${PLAN_LABEL[planId]} · ${pAcct === 'sub' ? 'Subcontractor' : 'General contractor'}`;
     document.getElementById('coPrice').innerHTML = money(val) + `<span>/${pCycle === 'm' ? 'mo' : 'yr'}</span>`;
     document.getElementById('coCyc').textContent =
-      pCycle === 'm' ? 'Billed monthly · cancel anytime' : `Billed annually (${money(a.y)}) · 2 months free`;
+      pCycle === 'm' ? 'Billed monthly · cancel anytime' : `Billed annually (${money(a.y)}) · cancel anytime`;
     document.getElementById('coSetup').checked = false;
     document.getElementById('coBackdrop').classList.add('show');
   }
