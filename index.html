@@ -4708,6 +4708,14 @@ async function loadSt() {
     ST.estimatorDraftLoading = null;
     ST.subSendingEmail = null;
     ST.estEmailReview = null;
+    ST.schedAIProposal = null;
+    ST.schedAILoading = null;
+    ST.dbeModal = null;
+    ST.dbeResult = null;
+    ST.dbeLoading = null;
+    ST.dbeNarration = '';
+    ST.gcBreakdown = null;
+    ST.gcBreakdownLoading = null;
     if (typeof _estPortalChecked !== 'undefined' && _estPortalChecked.clear) _estPortalChecked.clear();
     if (ST.estimator) {
       for (const pid of Object.keys(ST.estimator)) {
@@ -5920,6 +5928,10 @@ function render() {
     ST.subSummaryModal ? 'subsum' : '',
     ST.estimatorDraft ? 'aidraft' : '',
     ST.estEmailReview ? 'emailrev' : '',
+    ST.schedAIProposal ? 'schedai' : '',
+    ST.dbeModal ? 'dbe' : '',
+    ST.dbeResult ? 'dberes' : '',
+    ST.gcBreakdown ? 'gcbd' : '',
   ].filter(Boolean).join('|');
   const overlayJustOpened = overlaySig && overlaySig !== _lastOverlaySig;
   _lastOverlaySig = overlaySig;
@@ -9941,6 +9953,10 @@ function buildApp() {
       ${ST.trialWelcome ? buildTrialWelcomeModal() : ''}
       ${ST.estimatorDraft ? buildDraftReviewModal() : ''}
       ${ST.estEmailReview ? buildEstEmailReviewModal() : ''}
+      ${ST.schedAIProposal ? buildSchedAIReviewModal() : ''}
+      ${ST.dbeModal ? buildDbeModal() : ''}
+      ${ST.dbeResult ? buildDbeResultModal() : ''}
+      ${ST.gcBreakdown && !ST.sendDialog ? buildGcBreakdownModal() : ''}
     </div>`;
 }
 
@@ -13117,11 +13133,14 @@ function parseAIJson(text) {
 }
 
 // Call ask-ai and return the full completion text (no streaming UI).
-async function aiCompleteText(pid, userPrompt) {
+// Optional planImages = [{discipline,name,pageNum,base64}] gives the AI vision.
+async function aiCompleteText(pid, userPrompt, planImages) {
+  const body = { projectContext: estBuildContext(pid), messages: [{ role: 'user', content: userPrompt }] };
+  if (Array.isArray(planImages) && planImages.length) body.planImages = planImages;
   const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
-    body: JSON.stringify({ projectContext: estBuildContext(pid), messages: [{ role: 'user', content: userPrompt }] }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const reader = res.body.getReader();
@@ -13225,6 +13244,363 @@ function estApplyDraft(pid, mode) {
   showToast('Draft added to the Builder — review markup and adjust.', 'success');
 }
 
+// ============================================================
+// DESIGN-BUILD ESTIMATE SKILL (PILOT · HVAC) — reads plans/sketches + narration,
+// recommends elements per code, flags what's missing, drafts an estimate from
+// the sub's own catalog. Reuses ask-ai (vision) + the take-off price list.
+// ============================================================
+function dbeOpen(pid) {
+  ST.dbeModal = pid;
+  if (ST.dbeNarration == null) ST.dbeNarration = '';
+  render();
+  setTimeout(() => document.getElementById('dbe-narration')?.focus(), 40);
+}
+
+async function dbeGenerate(pid) {
+  if (ST.dbeLoading) return;
+  if (typeof trialGuardAI === 'function' && !trialGuardAI()) return;
+  const priceList = (typeof aiPriceList === 'function') ? aiPriceList() : [];
+  if (!priceList.length) { showToast('Set your unit prices first in Settings → Take-off prices.', 'warn'); return; }
+  const narration = (document.getElementById('dbe-narration')?.value || ST.dbeNarration || '').trim();
+  ST.dbeNarration = narration;
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  const e = getEstProj(pid);
+  const setup = e.setup || {};
+  ST.dbeLoading = pid; render();
+
+  // Read any uploaded plans / sketches for vision.
+  let planImages = [];
+  try {
+    const hasBin = (e.plans || []).some(pl => (typeof hasPlanBinary === 'function') ? hasPlanBinary(pl) : pl.dataUrl);
+    if (hasBin && typeof renderAllProjectPlans === 'function') {
+      const r = await renderAllProjectPlans(pid);
+      planImages = r.images || [];
+    }
+  } catch (err) { console.warn('dbe: plan render failed', err); }
+
+  try {
+    const plj = priceList.map(r => `${r.code} | ${r.name} | ${r.unit} | ${r.perUnit}`).join('\n');
+    const prompt = `You are a senior HVAC estimator AND design-build advisor helping a subcontractor quote a job fast. Read what's on the plans/sketches; where the scope is design-build (not fully drawn), DESIGN it yourself per code and state your assumptions.
+
+PROJECT: ${p.name}
+PROJECT TYPE: ${setup.projectType || '(infer it)'}
+JURISDICTION: ${setup.jurisdiction || '(infer / general California)'} · GROSS SF: ${setup.sqft || '?'} · STORIES: ${setup.stories || '?'}
+THE SUB'S OWN PRICE LIST — the ONLY products & prices you may estimate with (CODE | name | unit | $/unit):
+${plj}
+THE SUB'S DESIGN IDEA (their own words): ${narration || '(none — infer from the plans/sketches)'}
+${planImages.length ? `[${planImages.length} plan/sketch page(s) attached as images]` : '[no plans/sketches attached — work from the description]'}
+
+Do ALL of this:
+1) SCOPE & QUANTITIES: list the HVAC scope with key quantities (systems & tonnage, equipment, duct LF, supply/return count, line sets, diffusers, etc.). If sizing isn't given (design-build), SIZE IT with rules of thumb (e.g. ~400–600 sf/ton residential as a STARTING point) and state your assumptions plainly.
+2) CODES: applicable requirements for this jurisdiction (Title-24, Manual J/D/S, ASHRAE 62.2 ventilation, permits). ADVISE — never claim compliance.
+3) DRAFT ESTIMATE: line items using ONLY codes from the price list above, grouped by cost code, with quantities from step 1.
+4) MISSING / FLAGS: anything the scope needs that is NOT in the price list (so the sub adds it), plus open questions / RFIs / risks.
+
+Return STRICT JSON ONLY — no prose, no code fences:
+{"projectType":"...","scope":["..."],"codeNotes":"...","recommendations":["design/build element recommendations"],"groups":[{"code":"23 81.13","title":"Air Handlers","items":[{"code":"hv-ahu-35","qty":2}]}],"missing":["..."],"notes":"..."}`;
+
+    const text = await aiCompleteText(pid, prompt, planImages);
+    const parsed = parseAIJson(text);
+    if (!parsed) throw new Error('Could not read the AI result. Try again.');
+    const byCode = {}; priceList.forEach(r => { byCode[r.code] = r; });
+    const groups = [];
+    for (const g of (parsed.groups || [])) {
+      const items = [];
+      for (const it of (g.items || [])) {
+        const row = byCode[it && it.code];
+        if (!row) continue; // only the sub's own products
+        items.push({ code: row.code, name: row.name, qty: Math.max(0, Number(it.qty) || 0), unit: row.unit, unitCost: row.perUnit });
+      }
+      if (items.length) groups.push({ code: (g.code || '').toString(), title: (g.title || '').toString(), items });
+    }
+    const arr = (x) => Array.isArray(x) ? x.map(String) : [];
+    ST.dbeResult = {
+      pid,
+      projectType: (parsed.projectType || setup.projectType || '').toString(),
+      scope: arr(parsed.scope),
+      codeNotes: (parsed.codeNotes || '').toString(),
+      recommendations: arr(parsed.recommendations),
+      groups,
+      missing: arr(parsed.missing),
+      notes: (parsed.notes || '').toString(),
+    };
+    ST.dbeModal = null;
+  } catch (err) {
+    showToast('Design-build estimate failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.dbeLoading = null; render();
+  }
+}
+
+function dbeEditQty(gi, ii, val) {
+  const d = ST.dbeResult; if (!d) return;
+  const it = d.groups?.[gi]?.items?.[ii]; if (it) { it.qty = Math.max(0, Number(val) || 0); render(); }
+}
+function dbeDropItem(gi, ii) {
+  const d = ST.dbeResult; if (!d) return;
+  if (d.groups?.[gi]?.items) d.groups[gi].items.splice(ii, 1);
+  if (d.groups[gi] && !d.groups[gi].items.length) d.groups.splice(gi, 1);
+  render();
+}
+function dbeApply(pid, mode) {
+  const d = ST.dbeResult; if (!d || d.pid !== pid) return;
+  builderEnsure(pid);
+  const mk = (getSettings().defaultMarkup) || {};
+  const baseMarkup = Number(mk.Materials) || 0;
+  let seq = 0;
+  const uid = (pfx) => pfx + Date.now().toString(36) + '_' + (seq++).toString(36) + Math.random().toString(36).slice(2, 5);
+  const newGroups = d.groups.map(g => ({
+    id: uid('g_'), code: g.code, title: g.title,
+    items: (g.items || []).map(it => ({
+      id: uid('i_'), code: it.code, title: it.name, description: '',
+      qty: Number(it.qty) || 0, unit: it.unit, unitCost: Number(it.unitCost) || 0,
+      costType: 'Materials', markup: baseMarkup, taxable: false,
+    })),
+  }));
+  if (mode === 'replace') ST.estimates[pid].groups = newGroups;
+  else ST.estimates[pid].groups.push(...newGroups);
+  ST.dbeResult = null;
+  saveSt();
+  setTab('builder'); ST.builderSelProj = pid; render();
+  showToast('Estimate added to the Builder — review markup & quantities.', 'success');
+}
+
+function buildDbeModal() {
+  const pid = ST.dbeModal; if (!pid) return '';
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  const e = getEstProj(pid);
+  const planCount = (e.plans || []).filter(pl => (typeof hasPlanBinary === 'function') ? hasPlanBinary(pl) : pl.dataUrl).length;
+  const loading = ST.dbeLoading === pid;
+  return `<div class="backdrop" onclick="if(event.target===this){ST.dbeModal=null;render()}">
+    <div class="modal" style="max-width:560px" onclick="event.stopPropagation()">
+      <div class="modal-title">✦ Design-build estimate</div>
+      <div class="modal-sub">${esc(p.name)} · the AI reads your plans/sketches, sizes the system per code, and drafts from your prices</div>
+
+      <div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;margin:12px 0;line-height:1.6">
+        ${planCount ? `▦ ${planCount} plan/sketch page${planCount===1?'':'s'} will be read by the AI.` : '⚠ No plans/sketches uploaded — add them in Estimator → Take-off, or just describe the job below.'}
+      </div>
+
+      <div class="modal-label">Describe your design idea / scope <span style="color:var(--text3)">(optional but helps a lot)</span></div>
+      <textarea id="dbe-narration" rows="4" placeholder="e.g. Three split systems for a 2,400 sf remodel — two 3.5-ton air handlers in the attic, one 4-ton, linear diffusers in every room, condensers on the roof. Need Title-24 and permits." style="width:100%;box-sizing:border-box;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:9px 11px;font-family:var(--sans);font-size:12.5px;color:var(--text);resize:vertical;outline:none">${esc(ST.dbeNarration || '')}</textarea>
+
+      <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:8px;line-height:1.5">The AI will: size the system (rules of thumb if design-build) · note applicable codes · draft line items from your catalog · flag what's missing. Always reviewable before it hits the Builder.</div>
+
+      <div class="modal-btns" style="margin-top:16px">
+        <button class="btn btn-ghost" onclick="ST.dbeNarration=document.getElementById('dbe-narration')?.value||'';ST.dbeModal=null;render()">Cancel</button>
+        <button class="btn btn-amber" ${loading?'disabled':''} onclick="dbeGenerate('${pid}')">${loading?'✦ Working…':'✦ Generate estimate'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildDbeResultModal() {
+  const d = ST.dbeResult; if (!d) return '';
+  const p = allProjects().find(x => x.id === d.pid) || { name: d.pid };
+  let grand = 0;
+  const groupsHtml = (d.groups || []).map((g, gi) => {
+    let gt = 0;
+    const rows = g.items.map((it, ii) => {
+      const line = (Number(it.qty) || 0) * (Number(it.unitCost) || 0); gt += line;
+      return `<div style="display:grid;grid-template-columns:1fr 64px 46px 80px 80px 24px;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:0"><div style="font-size:12px;color:var(--ink-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.name)}</div><div style="font-family:var(--mono);font-size:9px;color:var(--text3)">${esc(it.code)}</div></div>
+        <input type="number" min="0" step="any" value="${esc(String(it.qty))}" onchange="dbeEditQty(${gi},${ii},this.value)" style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:4px 6px;font-family:var(--mono);font-size:12px;text-align:right;color:var(--text);outline:none">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text3)">${esc(it.unit)}</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--text3);text-align:right">${fmt$(it.unitCost)}</div>
+        <div style="font-family:var(--mono);font-size:12px;color:var(--ink-900);text-align:right">${fmt$(line)}</div>
+        <button onclick="dbeDropItem(${gi},${ii})" title="Remove" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:12px">✕</button>
+      </div>`;
+    }).join('');
+    grand += gt;
+    return `<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--ink-700);padding-bottom:4px;margin-bottom:4px"><div style="font-size:12px;font-weight:600;color:var(--ink-900)">${esc(g.code)} ${esc(g.title)}</div><div style="font-family:var(--mono);font-size:11px;color:var(--text2)">${fmt$(gt)}</div></div>${rows}</div>`;
+  }).join('');
+  const list = (title, arr, color) => (arr && arr.length) ? `<div style="margin-top:12px"><div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${color||'var(--text3)'};margin-bottom:5px">${title}</div><ul style="margin:0;padding-left:16px;display:flex;flex-direction:column;gap:3px">${arr.map(s=>`<li style="font-size:12px;color:var(--text2);line-height:1.45">${esc(s)}</li>`).join('')}</ul></div>` : '';
+
+  return `<div class="backdrop" onclick="if(event.target===this){ST.dbeResult=null;render()}">
+    <div class="modal modal-wide" style="max-width:680px" onclick="event.stopPropagation()">
+      <div class="modal-title">✦ Design-build estimate</div>
+      <div class="modal-sub">${esc(p.name)}${d.projectType?` · ${esc(d.projectType)}`:''} · AI proposal — review before adding</div>
+      ${d.notes ? `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;margin:12px 0;line-height:1.5">${esc(d.notes)}</div>` : ''}
+
+      <div style="max-height:52vh;overflow:auto;margin-top:8px;padding-right:4px">
+        ${list('Scope &amp; quantities', d.scope)}
+        ${d.codeNotes ? `<div style="margin-top:12px"><div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:5px">Applicable codes</div><div style="font-size:12px;color:var(--text2);line-height:1.5">${esc(d.codeNotes)}</div></div>` : ''}
+        ${list('Design recommendations', d.recommendations, 'var(--amber)')}
+        ${list('⚠ Missing / flags / RFIs', d.missing, 'var(--plano,#c44a2c)')}
+
+        <div style="margin-top:16px"><div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:6px">Draft estimate · from your price list</div>
+          ${groupsHtml || '<div style="color:var(--text3);font-style:italic;padding:14px;text-align:center">No catalog line items proposed — see Missing above; add those products to your price list.</div>'}
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:baseline;border-top:2px solid var(--ink-700);padding-top:10px;margin-top:4px">
+        <span style="font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text2)">Builder cost</span>
+        <span style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--ink-900)">${fmt$(grand)}</span>
+      </div>
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="ST.dbeResult=null;render()">Discard</button>
+        <button class="btn btn-ghost" onclick="ST.dbeResult=null;ST.dbeModal='${d.pid}';render()">← Edit / re-run</button>
+        ${(d.groups||[]).length ? `<button class="btn btn-ghost" onclick="dbeApply('${d.pid}','replace')">Replace estimate</button><button class="btn btn-ghost" onclick="dbeApply('${d.pid}','append')">Add to Builder</button><button class="btn btn-amber" onclick="dbeApply('${d.pid}','append');ST.estEmailReview='${d.pid}';render()" title="Insert into the Builder, then review & send the estimate email to your GC/client">Add &amp; email →</button>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
+// ============================================================
+// GC PLAN BREAKDOWN → RFPs (skill) — the GC asks: "break the plans down into my
+// bid categories, then RFP the subs in each one." The AI reads the uploaded
+// plans, maps scope to THIS workspace's own categories, and hands off to the
+// existing send dialog per category — a review gate, so nothing ever sends
+// without the GC looking at it first.
+// ============================================================
+async function gcPlanBreakdown(pid) {
+  if (ST.gcBreakdownLoading) return;
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  const e = getEstProj(pid);
+  const plansWithBin = (e.plans || []).filter(pl => hasPlanBinary(pl));
+  if (!plansWithBin.length) { showToast('Upload the plan set first (Estimator → Plan Sets), then run the breakdown.', 'warn'); return; }
+  ST.gcBreakdownLoading = pid; render();
+  let planImages = [];
+  try {
+    const r = await renderAllProjectPlans(pid);
+    planImages = r.images || [];
+  } catch (err) { console.warn('gc breakdown: plan render failed', err); }
+  // The prompt asserts plan pages are attached — never let the AI fabricate a
+  // breakdown from nothing. Abort BEFORE spending a trial AI credit.
+  if (!planImages.length) {
+    ST.gcBreakdownLoading = null; render();
+    showToast('Could not read the plan pages — re-upload the PDF and try again.', 'error');
+    return;
+  }
+  if (!trialGuardAI()) { ST.gcBreakdownLoading = null; render(); return; }
+  try {
+    const cats = CATS.slice();
+    const prompt = `You are a senior estimator working for a general contractor. Read the attached plan pages and break the project's scope down into this GC's bid categories.
+
+PROJECT: ${p.name}
+THE GC'S BID CATEGORIES (use these EXACT names, nothing else):
+${cats.map(c => '- ' + c).join('\n')}
+
+Do ALL of this:
+1) For every category that has scope on these plans, list the concrete items you can see (with quantities and units where readable — don't invent numbers).
+2) Scope that fits NONE of the categories goes in "uncategorized".
+3) Flag unclear or missing information an estimator would raise as an RFI.
+
+Return STRICT JSON ONLY — no prose, no code fences:
+{"categories":[{"category":"<EXACT name from the list>","items":[{"name":"...","qty":0,"unit":""}]}],"uncategorized":["..."],"missing":["..."],"notes":"one short line"}`;
+    const text = await aiCompleteText(pid, prompt, planImages);
+    const parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.categories)) throw new Error('Could not read a breakdown from the AI. Try again.');
+    const catSet = new Set(cats);
+    const uncategorized = Array.isArray(parsed.uncategorized) ? parsed.uncategorized.map(String) : [];
+    const categories = [];
+    for (const c of parsed.categories) {
+      if (!c || !c.category) continue;
+      const name = String(c.category).toUpperCase().trim();
+      const items = (Array.isArray(c.items) ? c.items : []).map(it => ({
+        name: String((it && it.name) || '').slice(0, 90),
+        qty: Number(it && it.qty) || 0,
+        unit: String((it && it.unit) || '').slice(0, 8),
+      })).filter(it => it.name);
+      if (!catSet.has(name)) { items.forEach(it => uncategorized.push(it.name)); continue; }
+      if (items.length) categories.push({ category: name, items, subCount: getSubsForCategory(name).length });
+    }
+    if (!categories.length && !uncategorized.length) throw new Error('The AI found no scope on the plans.');
+    ST.gcBreakdown = {
+      pid, categories, uncategorized,
+      missing: Array.isArray(parsed.missing) ? parsed.missing.map(String) : [],
+      notes: (parsed.notes || '').toString(),
+    };
+    // Light persistence — the breakdown survives a reload and can be reopened
+    // via gcBreakdownReopen() without spending another AI call.
+    if (!ST.overrides[pid]) ST.overrides[pid] = {};
+    ST.overrides[pid]._aiBreakdown = {
+      ts: new Date().toISOString(),
+      categories: categories.map(c => ({ category: c.category, items: c.items })),
+      uncategorized: ST.gcBreakdown.uncategorized, missing: ST.gcBreakdown.missing, notes: ST.gcBreakdown.notes,
+    };
+    saveSt();
+  } catch (err) {
+    showToast('Plan breakdown failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.gcBreakdownLoading = null; render();
+  }
+}
+
+function gcBreakdownActivate(pid) {
+  const d = ST.gcBreakdown; if (!d || d.pid !== pid) return;
+  if (!ST.overrides[pid]) ST.overrides[pid] = {};
+  let n = 0;
+  for (const c of d.categories) {
+    if (!ST.overrides[pid][c.category]) ST.overrides[pid][c.category] = {};
+    if (!ST.overrides[pid][c.category]._active) { ST.overrides[pid][c.category]._active = true; n++; }
+  }
+  saveSt(); render();
+  showToast(n ? `${n} categor${n === 1 ? 'y' : 'ies'} activated on the project board.` : 'All detected categories were already active.', 'success');
+}
+
+// Hand off one category to the existing RFP send dialog (its own review gate).
+// The breakdown is NOT destroyed — the render gate hides it while the send
+// dialog is open, and it comes back after so the GC can RFP the next category.
+function gcBreakdownSendRFP(pid, cat) {
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  if (!ST.overrides[pid]) ST.overrides[pid] = {};
+  if (!ST.overrides[pid][cat]) ST.overrides[pid][cat] = {};
+  ST.overrides[pid][cat]._active = true;
+  if (ST.gcBreakdown) { ST.gcBreakdown.rfpd = ST.gcBreakdown.rfpd || {}; ST.gcBreakdown.rfpd[cat] = true; }
+  saveSt();
+  openSendDialog(pid, p.name || '', cat);
+}
+
+// Reopen the last saved breakdown for a project — no AI call needed.
+function gcBreakdownReopen(pid) {
+  const saved = ST.overrides[pid] && ST.overrides[pid]._aiBreakdown;
+  if (!saved || !Array.isArray(saved.categories) || !saved.categories.length) { showToast('No saved breakdown for this project yet.', 'info'); return; }
+  ST.gcBreakdown = {
+    pid,
+    categories: saved.categories.map(c => ({ category: c.category, items: Array.isArray(c.items) ? c.items : [], subCount: getSubsForCategory(c.category).length })),
+    uncategorized: Array.isArray(saved.uncategorized) ? saved.uncategorized : [],
+    missing: Array.isArray(saved.missing) ? saved.missing : [],
+    notes: saved.notes || '',
+  };
+  render();
+}
+
+function buildGcBreakdownModal() {
+  const d = ST.gcBreakdown; if (!d) return '';
+  const p = allProjects().find(x => x.id === d.pid) || { name: d.pid };
+  const totalItems = d.categories.reduce((s, c) => s + c.items.length, 0);
+  const flagList = (title, arr, color) => (arr && arr.length) ? `<div style="margin-top:12px"><div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${color};margin-bottom:5px">${title}</div><ul style="margin:0;padding-left:16px;display:flex;flex-direction:column;gap:3px">${arr.map(s => `<li style="font-size:12px;color:var(--text2);line-height:1.45">${esc(s)}</li>`).join('')}</ul></div>` : '';
+  return `<div class="backdrop" onclick="if(event.target===this){ST.gcBreakdown=null;render()}">
+    <div class="modal modal-wide" style="max-width:700px" onclick="event.stopPropagation()">
+      <div class="modal-title">✦ Plan breakdown → RFPs</div>
+      <div class="modal-sub">${esc(p.name)} · ${d.categories.length} categor${d.categories.length === 1 ? 'y' : 'ies'} · ${totalItems} item${totalItems === 1 ? '' : 's'} — review, then RFP the subs per category</div>
+      ${d.notes ? `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;margin:12px 0;line-height:1.5">${esc(d.notes)}</div>` : ''}
+
+      <div style="max-height:52vh;overflow:auto;margin-top:8px;padding-right:4px">
+        ${d.categories.map(c => `
+          <div style="border:1px solid var(--border);border-radius:var(--r2);margin-bottom:10px;overflow:hidden">
+            <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--bg1);border-bottom:1px solid var(--border)">
+              <b style="font-size:12.5px;color:var(--ink-900)">${esc(c.category)}</b>
+              <span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">${c.items.length} item${c.items.length === 1 ? '' : 's'} · ${c.subCount} sub${c.subCount === 1 ? '' : 's'} in your directory</span>
+              ${d.rfpd && d.rfpd[c.category] ? '<span style="font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:var(--green);border:1px solid var(--green-border,var(--green));border-radius:10px;padding:2px 8px">✓ RFP sent</span>' : ''}
+              <button class="btn ${d.rfpd && d.rfpd[c.category] ? 'btn-ghost' : 'btn-amber'} btn-sm" style="margin-left:auto" onclick="gcBreakdownSendRFP('${d.pid}','${esc(c.category)}')" title="Open the RFP send dialog for this category — pick subs & template, then send">✉ RFP subs →</button>
+            </div>
+            <div style="padding:6px 12px">
+              ${c.items.map(it => `<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--text2);padding:3px 0;border-bottom:1px solid var(--border)"><span>${esc(it.name)}</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3);white-space:nowrap">${it.qty ? it.qty + ' ' + esc(it.unit || '') : ''}</span></div>`).join('')}
+            </div>
+          </div>`).join('')}
+        ${flagList('Uncategorized scope — add a category or assign manually', d.uncategorized, 'var(--amber)')}
+        ${flagList('⚠ Missing / RFI', d.missing, 'var(--plano,#c44a2c)')}
+      </div>
+
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="ST.gcBreakdown=null;render()">Close</button>
+        <button class="btn btn-amber" onclick="gcBreakdownActivate('${d.pid}')" title="Mark every detected category active on the project board">✓ Activate categories on board</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function buildDraftReviewModal() {
   const d = ST.estimatorDraft; if (!d) return '';
   const proj = allProjects().find(x => x.id === d.pid);
@@ -13266,7 +13642,8 @@ function buildDraftReviewModal() {
       <div class="modal-btns" style="margin-top:14px">
         <button class="btn btn-ghost" onclick="ST.estimatorDraft=null;render()">Discard</button>
         <button class="btn btn-ghost" onclick="estApplyDraft('${d.pid}','replace')" title="Replace the current estimate with this draft">Replace estimate</button>
-        <button class="btn btn-amber" onclick="estApplyDraft('${d.pid}','append')">Add to Builder →</button>
+        <button class="btn btn-ghost" onclick="estApplyDraft('${d.pid}','append')">Add to Builder</button>
+        <button class="btn btn-amber" onclick="estApplyDraft('${d.pid}','append');ST.estEmailReview='${d.pid}';render()" title="Insert into the Builder, then review & send the estimate email to your GC/client">Add &amp; email →</button>
       </div>
     </div>
   </div>`;
@@ -13356,13 +13733,26 @@ function buildEstAskAI(p, e) {
       </div>
 
       ${isSubAccount() ? `
-      <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg1)">
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg1);display:flex;flex-direction:column;gap:8px">
+        <button onclick="dbeOpen('${p.id}')"
+          style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:var(--ink-900,#181613);color:var(--bone-50,#faf8f2);border:1px solid var(--ink-900,#181613);border-radius:var(--r2);padding:9px 12px;font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.04em;cursor:pointer"
+          title="AI reads your plans/sketches, sizes the system per code, flags missing items, and drafts from your prices">
+          ✦ Design-build estimate (reads plans + your idea)
+        </button>
         <button onclick="estDraftEstimate('${p.id}')" ${ST.estimatorDraftLoading?'disabled':''}
           style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:${ST.estimatorDraftLoading===p.id?'var(--bg2)':'var(--amber)'};color:${ST.estimatorDraftLoading===p.id?'var(--text3)':'var(--bone-50)'};border:1px solid var(--amber-border);border-radius:var(--r2);padding:9px 12px;font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.04em;cursor:${ST.estimatorDraftLoading===p.id?'wait':'pointer'}"
           title="Let the AI draft an estimate from your take-off price list">
-          ${ST.estimatorDraftLoading===p.id?'<span class="rp-spinner"></span> Drafting from your prices…':'✨ Draft estimate from my take-off prices'}
+          ${ST.estimatorDraftLoading===p.id?'<span class="rp-spinner"></span> Drafting from your prices…':'✨ Quick draft from my prices'}
         </button>
-      </div>` : ''}
+      </div>` : `
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg1)">
+        <button onclick="gcPlanBreakdown('${p.id}')" ${ST.gcBreakdownLoading?'disabled':''}
+          style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:${ST.gcBreakdownLoading===p.id?'var(--bg2)':'var(--ink-900,#181613)'};color:${ST.gcBreakdownLoading===p.id?'var(--text3)':'var(--bone-50,#faf8f2)'};border:1px solid var(--ink-900,#181613);border-radius:var(--r2);padding:9px 12px;font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.04em;cursor:${ST.gcBreakdownLoading===p.id?'wait':'pointer'}"
+          title="AI reads the plans, breaks the scope into your bid categories, then you RFP the subs per category">
+          ${ST.gcBreakdownLoading===p.id?'<span class="rp-spinner"></span> Reading plans…':'✦ Break down plans → RFP subs'}
+        </button>
+        ${ST.overrides[p.id]?._aiBreakdown ? `<div style="text-align:center;margin-top:6px"><span onclick="gcBreakdownReopen('${p.id}')" style="font-family:var(--mono);font-size:9.5px;color:var(--text3);cursor:pointer;text-decoration:underline">↺ reopen last breakdown (no AI credit)</span></div>` : ''}
+      </div>`}
 
       ${ctxBar}
 
@@ -13372,7 +13762,7 @@ function buildEstAskAI(p, e) {
             <div style="font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Suggested questions</div>
             <div style="display:flex;flex-direction:column;gap:5px">
               ${estPrompts().map(q => `
-                <button onclick="document.getElementById('est-chat-input').value=${JSON.stringify(q)};document.getElementById('est-chat-input').focus()"
+                <button onclick="document.getElementById('est-chat-input').value=${esc(JSON.stringify(q))};document.getElementById('est-chat-input').focus()"
                   style="text-align:left;background:var(--bg1);border:1px solid var(--border);border-radius:var(--r2);padding:8px 12px;font-family:var(--sans);font-size:11px;color:var(--text2);cursor:pointer;transition:all .12s;line-height:1.4"
                   onmouseover="this.style.borderColor='var(--amber)';this.style.color='var(--text)'"
                   onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text2)'">${esc(q)}</button>
@@ -16813,6 +17203,171 @@ function schedApplyDependencies(pid) {
   else showToast('All dependencies already satisfied.', 'info');
 }
 
+// ── AI schedule proposal (PILOT) ─────────────────────────────────────────────
+// Reads the project's scope (Builder cost codes + items, or the sub estimate
+// categories), asks the AI to lay it out in real construction sequence, then a
+// forward pass turns durations + dependencies into dated Gantt tasks. Reviewable
+// before anything lands on the chart.
+
+// Pull the scope the schedule should cover.
+function schedScopeItems(pid) {
+  const out = [];
+  const est = ST.estimates && ST.estimates[pid];
+  if (est && (est.groups || []).length) {
+    for (const g of est.groups) {
+      const group = ((g.code ? g.code + ' ' : '') + (g.title || '')).trim();
+      const items = (g.items || []).map(it => it.title || it.code).filter(Boolean);
+      out.push({ group: group || 'Scope', items });
+    }
+  }
+  if (!out.length && typeof subEstGet === 'function' && typeof CATS !== 'undefined') {
+    for (const cat of CATS) {
+      const e = subEstGet(pid, cat);
+      if (e && Number(e.amount) > 0) out.push({ group: cat, items: [] });
+    }
+  }
+  return out;
+}
+
+async function schedProposeAI(pid) {
+  if (ST.schedAILoading) return;
+  if (typeof trialGuardAI === 'function' && !trialGuardAI()) return;
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  const scope = schedScopeItems(pid);
+  if (!scope.length) { showToast('Add cost codes / items to this project first (Builder or estimate), so the AI knows the scope.', 'warn'); return; }
+  const projectType = (ST.estimator && ST.estimator[pid] && ST.estimator[pid].setup && ST.estimator[pid].setup.projectType) || '';
+  const scopeText = scope.map(s => `- ${s.group}${s.items.length ? ': ' + s.items.join(', ') : ''}`).join('\n');
+
+  const prompt = `You are a senior construction scheduler. Build a realistic construction schedule (for a Gantt chart) for this project, in CORRECT construction sequence.
+
+PROJECT: ${p.name}
+PROJECT TYPE: ${projectType || '(infer it from the scope)'}
+SCOPE — cost codes / line items in this estimate:
+${scopeText}
+
+Rules:
+- Order tasks in REAL construction sequence. If any demolition scope exists, Demolition is the FIRST phase. Typical order: Mobilization/Permits → Demolition → Site/Earthwork → Foundation/Concrete → Structure/Framing → Roofing/Envelope/Waterproofing → Rough MEP (plumbing, HVAC, electrical) → Insulation → Drywall → Finishes (paint, tile, flooring, cabinets, doors) → Fixtures/Trim → Punch list & Final inspection.
+- Only include phases/tasks the scope actually needs — but you MAY add obvious prerequisites (permits, mobilization) and a final inspection/punch list.
+- Each task: a realistic duration in WORKING days and a list of the tasks it depends on (by EXACT task name).
+- Identify the project type.
+
+Return STRICT JSON ONLY (no prose, no code fences):
+{"projectType":"...","phases":[{"name":"Demolition","tasks":[{"name":"Demo & haul-off","durationDays":3,"dependsOn":[]}]}],"notes":"one short line of assumptions"}`;
+
+  ST.schedAILoading = pid; render();
+  try {
+    const text = await aiCompleteText(pid, prompt);
+    const parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.phases)) throw new Error('Could not read a schedule from the AI. Try again.');
+    const phases = [];
+    for (const ph of parsed.phases) {
+      if (!ph || !ph.name) continue;
+      const tasks = [];
+      for (const tk of (ph.tasks || [])) {
+        if (!tk || !tk.name) continue;
+        tasks.push({
+          name: String(tk.name).slice(0, 80),
+          durationDays: Math.max(1, Math.round(Number(tk.durationDays)) || 1),
+          dependsOn: Array.isArray(tk.dependsOn) ? tk.dependsOn.map(String) : [],
+        });
+      }
+      if (tasks.length) phases.push({ name: String(ph.name).slice(0, 60), tasks });
+    }
+    if (!phases.length) throw new Error('The AI did not return usable phases.');
+    ST.schedAIProposal = { pid, projectType: (parsed.projectType || projectType || '').toString(), notes: (parsed.notes || '').toString(), phases, startDate: schedFmtISO(schedToday()) };
+  } catch (err) {
+    showToast('AI schedule failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.schedAILoading = null; render();
+  }
+}
+
+// Forward pass: durations + deps → dated phases & tasks. Phases run sequentially;
+// tasks inside a phase start at the phase start (parallel) unless they depend on
+// another task, in which case they start the day after it finishes.
+function schedApplyAIProposal(pid, mode) {
+  const d = ST.schedAIProposal; if (!d || d.pid !== pid) return;
+  const sched = schedGet(pid);
+  const start0 = schedParseDate(d.startDate) || schedToday();
+  const existingPhaseCount = sched.phases.length;
+  const nameToTask = {};               // task name → { id, end(Date) }
+  const newPhases = [], newTasks = [];
+  let cursor = start0, ci = 0;
+  for (const ph of d.phases) {
+    const phase = { id: schedGenId('phase'), name: ph.name, color: SCHEDULE_PHASE_COLORS[(existingPhaseCount + ci) % SCHEDULE_PHASE_COLORS.length] };
+    newPhases.push(phase); ci++;
+    const phaseStart = cursor;
+    let phaseMaxEnd = phaseStart;
+    for (const tk of ph.tasks) {
+      const dur = Math.max(1, Math.round(Number(tk.durationDays)) || 1);
+      let start = phaseStart;
+      for (const dn of (tk.dependsOn || [])) {
+        const dep = nameToTask[dn];
+        if (dep && dep.end) { const cand = schedAddDays(dep.end, 1); if (cand > start) start = cand; }
+      }
+      const end = schedAddDays(start, dur - 1);
+      const task = { id: schedGenId('task'), name: tk.name, phaseId: phase.id, start: schedFmtISO(start), end: schedFmtISO(end), progress: 0, assignee: '', deps: [], color: phase.color, _depNames: tk.dependsOn || [] };
+      newTasks.push(task);
+      nameToTask[tk.name] = { id: task.id, end };
+      if (end > phaseMaxEnd) phaseMaxEnd = end;
+    }
+    cursor = schedAddDays(phaseMaxEnd, 1);   // next phase starts after this one
+  }
+  // Resolve dependency names → task ids (within this proposal).
+  for (const t of newTasks) { t.deps = (t._depNames || []).map(n => nameToTask[n] && nameToTask[n].id).filter(Boolean); delete t._depNames; }
+
+  if (mode === 'replace') { sched.phases = newPhases; sched.tasks = newTasks; }
+  else { sched.phases = [...sched.phases, ...newPhases]; sched.tasks = [...sched.tasks, ...newTasks]; }
+
+  ST.schedAIProposal = null;
+  ST.scheduleSelProj = pid; ST.scheduleView = 'gantt';
+  saveSt();
+  setTab('schedule'); render();
+  showToast('Schedule added — drag dates or edit tasks to fine-tune.', 'success');
+}
+
+function schedAIEditStart(val) { if (ST.schedAIProposal) { ST.schedAIProposal.startDate = val; render(); } }
+
+function buildSchedAIReviewModal() {
+  const d = ST.schedAIProposal; if (!d) return '';
+  const p = allProjects().find(x => x.id === d.pid) || { name: d.pid };
+  const totalTasks = d.phases.reduce((s, ph) => s + ph.tasks.length, 0);
+  return `<div class="backdrop" onclick="if(event.target===this){ST.schedAIProposal=null;render()}">
+    <div class="modal modal-wide" style="max-width:640px" onclick="event.stopPropagation()">
+      <div class="modal-title">✦ AI construction schedule</div>
+      <div class="modal-sub">${esc(p.name)}${d.projectType?` · ${esc(d.projectType)}`:''} · ${d.phases.length} phase${d.phases.length===1?'':'s'} · ${totalTasks} task${totalTasks===1?'':'s'}</div>
+      ${d.notes ? `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;margin:12px 0;line-height:1.5">${esc(d.notes)}</div>` : ''}
+
+      <div style="display:flex;align-items:center;gap:10px;margin:8px 0 12px">
+        <span class="modal-label" style="margin:0">Start date</span>
+        <input type="date" class="minp" value="${esc(d.startDate)}" onchange="schedAIEditStart(this.value)" style="max-width:170px">
+        <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">phases run in sequence; dependencies chain automatically</span>
+      </div>
+
+      <div style="max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:var(--r2)">
+        ${d.phases.map((ph, pi) => `
+          <div style="border-bottom:1px solid var(--border)">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg1)">
+              <span style="width:9px;height:9px;border-radius:2px;background:${SCHEDULE_PHASE_COLORS[pi % SCHEDULE_PHASE_COLORS.length]}"></span>
+              <b style="font-size:12.5px;color:var(--ink-900)">${esc(ph.name)}</b>
+              <span style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-left:auto">${ph.tasks.length} task${ph.tasks.length===1?'':'s'}</span>
+            </div>
+            ${ph.tasks.map(tk => `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 14px;border-top:1px solid var(--border);font-size:12px">
+              <span style="color:var(--ink-900)">${esc(tk.name)}${(tk.dependsOn&&tk.dependsOn.length)?` <span style="font-family:var(--mono);font-size:9px;color:var(--text3)">↳ after ${esc(tk.dependsOn.join(', '))}</span>`:''}</span>
+              <span style="font-family:var(--mono);font-size:11px;color:var(--text2);white-space:nowrap">${tk.durationDays}d</span>
+            </div>`).join('')}
+          </div>`).join('')}
+      </div>
+
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="ST.schedAIProposal=null;render()">Discard</button>
+        <button class="btn btn-ghost" onclick="schedApplyAIProposal('${d.pid}','replace')" title="Replace the current schedule with this one">Replace schedule</button>
+        <button class="btn btn-amber" onclick="schedApplyAIProposal('${d.pid}','append')">Add to Gantt →</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 // ── Compute schedule date range ──────────────────────────────────────────────
 function schedDateRange(sched) {
   let min = null, max = null;
@@ -16858,6 +17413,7 @@ function buildScheduleTab() {
       </div>
       <button class="btn btn-ghost btn-sm" onclick="schedAddPhase('${p.id}')">+ Phase</button>
       ${sched.tasks.some(t=>t.deps&&t.deps.length) ? `<button class="btn btn-ghost btn-sm" onclick="schedApplyDependencies('${p.id}')" title="Shift tasks so they start after their dependencies finish">↳ Resolve deps</button>` : ''}
+      <button class="btn btn-ghost btn-sm" onclick="schedProposeAI('${p.id}')" ${ST.schedAILoading?'disabled':''} title="Let AI draft a construction schedule in logical order from this project's scope">${ST.schedAILoading===p.id?'✦ Planning…':'✦ AI schedule'}</button>
       <button class="btn btn-amber btn-sm" onclick="schedOpenTaskModal('${p.id}',null)">+ Task</button>
     </div>
 
