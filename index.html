@@ -4716,6 +4716,16 @@ async function loadSt() {
     ST.dbeNarration = '';
     ST.gcBreakdown = null;
     ST.gcBreakdownLoading = null;
+    ST.fuCompose = null;
+    ST.fuComposeLoading = null;
+    ST.fuSending = false;
+    ST.awardModal = null;
+    ST.awardLoading = null;
+    ST.awardSending = false;
+    ST.coDraftLoading = null;
+    ST.assistantLog = [];
+    ST.assistantPending = null;
+    ST.assistantBusy = false;
     if (typeof _estPortalChecked !== 'undefined' && _estPortalChecked.clear) _estPortalChecked.clear();
     if (ST.estimator) {
       for (const pid of Object.keys(ST.estimator)) {
@@ -5075,7 +5085,7 @@ function presenceMe() {
   return { uid: u.id || u.email || 'me', name: (u.user_metadata && u.user_metadata.display_name) || (u.email ? u.email.split('@')[0] : 'User') };
 }
 function presenceViewLabel() {
-  const M = { today: 'Today', overview: 'Overview', projects: 'Projects', subs: 'Subs', files: 'Files', builder: 'Take-off', settings: 'Settings', insights: 'Insights', estimator: 'Estimator', schedule: 'Schedule', dailylog: 'Daily log', rfis: 'RFIs' };
+  const M = { today: 'Today', assistant: 'AI Assistant', overview: 'Overview', projects: 'Projects', subs: 'Subs', files: 'Files', builder: 'Take-off', settings: 'Settings', insights: 'Insights', estimator: 'Estimator', schedule: 'Schedule', dailylog: 'Daily log', rfis: 'RFIs' };
   return M[ST.tab] || 'Overview';
 }
 function presenceColor(key) {
@@ -5932,6 +5942,8 @@ function render() {
     ST.dbeModal ? 'dbe' : '',
     ST.dbeResult ? 'dberes' : '',
     ST.gcBreakdown ? 'gcbd' : '',
+    ST.fuCompose ? 'fucompose' : '',
+    ST.awardModal ? 'award' : '',
   ].filter(Boolean).join('|');
   const overlayJustOpened = overlaySig && overlaySig !== _lastOverlaySig;
   _lastOverlaySig = overlaySig;
@@ -6640,6 +6652,7 @@ function buildBuilderDetail(proj) {
         <button class="btn btn-ghost btn-sm" onclick="builderImportFromBids('${proj.id}')" title="Pull selected bids">⥃ Import from bids</button>
         <button class="btn btn-ghost btn-sm" onclick="ST.priceBookModal={pid:'${proj.id}'};render()" title="Insert reusable items from your price book">▤ Price book${(ST.priceBook||[]).length?' · '+ST.priceBook.length:''}</button>
         <button class="btn btn-ghost btn-sm" onclick="openTradeCalc('${proj.id}')" title="Measure by trade and add the quantity to the estimate">⊟ Calculators</button>
+        ${hasFeature('fieldops') ? `<button class="btn btn-ghost btn-sm" onclick="schedProposeAI('${proj.id}')" ${ST.schedAILoading?'disabled':''} title="AI drafts a construction schedule (Gantt) from this estimate's cost codes — in real build order">${ST.schedAILoading===proj.id?'✦ Planning…':'✦ AI schedule'}</button>` : ''}
         <button class="btn btn-amber btn-sm" onclick="ST.builderPrintMode=true;ST.builderPrintEditPanel=false;render()">▤ Print preview</button>
       </div>
     </div>
@@ -9770,6 +9783,7 @@ function buildSidebar() {
 
   const allItems = [
     { id:'today',    label:'Today',          icon:'sun',          count: '' },
+    { id:'assistant',label:'AI Assistant',   icon:'sparkles',     count: '' },
     { id:'projects', label:'Projects',       icon:'home',         count: cProjects },
     { id:'subs',     label:dirLabels().plural, icon:'users',        count: cSubs },
     { id:'estimator',label:'Estimator',      icon:'ruler',        count: '' },
@@ -9904,6 +9918,7 @@ function buildApp() {
           ST.tab==='projects' ? buildProjectsTab() :
           ST.tab==='subs' ? buildSubsTab() :
           ST.tab==='files' ? buildFilesTab() :
+          ST.tab==='assistant' ? buildAssistantTab() :
           ST.tab==='builder' ? buildBuilderTab() :
           ST.tab==='settings' ? buildSettingsTab() :
           ST.tab==='insights' ? buildInsightsTab() :
@@ -9957,6 +9972,8 @@ function buildApp() {
       ${ST.dbeModal ? buildDbeModal() : ''}
       ${ST.dbeResult ? buildDbeResultModal() : ''}
       ${ST.gcBreakdown && !ST.sendDialog ? buildGcBreakdownModal() : ''}
+      ${ST.fuCompose ? buildFuComposeModal() : ''}
+      ${ST.awardModal ? buildAwardModal() : ''}
     </div>`;
 }
 
@@ -10557,6 +10574,7 @@ function buildSubGcDeliverySection(p) {
         <button class="btn btn-ghost btn-sm" onclick="subGenerateEstimatePDF('${pid}')" title="Open the builder estimate as a printable PDF"${hasEstimate?'':' style="opacity:.6"'}>↓ Estimate PDF</button>
         <button class="btn btn-ghost btn-sm" onclick="subEmailToGC('${pid}')" title="Open it in your own mail app instead (attach the PDF)">✉ Open in mail app</button>
         <button class="btn btn-ghost btn-sm" onclick="subLogFollowUp('${pid}')" title="Log a call / email you made to chase this estimate">＋ Log follow-up</button>
+        <button class="btn btn-ghost btn-sm" onclick="subComposeFollowUp('${pid}')" ${ST.fuComposeLoading?'disabled':''} title="AI drafts the chase email from the send date, follow-up log and outcome — you review before it goes">${ST.fuComposeLoading===pid?'✦ Drafting…':'✦ AI follow-up'}</button>
       </div>
       <div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);padding-bottom:10px;line-height:1.5">
         ${gmailReady
@@ -12053,6 +12071,11 @@ function buildBidLevelingView(pid, projName, cat) {
         <div style="font-family:var(--sans);font-size:13px;color:var(--ink-900);line-height:1.55">${esc(r.recommendation)}</div>
       </div>` : ''}
 
+    <!-- Award & regret letters (needs a selected winner) -->
+    <div style="display:flex;justify-content:flex-end;margin-bottom:14px">
+      <button class="btn btn-amber btn-sm" onclick="gcAwardLetters('${pid}','${esc(projName)}','${esc(cat)}')" ${ST.awardLoading?'disabled':''} title="Draft the award email for the selected winner and regret emails for the other bidders — you review both before anything sends">${ST.awardLoading===(pid+'|'+cat)?'✦ Drafting…':'✦ Award & regret letters'}</button>
+    </div>
+
     <!-- Bid summary cards -->
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
       ${summaries.map(s => {
@@ -13162,7 +13185,7 @@ async function aiCompleteText(pid, userPrompt, planImages) {
   return full;
 }
 
-async function estDraftEstimate(pid) {
+async function estDraftEstimate(pid, extraNotes) {
   if (ST.estimatorAIStreaming || ST.estimatorDraftLoading) return;
   const priceList = aiPriceList();
   if (!priceList.length) { showToast('Set your unit prices first in Settings → Take-off prices.', 'warn'); return; }
@@ -13174,7 +13197,10 @@ async function estDraftEstimate(pid) {
     const prompt = `Draft a complete ${tradeLabel} estimate for this project as STRICT JSON ONLY — no prose, no code fences.
 Use ONLY these price-list items (format: CODE | name | unit | unitPrice):
 ${plj}
-
+${extraNotes ? `
+USER GUIDANCE — respect this when choosing items and quantities:
+${String(extraNotes).slice(0, 600)}
+` : ''}
 Rules:
 - Every item.code MUST be exactly one of the CODEs above (copy it verbatim).
 - Infer realistic quantities from the project name, setup and any plans in context.
@@ -13293,7 +13319,7 @@ ${planImages.length ? `[${planImages.length} plan/sketch page(s) attached as ima
 Do ALL of this:
 1) SCOPE & QUANTITIES: list the HVAC scope with key quantities (systems & tonnage, equipment, duct LF, supply/return count, line sets, diffusers, etc.). If sizing isn't given (design-build), SIZE IT with rules of thumb (e.g. ~400–600 sf/ton residential as a STARTING point) and state your assumptions plainly.
 2) CODES: applicable requirements for this jurisdiction (Title-24, Manual J/D/S, ASHRAE 62.2 ventilation, permits). ADVISE — never claim compliance.
-3) DRAFT ESTIMATE: line items using ONLY codes from the price list above, grouped by cost code, with quantities from step 1.
+3) DRAFT ESTIMATE: line items using ONLY codes from the price list above, grouped by cost code, with quantities from step 1. If the plans call for a material or product NOT in the price list, SUBSTITUTE the closest item FROM the list and record the substitution in "recommendations" as a note the sub can pass to their client (e.g. "Plans show aluminum duct — your catalog carries R-8 flex, priced that instead; confirm with the GC").
 4) MISSING / FLAGS: anything the scope needs that is NOT in the price list (so the sub adds it), plus open questions / RFIs / risks.
 
 Return STRICT JSON ONLY — no prose, no code fences:
@@ -13597,6 +13623,511 @@ function buildGcBreakdownModal() {
         <button class="btn btn-ghost" onclick="ST.gcBreakdown=null;render()">Close</button>
         <button class="btn btn-amber" onclick="gcBreakdownActivate('${d.pid}')" title="Mark every detected category active on the project board">✓ Activate categories on board</button>
       </div>
+    </div>
+  </div>`;
+}
+
+// ============================================================
+// AI TASK SKILLS — follow-up composer (sub), award/regret letters (GC),
+// change order from plan diff. Each drafts with AI, is fully editable in a
+// review modal, and only leaves the building through an explicit send/save.
+// ============================================================
+
+// ── Skill: AI follow-up composer (sub) ───────────────────────────────────────
+// Drafts the chase email from what actually happened: days since the send,
+// the follow-up log, and the outcome so far.
+async function subComposeFollowUp(pid) {
+  if (ST.fuComposeLoading) return;
+  const gc = subGcGet(pid);
+  const d = subDeliveryGet(pid);
+  if (!d.sends.length) { showToast('Send the estimate first — then the AI can chase it.', 'warn'); return; }
+  if (!trialGuardAI()) return;
+  ST.fuComposeLoading = pid; render();
+  try {
+    const p = allProjects().find(x => x.id === pid) || { name: pid };
+    const t = builderTotals(pid);
+    const lastSend = d.sends[d.sends.length - 1];
+    const days = Math.max(0, Math.floor((Date.now() - new Date(lastSend.ts).getTime()) / 86400000));
+    const fuLog = d.followUps.map(f => `- ${new Date(f.ts).toLocaleDateString()}: ${f.note || ''}`).join('\n') || '(none)';
+    const prompt = `You are helping a subcontractor chase an estimate they sent. Write ONE short, professional, friendly follow-up email (60-110 words) that moves the deal forward without sounding pushy.
+
+CONTEXT:
+- Project: ${p.name}
+- Estimate total: ${fmt$(t.client)}
+- Sent to: ${gc.contact || gc.company || 'the GC'} (${gc.company || 'GC'})
+- Sent ${days} day(s) ago (${new Date(lastSend.ts).toLocaleDateString()})
+- Outcome so far: ${d.status || 'no response yet'}
+- Previous follow-ups (${d.followUps.length}):
+${fuLog}
+- Sender: ${subSenderName()}
+
+Rules: reference the estimate naturally, make ONE clear ask (a reply, a quick call, or a decision date), and match the tone to the history — the more follow-ups already sent, the shorter and more direct. Sign off with the sender name.
+
+Return STRICT JSON ONLY — no prose, no code fences: {"subject":"...","body":"..."}`;
+    const text = await aiCompleteText(pid, prompt);
+    const parsed = parseAIJson(text);
+    if (!parsed || !parsed.body) throw new Error('Could not read a draft from the AI. Try again.');
+    ST.fuCompose = { pid, subject: String(parsed.subject || ('Following up — ' + p.name)), body: String(parsed.body) };
+  } catch (err) {
+    showToast('Follow-up draft failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.fuComposeLoading = null; render();
+  }
+}
+
+async function fuComposeSend(pid) {
+  const m = ST.fuCompose; if (!m || m.pid !== pid) return;
+  m.subject = document.getElementById('fuc-subject')?.value ?? m.subject;
+  m.body = document.getElementById('fuc-body')?.value ?? m.body;
+  const gc = subGcGet(pid);
+  if (!gc.email) { showToast('Add the GC / client email on the project first.', 'warn'); return; }
+  const uid = AUTH.user?.id;
+  const gst = uid && ST.gmailStatus?.[uid];
+  if (!gst || !gst.connected) { showToast('Connect your Gmail first (Settings → Email) — or use "Open in mail app".', 'warn'); return; }
+  if (!trialGuardEmail()) return;
+  ST.fuSending = true; render();
+  try {
+    const link = await estPortalEnsure(pid);
+    const body = m.body + (link ? `\n\nReview the estimate and reply online:\n\n${link}` : '');
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/gmail/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify({ userId: uid, to: gc.email, subject: m.subject, body, html: nvEmailHtml(body, link ? { portalLink: link, portalLabel: 'View & respond to the estimate' } : {}), fromName: subSenderName() }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    const d = subDeliveryEnsure(pid);
+    d.followUps.push({ ts: new Date().toISOString(), note: 'Follow-up email sent (AI-drafted)' });
+    ST.fuCompose = null;
+    subLogSend(pid, gc.email, m.subject); // saves + renders
+    showToast(`Follow-up sent to ${gc.email}.`, 'success');
+  } catch (e) {
+    showToast('Send failed: ' + (e.message || e), 'error');
+  } finally {
+    ST.fuSending = false; render();
+  }
+}
+
+function fuComposeMailto(pid) {
+  const m = ST.fuCompose; if (!m || m.pid !== pid) return;
+  m.subject = document.getElementById('fuc-subject')?.value ?? m.subject;
+  m.body = document.getElementById('fuc-body')?.value ?? m.body;
+  const gc = subGcGet(pid);
+  if (!gc.email) { showToast('Add the GC / client email on the project first.', 'warn'); return; }
+  const d = subDeliveryEnsure(pid);
+  d.followUps.push({ ts: new Date().toISOString(), note: 'Follow-up email sent (mail app, AI-drafted)' });
+  ST.fuCompose = null;
+  subLogSend(pid, gc.email, m.subject); // saves + renders
+  window.location.href = `mailto:${encodeURIComponent(gc.email)}?subject=${encodeURIComponent(m.subject)}&body=${encodeURIComponent(m.body)}`;
+}
+
+function buildFuComposeModal() {
+  const m = ST.fuCompose; if (!m) return '';
+  const p = allProjects().find(x => x.id === m.pid) || { name: m.pid };
+  const gc = subGcGet(m.pid);
+  return `<div class="backdrop" onclick="if(event.target===this){ST.fuCompose=null;render()}">
+    <div class="modal" style="max-width:560px" onclick="event.stopPropagation()">
+      <div class="modal-title">✦ AI follow-up</div>
+      <div class="modal-sub">${esc(p.name)} · to ${esc(gc.email || '(add the GC email first)')} — edit anything before it goes out</div>
+      <div class="modal-label" style="margin-top:14px">Subject</div>
+      <input type="text" class="modal-input" id="fuc-subject" value="${esc(m.subject)}">
+      <div class="modal-label">Message <span style="color:var(--text3)">(the estimate portal link is added automatically on send)</span></div>
+      <textarea id="fuc-body" rows="8" class="minp" style="width:100%;box-sizing:border-box;font-family:var(--sans);font-size:12.5px;line-height:1.55;resize:vertical">${esc(m.body)}</textarea>
+      ${isTrialPlan() ? `<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:6px">Trial: ${trialEmailsLeft()}/${TRIAL_LIMITS.emails} sends left</div>` : ''}
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="ST.fuCompose=null;render()">Discard</button>
+        <button class="btn btn-ghost" onclick="fuComposeMailto('${m.pid}')">✉ Open in mail app</button>
+        <button class="btn btn-amber" ${ST.fuSending ? 'disabled' : ''} onclick="fuComposeSend('${m.pid}')">${ST.fuSending ? 'Sending…' : '✓ Send follow-up'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Skill: change order from a plan-revision diff ────────────────────────────
+// Turns the Plan Diff result into a CO draft (priced from the sub's catalog
+// when possible) and opens the EXISTING change-order editor prefilled.
+async function coDraftFromDiff(pid) {
+  if (ST.coDraftLoading) return;
+  const diff = getPlanDiff(pid);
+  if (!diff || diff.status !== 'done' || !diff.result) { showToast('Run "Compare plan revisions" first.', 'warn'); return; }
+  const changes = Array.isArray(diff.result.changes) ? diff.result.changes : [];
+  if (!changes.length) { showToast('No changes detected — nothing to draft.', 'info'); return; }
+  if (!trialGuardAI()) return;
+  ST.coDraftLoading = pid; render();
+  try {
+    const p = allProjects().find(x => x.id === pid) || { name: pid };
+    const priceList = isSubAccount() ? aiPriceList() : [];
+    const plText = priceList.length ? `
+THE SUB'S PRICE LIST (use these unit prices when the work matches — CODE | name | unit | $/unit):
+${priceList.map(r => `${r.code} | ${r.name} | ${r.unit} | ${r.perUnit}`).join('\n')}` : '';
+    const changeText = changes.map(c => `- [${c.sheet || '?'} · ${c.severity || ''}${c.affectsScope ? ' · AFFECTS SCOPE' : ''}] ${c.description || ''}`).join('\n');
+    const prompt = `A plan revision changed this project's scope. Draft a CHANGE ORDER covering the affected work.
+
+PROJECT: ${p.name}
+REVISION CHANGES (from the AI plan comparison):
+${changeText}
+${plText}
+
+Rules:
+- Only include work the changes actually require. Estimate quantities conservatively and state assumptions.
+- ${priceList.length ? 'Price from the price list when the work matches; any other unit costs' : 'Unit costs'} are ROUGH allowances the user must verify before sending.
+- Keep it to the meaningful lines (3-10 items).
+
+Return STRICT JSON ONLY — no prose, no code fences:
+{"title":"CO — ...","description":"2-3 lines: what changed and why this CO exists","items":[{"title":"...","qty":1,"unitCost":0,"markup":0}],"notes":"one line of assumptions"}`;
+    const text = await aiCompleteText(pid, prompt);
+    const parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.items) || !parsed.items.length) throw new Error('Could not read CO items from the AI. Try again.');
+    const mkDef = Number(getSettings().defaultMarkup?.Materials) || 0;
+    const items = parsed.items.map(it => ({
+      title: String((it && it.title) || '').slice(0, 120),
+      qty: Math.max(0, Number(it && it.qty) || 1),
+      unitCost: Math.max(0, Number(it && it.unitCost) || 0),
+      markup: (it && it.markup != null) ? (Number(it.markup) || 0) : mkDef,
+    })).filter(it => it.title);
+    if (!items.length) throw new Error('The AI returned no usable line items.');
+    // Open the existing CO editor prefilled — that's the review gate.
+    ST.coEdit = { pid, coId: null, _draft: {
+      id: 'co_' + Date.now(), ts: new Date().toISOString(),
+      user: { name: AUTH.user?.user_metadata?.display_name || 'You' },
+      title: String(parsed.title || 'CO — plan revision').slice(0, 140),
+      desc: (String(parsed.description || '') + (parsed.notes ? '\nAssumptions: ' + String(parsed.notes) : '')).trim(),
+      status: 'pending', items,
+    } };
+  } catch (err) {
+    showToast('CO draft failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.coDraftLoading = null; render();
+  }
+}
+
+// ── Skill: award & regret letters after bid leveling (GC) ────────────────────
+async function gcAwardLetters(pid, projName, cat) {
+  if (ST.awardLoading) return;
+  const sel = getSelectedBid(pid, cat);
+  if (!sel) { showToast('Select the winning bid first (open the bids for this category and pick the winner).', 'warn'); return; }
+  const bids = getBidsForProjCat(projName, cat);
+  const losers = bids.filter(b => b.sub.id !== sel.sid).map(b => b.sub).filter(s => s.email && s.email.includes('@'));
+  if (!trialGuardAI()) return;
+  ST.awardLoading = pid + '|' + cat; render();
+  try {
+    const eff = Number(sel.bid.discPrice || sel.bid.price || 0);
+    const prompt = `You are writing two short emails for a general contractor who just awarded a trade.
+
+CONTEXT:
+- Project: ${projName}
+- Trade / category: ${cat}
+- Winner: ${sel.sub.company} (contact: ${sel.sub.contact || '—'}) at ${fmt$(eff)}
+- Other bidders (they get the regret email): ${losers.map(s => s.company).join(', ') || '(none)'}
+- Sender: ${subSenderName()}
+
+Write:
+1) AWARD email to the winner — congratulate, confirm the trade and price, give next steps (contract + scheduling call). Warm, professional. 80-120 words.
+2) REGRET email template for the other bidders — thank them for the time, brief and kind, keep the door open for future work. Use {{company}} exactly where their company name goes. 50-90 words.
+
+Return STRICT JSON ONLY — no prose, no code fences:
+{"award":{"subject":"...","body":"..."},"regret":{"subject":"...","body":"..."}}`;
+    const text = await aiCompleteText(pid, prompt);
+    const parsed = parseAIJson(text);
+    if (!parsed || !parsed.award || !parsed.regret) throw new Error('Could not read the letters from the AI. Try again.');
+    ST.awardModal = {
+      pid, cat, projName,
+      winner: { sid: sel.sid, company: sel.sub.company, email: sel.sub.email || '' },
+      losers: losers.map(s => ({ sid: s.id, company: s.company, email: s.email })),
+      award: { subject: String(parsed.award.subject || ('Award — ' + cat + ' · ' + projName)), body: String(parsed.award.body || '') },
+      regret: { subject: String(parsed.regret.subject || ('Thank you — ' + cat + ' · ' + projName)), body: String(parsed.regret.body || '') },
+    };
+  } catch (err) {
+    showToast('Award letters failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.awardLoading = null; render();
+  }
+}
+
+async function awardSendAll() {
+  const m = ST.awardModal; if (!m || ST.awardSending) return;
+  const uid = AUTH.user?.id;
+  const gst = uid && ST.gmailStatus?.[uid];
+  if (!gst || !gst.connected) { showToast('Connect your Gmail first (Settings → Email).', 'warn'); return; }
+  m.award.subject = document.getElementById('aw-subject')?.value ?? m.award.subject;
+  m.award.body = document.getElementById('aw-body')?.value ?? m.award.body;
+  m.regret.subject = document.getElementById('rg-subject')?.value ?? m.regret.subject;
+  m.regret.body = document.getElementById('rg-body')?.value ?? m.regret.body;
+  const recipients = [];
+  if (m.winner.email) recipients.push({ sid: m.winner.sid, to: m.winner.email, subject: m.award.subject, body: m.award.body, company: m.winner.company });
+  for (const s of m.losers) recipients.push({ sid: s.sid, to: s.email, subject: m.regret.subject, body: m.regret.body.split('{{company}}').join(s.company), company: s.company });
+  if (!recipients.length) { showToast('No recipients with an email address.', 'warn'); return; }
+  ST.awardSending = true; render();
+  let ok = 0, fail = 0, capped = false;
+  for (const r of recipients) {
+    if (!trialGuardEmail()) { capped = true; break; } // trial cap — stop cleanly
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/gmail/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+        body: JSON.stringify({ userId: uid, to: r.to, subject: r.subject, body: r.body, html: nvEmailHtml(r.body), fromName: subSenderName() }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      ok++;
+    } catch (e) { fail++; console.warn('award send failed for', r.to, e); }
+  }
+  if (ok) {
+    if (!ST.sentHistory[m.pid]) ST.sentHistory[m.pid] = {};
+    if (!ST.sentHistory[m.pid][m.cat]) ST.sentHistory[m.pid][m.cat] = [];
+    ST.sentHistory[m.pid][m.cat].push({ ts: new Date().toISOString(), templateId: 'award', recipients: recipients.slice(0, ok + fail).map(r => ({ sid: r.sid, company: r.company, email: r.to })) });
+    addActivity('award_sent', m.winner.company, m.projName, m.cat, null, null, `Award + regret emails sent (${ok})`);
+  }
+  ST.awardSending = false;
+  ST.awardModal = null;
+  saveSt(); render();
+  showToast(`${ok} email${ok === 1 ? '' : 's'} sent${fail ? ` · ${fail} failed` : ''}${capped ? ' · trial email limit reached' : ''}.`, (fail || capped) ? 'warn' : 'success');
+}
+
+function buildAwardModal() {
+  const m = ST.awardModal; if (!m) return '';
+  const uid = AUTH.user?.id;
+  const gmailReady = !!(uid && ST.gmailStatus?.[uid]?.connected);
+  const total = (m.winner.email ? 1 : 0) + m.losers.length;
+  return `<div class="backdrop" onclick="if(event.target===this){ST.awardModal=null;render()}">
+    <div class="modal modal-wide" style="max-width:640px" onclick="event.stopPropagation()">
+      <div class="modal-title">✦ Award &amp; regret letters</div>
+      <div class="modal-sub">${esc(m.projName)} · ${esc(m.cat)} — review both, then send all from your connected email</div>
+
+      <div class="modal-label" style="margin-top:14px;color:var(--green)">AWARD → ${esc(m.winner.company)} ${m.winner.email ? `<span style="color:var(--text3)">(${esc(m.winner.email)})</span>` : '<span style="color:var(--red)">— no email on file, will be skipped</span>'}</div>
+      <input type="text" class="modal-input" id="aw-subject" value="${esc(m.award.subject)}">
+      <textarea id="aw-body" rows="6" class="minp" style="width:100%;box-sizing:border-box;font-family:var(--sans);font-size:12.5px;line-height:1.5;resize:vertical">${esc(m.award.body)}</textarea>
+
+      <div class="modal-label" style="margin-top:14px">REGRET → ${m.losers.length} bidder${m.losers.length === 1 ? '' : 's'} <span style="color:var(--text3)">(${esc(m.losers.map(s => s.company).join(', ') || 'none with email')}) · {{company}} is replaced per recipient</span></div>
+      <input type="text" class="modal-input" id="rg-subject" value="${esc(m.regret.subject)}">
+      <textarea id="rg-body" rows="5" class="minp" style="width:100%;box-sizing:border-box;font-family:var(--sans);font-size:12.5px;line-height:1.5;resize:vertical">${esc(m.regret.body)}</textarea>
+
+      ${isTrialPlan() ? `<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:6px">Trial: ${trialEmailsLeft()}/${TRIAL_LIMITS.emails} sends left — each email counts</div>` : ''}
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="ST.awardModal=null;render()">Cancel</button>
+        <button class="btn btn-amber" ${(ST.awardSending || !gmailReady || !total) ? 'disabled' : ''} title="${gmailReady ? '' : 'Connect your Gmail in Settings → Email first'}" onclick="awardSendAll()">${ST.awardSending ? 'Sending…' : `✓ Send ${total} email${total === 1 ? '' : 's'}`}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ============================================================
+// AI ASSISTANT TAB — one place to ask the platform to DO things.
+// "Create a Gantt for X keeping demolition first", "Generate an estimate for
+// X", "Send the follow-up", "Award letters for HVAC on X"… A lightweight
+// intent router (keywords EN/ES + project-name matching) dispatches to the
+// existing AI skills — each with its own review gate — and anything that
+// isn't a command becomes a normal AI question with project context.
+// The log is in-memory only (a command console, not a record).
+// ============================================================
+
+function assistantPush(role, text) {
+  if (!ST.assistantLog) ST.assistantLog = [];
+  ST.assistantLog.push({ role, text: String(text || ''), ts: Date.now() });
+  render();
+  setTimeout(() => { const el = document.getElementById('ai-cmd-log'); if (el) el.scrollTop = el.scrollHeight; }, 30);
+}
+
+function aiCmdExampleFill(el) {
+  const inp = document.getElementById('ai-cmd-input');
+  if (inp) { inp.value = el.getAttribute('data-fill') || ''; inp.focus(); }
+}
+
+// Trade-aware example cards — the "what can I ask" cuadros.
+function aiCmdExamples() {
+  const projs = allProjects();
+  const pn = projs.length ? projs[0].name : 'my project';
+  if (isSubAccount()) {
+    return [
+      { ic: '✎', label: 'Ask for an estimate', fill: `Generate an estimate for ${pn} — read the plans and use my prices` },
+      { ic: '✉', label: 'Ask to send a follow-up', fill: `Send a follow-up for ${pn}` },
+      { ic: '▦', label: 'Ask for a schedule (Gantt)', fill: `Create a construction schedule for ${pn} — keep in mind demolition goes first` },
+      { ic: '✦', label: 'Ask for design advice', fill: `What size system would you design for ${pn}?` },
+    ];
+  }
+  return [
+    { ic: '▤', label: 'Ask to break down plans → RFPs', fill: `Break down the plans of ${pn} and prep RFPs by category` },
+    { ic: '▦', label: 'Ask for a schedule (Gantt)', fill: `Create a construction schedule for ${pn}` },
+    { ic: '⇆', label: 'Ask for award & regret letters', fill: `Award letters for HVAC on ${pn}` },
+    { ic: '✉', label: 'Ask to send RFP follow-ups', fill: `Follow up HVAC bids on ${pn}` },
+    { ic: '✎', label: 'Ask for a budget estimate', fill: `Generate a budget estimate for ${pn} using my unit prices` },
+  ];
+}
+
+// Keyword intent detection (EN + ES). Order matters — most specific first.
+function aiCmdIntent(msg) {
+  const m = msg.toLowerCase();
+  const has = (...ws) => ws.some(w => m.includes(w));
+  if (has('award', 'regret', 'adjudic', 'ganador')) return 'award';
+  if (has('break down', 'breakdown', 'desglos', 'rfp', 'rfq')) return 'breakdown';
+  if (has('follow', 'seguimiento')) return 'followup';
+  if (has('schedule', 'gantt', 'cronograma', 'calendario')) return 'schedule';
+  if (has('estimate', 'estimado', 'presupuesto', 'cotiza', 'quote', 'design-build', 'design/build', 'precio')) return 'estimate';
+  return 'chat';
+}
+
+// Match the message to a project: full-name substring, then word overlap,
+// then the only-project fallback. Ambiguity → ask with clickable chips.
+function aiCmdMatchProject(msg) {
+  const projs = allProjects();
+  if (!projs.length) return { status: 'none' };
+  const m = msg.toLowerCase();
+  const full = projs.find(p => (p.name || '').toLowerCase() && m.includes((p.name || '').toLowerCase()));
+  if (full) return { status: 'ok', p: full };
+  const scored = projs.map(p => {
+    const toks = (p.name || '').toLowerCase().split(/[^a-z0-9áéíóúñ]+/).filter(w => w.length > 3);
+    return { p, score: toks.filter(w => m.includes(w)).length };
+  }).filter(s => s.score > 0).sort((a, b) => b.score - a.score);
+  if (scored.length && (scored.length === 1 || scored[0].score > scored[1].score)) return { status: 'ok', p: scored[0].p };
+  if (projs.length === 1) return { status: 'ok', p: projs[0] };
+  return { status: 'ambiguous', projs };
+}
+
+async function aiCmdSend() {
+  const inp = document.getElementById('ai-cmd-input');
+  const msg = (inp && inp.value || '').trim();
+  if (!msg || ST.assistantBusy) return;
+  if (inp) inp.value = '';
+  assistantPush('user', msg);
+  const intent = aiCmdIntent(msg);
+  const match = aiCmdMatchProject(msg);
+  if (match.status === 'none') { assistantPush('assistant', 'No projects yet — create one in Projects first, then ask me again.'); return; }
+  if (match.status === 'ambiguous') {
+    ST.assistantPending = { intent, msg };
+    assistantPush('assistant', 'Which project?\n' + match.projs.slice(0, 8).map(p => `[[${p.id}|${p.name}]]`).join(' '));
+    return;
+  }
+  await aiCmdDispatch(intent, match.p, msg);
+}
+
+function aiCmdPickProject(pid) {
+  const pend = ST.assistantPending; if (!pend) return;
+  ST.assistantPending = null;
+  const p = allProjects().find(x => x.id === pid); if (!p) return;
+  assistantPush('user', p.name);
+  aiCmdDispatch(pend.intent, p, pend.msg + ' — project: ' + p.name);
+}
+
+async function aiCmdDispatch(intent, p, msg) {
+  const pid = p.id;
+
+  if (intent === 'schedule') {
+    if (!hasFeature('fieldops')) { assistantPush('assistant', 'Scheduling (Gantt) is part of the Pro plan — upgrade to unlock it.'); return; }
+    if (!(ST.estimates && ST.estimates[pid] && (ST.estimates[pid].groups || []).length) && !(typeof subEstTotal === 'function' && subEstTotal(pid) > 0)) {
+      assistantPush('assistant', `“${p.name}” has no estimate scope yet — build the estimate first (Builder), then ask me for the schedule so it reflects the real cost codes.`);
+      return;
+    }
+    assistantPush('assistant', `✦ Drafting the construction schedule for “${p.name}” — real build order (demo first when there is demo). The review modal opens when it's ready; nothing lands on the Gantt until you approve.`);
+    await schedProposeAI(pid, msg);
+    return;
+  }
+
+  if (intent === 'estimate') {
+    const e = getEstProj(pid);
+    const hasPlans = (e.plans || []).some(pl => hasPlanBinary(pl));
+    const words = msg.replace(/[^a-z0-9áéíóúñ ]/gi, ' ').split(/\s+/).filter(Boolean).length;
+    if (!hasPlans && words < 8) {
+      assistantPush('assistant', `I don't have plans for “${p.name}” yet, and the request doesn't describe the job. Two ways forward:\n• Upload the plans (Estimator → Plan Sets or Take-off) and ask me again — I'll read them.\n• Or describe the work right here (systems, sizes, rooms, materials…) and I'll generate the estimate anyway from your catalog, with notes on everything I assumed.`);
+      return;
+    }
+    if (isSubAccount()) {
+      assistantPush('assistant', `✦ Generating the estimate for “${p.name}” from your own products & prices${hasPlans ? ' + reading the uploaded plans' : ' (no plans — working from your description)'}. Where the plans call for something you don't carry, I'll substitute from your catalog and note it. You review everything before it touches the Builder.`);
+      ST.dbeNarration = msg;
+      await dbeGenerate(pid);
+    } else {
+      assistantPush('assistant', `✦ Drafting a budget estimate for “${p.name}” from your unit prices. You review it before it lands in the Builder.`);
+      await estDraftEstimate(pid, msg);
+    }
+    return;
+  }
+
+  if (intent === 'followup') {
+    if (isSubAccount()) {
+      const d = subDeliveryGet(pid);
+      if (!d.sends.length) { assistantPush('assistant', `“${p.name}” has no sent estimate yet — send the estimate first (project → Send estimate), then I can chase it for you.`); return; }
+      assistantPush('assistant', `✦ Drafting the follow-up for “${p.name}” from the send history, your follow-up log and the outcome so far — you review it before it goes.`);
+      await subComposeFollowUp(pid);
+    } else {
+      const cat = CATS.find(c => msg.toUpperCase().includes(c));
+      if (!cat) { assistantPush('assistant', `Which category do you want to follow up on for “${p.name}”? Say it like: “follow up HVAC on ${p.name}”.`); return; }
+      assistantPush('assistant', `Opening the RFP send dialog for ${cat} on “${p.name}” — pick the subs and the follow-up template, then send.`);
+      openSendDialog(pid, p.name || '', cat);
+    }
+    return;
+  }
+
+  if (intent === 'award') {
+    if (isSubAccount()) { assistantPush('assistant', 'Award & regret letters are a GC tool (they go to bidding subs). On this workspace, try asking for a follow-up or an estimate instead.'); return; }
+    const cat = CATS.find(c => msg.toUpperCase().includes(c));
+    if (!cat) { assistantPush('assistant', `Which category was awarded on “${p.name}”? Say it like: “award letters for HVAC on ${p.name}”. (The winning bid must be selected in that category.)`); return; }
+    if (!getSelectedBid(pid, cat)) { assistantPush('assistant', `No winner selected yet for ${cat} on “${p.name}” — open that category's bids, pick the winning bid, then ask me again.`); return; }
+    assistantPush('assistant', `✦ Drafting the award letter + regret emails for ${cat} on “${p.name}” — you review both before anything sends.`);
+    await gcAwardLetters(pid, p.name || '', cat);
+    return;
+  }
+
+  if (intent === 'breakdown') {
+    if (isSubAccount()) { assistantPush('assistant', `Plan breakdown → RFPs is a GC tool. As a sub, ask me for an estimate instead — I'll read the plans and price from your catalog.`); return; }
+    const e = getEstProj(pid);
+    if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { assistantPush('assistant', `No plans uploaded for “${p.name}” yet — add the plan set (Estimator → Plan Sets) and ask me again.`); return; }
+    assistantPush('assistant', `✦ Reading the plans of “${p.name}” and breaking the scope into your bid categories — then you can RFP the subs per category, with my item list per trade.`);
+    await gcPlanBreakdown(pid);
+    return;
+  }
+
+  // Anything else → a normal AI question with this project's context.
+  if (!trialGuardAI()) return;
+  ST.assistantBusy = true; render();
+  try {
+    const reply = await aiCompleteText(pid, msg);
+    assistantPush('assistant', reply || '(no answer)');
+  } catch (err) {
+    assistantPush('assistant', '△ ' + (err.message || err));
+  } finally {
+    ST.assistantBusy = false; render();
+  }
+}
+
+function buildAssistantTab() {
+  const log = ST.assistantLog || [];
+  const examples = aiCmdExamples();
+  const busy = !!ST.assistantBusy;
+  // Assistant text: escape, then turn [[pid|name]] tokens into project chips.
+  const fmtA = (t) => esc(t)
+    .replace(/\[\[([a-zA-Z0-9_.-]+)\|([^\]]+)\]\]/g, `<button onclick="aiCmdPickProject('$1')" style="display:inline-block;margin:2px 4px 2px 0;background:var(--bg1);border:1px solid var(--amber-border);color:var(--amber);border-radius:var(--r2);padding:4px 10px;font-family:var(--mono);font-size:11px;cursor:pointer">$2</button>`)
+    .replace(/\n/g, '<br>');
+
+  return `<div class="overview-panel" style="max-width:840px;margin:0 auto">
+    <div style="padding-bottom:14px;border-bottom:1px solid var(--rule);margin-bottom:16px">
+      <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">[ AI ASSISTANT ]</div>
+      <h1 style="font-size:26px;font-weight:600;letter-spacing:-0.02em;color:var(--ink-900);margin:0">Ask the platform to do it.</h1>
+      <div style="font-family:var(--sans);font-size:13px;color:var(--text2);margin-top:6px;line-height:1.5">Estimates, schedules, follow-ups, RFPs, award letters — name the project and what you need. Everything opens for your review before it lands anywhere or sends to anyone.</div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:16px">
+      ${examples.map(ex => `
+        <button data-fill="${esc(ex.fill)}" onclick="aiCmdExampleFill(this)" style="text-align:left;background:var(--bg1);border:1px solid var(--border);border-radius:var(--r2);padding:11px 12px;cursor:pointer;transition:border-color .12s" onmouseover="this.style.borderColor='var(--amber)'" onmouseout="this.style.borderColor='var(--border)'">
+          <div style="font-size:16px;margin-bottom:5px">${ex.ic}</div>
+          <div style="font-family:var(--mono);font-size:10px;letter-spacing:.03em;color:var(--ink-900);line-height:1.4">${esc(ex.label)}</div>
+        </button>`).join('')}
+    </div>
+
+    <div id="ai-cmd-log" style="min-height:180px;max-height:46vh;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r2);background:var(--bg);padding:14px 16px;display:flex;flex-direction:column;gap:10px">
+      ${log.length ? log.map(m => m.role === 'user'
+        ? `<div style="align-self:flex-end;max-width:86%;background:var(--bg3);border:1px solid var(--border);border-radius:10px 2px 10px 10px;padding:8px 12px;font-size:12.5px;color:var(--text)">${esc(m.text)}</div>`
+        : `<div style="align-self:flex-start;max-width:92%;background:var(--bg1);border:1px solid var(--border);border-radius:2px 10px 10px 10px;padding:9px 13px;font-size:12.5px;color:var(--text);line-height:1.55">${fmtA(m.text)}</div>`
+      ).join('') : `<div style="margin:auto;text-align:center;font-family:var(--mono);font-size:11px;color:var(--text3);line-height:1.8">Tap an example above, or just type —<br>“Create a schedule for [project], demolition first” · “Generate an estimate for [project]” · “Send the follow-up for [project]”</div>`}
+      ${busy ? `<div style="align-self:flex-start;font-family:var(--mono);font-size:11px;color:var(--text3)"><span class="rp-spinner"></span> thinking…</div>` : ''}
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <input id="ai-cmd-input" type="text" placeholder="Ask for an estimate, a schedule, a follow-up, award letters…" ${busy ? 'disabled' : ''}
+        onkeydown="if(event.key==='Enter')aiCmdSend()"
+        style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--r2);padding:11px 14px;font-family:var(--sans);font-size:13px;color:var(--text);outline:none" onfocus="this.style.borderColor='var(--amber)'" onblur="this.style.borderColor='var(--border)'">
+      <button class="btn btn-amber" ${busy ? 'disabled' : ''} onclick="aiCmdSend()">Send ↑</button>
+    </div>
+    <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:6px">
+      Plan questions? Use Ask AI inside the Estimator — it reads the sheets. This space is for getting things DONE.${isTrialPlan() ? ` · Trial: ${trialAILeft()}/${TRIAL_LIMITS.aiCalls} AI actions left` : ''}
     </div>
   </div>`;
 }
@@ -17229,7 +17760,7 @@ function schedScopeItems(pid) {
   return out;
 }
 
-async function schedProposeAI(pid) {
+async function schedProposeAI(pid, extraNotes) {
   if (ST.schedAILoading) return;
   if (typeof trialGuardAI === 'function' && !trialGuardAI()) return;
   const p = allProjects().find(x => x.id === pid) || { name: pid };
@@ -17244,7 +17775,10 @@ PROJECT: ${p.name}
 PROJECT TYPE: ${projectType || '(infer it from the scope)'}
 SCOPE — cost codes / line items in this estimate:
 ${scopeText}
-
+${extraNotes ? `
+USER GUIDANCE — respect this when sequencing and sizing the schedule:
+${String(extraNotes).slice(0, 600)}
+` : ''}
 Rules:
 - Order tasks in REAL construction sequence. If any demolition scope exists, Demolition is the FIRST phase. Typical order: Mobilization/Permits → Demolition → Site/Earthwork → Foundation/Concrete → Structure/Framing → Roofing/Envelope/Waterproofing → Rough MEP (plumbing, HVAC, electrical) → Insulation → Drywall → Finishes (paint, tile, flooring, cabinets, doors) → Fixtures/Trim → Punch list & Final inspection.
 - Only include phases/tasks the scope actually needs — but you MAY add obvious prerequisites (permits, mobilization) and a final inspection/punch list.
@@ -17617,6 +18151,7 @@ function buildScheduleTaskModal() {
 // Map a UI tab to the feature group that controls it
 const TAB_FEATURE_MAP = {
   today: 'today',
+  assistant: 'estimator',   // the AI assistant rides the Estimator+AI feature
   projects: 'projects',
   subs: 'projects',
   builder: 'projects',
@@ -21982,6 +22517,9 @@ function buildPlanDiffResult(pid, diff) {
           <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--amber);font-weight:600;margin-bottom:4px">What to do</div>
           <div style="font-family:var(--sans);font-size:12.5px;color:var(--ink-900);line-height:1.5">${esc(r.recommendation)}</div>
         </div>` : ''}
+      ${sorted.length ? `<div style="margin-top:12px;text-align:right">
+        <button class="btn btn-amber btn-sm" onclick="coDraftFromDiff('${pid}')" ${ST.coDraftLoading?'disabled':''} title="AI turns these revision changes into a change-order draft${isSubAccount()?' priced from your catalog':''} — opens in the CO editor for review">${ST.coDraftLoading===pid?'✦ Drafting…':'✦ Draft change order →'}</button>
+      </div>` : ''}
     </div>`;
 }
 
