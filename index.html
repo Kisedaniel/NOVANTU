@@ -4521,6 +4521,25 @@ const DEFAULT_TEMPLATES = {
   followup: {
     subject: "Follow-up — {{project.name}} — {{category}}",
     body: "Hi {{sub.contact}},\n\nFollowing up on {{project.name}} ({{category}}) \u2014 we'd still love your number. Your bid portal is still open here:\n\n{{sub_portal_link}}\n\nIf you'd rather pass, a quick reply lets us know. Otherwise we'd appreciate your bid by {{project.dueDate}}.\n\nThanks,\n{{user.name}}\n{{workspace.name}}"
+  },
+  // ── Base templates the AI starts from (freely editable in Files → Templates).
+  // est_send is filled with tokens at send time; the other three are the BASE the
+  // AI adapts (tone + structure) when drafting — keep {{company}} literal in regret.
+  est_send: {
+    subject: "Estimate — {{project.name}} — {{sender}}",
+    body: "Hi {{gc.contact}},\n\nPlease find our estimate for {{project.name}} below.\n\n{{estimate.breakdown}}\n\nTOTAL: {{estimate.total}}\n\nHappy to walk through any line. Thank you for the opportunity.\n\n{{sender}}"
+  },
+  fu_estimate: {
+    subject: "Following up — {{project.name}}",
+    body: "Hi {{gc.contact}},\n\nJust circling back on the estimate we sent for {{project.name}} ({{estimate.total}}). Happy to answer questions or adjust the scope — is there a good time this week for a quick call?\n\nThanks,\n{{sender}}"
+  },
+  award: {
+    subject: "Award — {{category}} · {{project.name}}",
+    body: "Hi {{company}},\n\nGood news — we're awarding you the {{category}} scope on {{project.name}} at your bid of {{price}}. We'd like to get the subcontract signed and a scheduling call on the books this week.\n\nCongratulations, and welcome aboard.\n\n{{sender}}"
+  },
+  regret: {
+    subject: "Thank you — {{category}} · {{project.name}}",
+    body: "Hi {{company}},\n\nThank you for taking the time to bid the {{category}} scope on {{project.name}}. We've decided to go another direction this round, but we were glad to have your number and hope to work together on a future project.\n\nBest,\n{{sender}}"
   }
 };
 
@@ -4726,6 +4745,10 @@ async function loadSt() {
     ST.assistantLog = [];
     ST.assistantPending = null;
     ST.assistantBusy = false;
+    ST.workerInbox = {};
+    ST.dlogCompile = null;
+    ST.dlogCompileLoading = null;
+    ST.dlogCompileSaving = false;
     if (typeof _estPortalChecked !== 'undefined' && _estPortalChecked.clear) _estPortalChecked.clear();
     if (ST.estimator) {
       for (const pid of Object.keys(ST.estimator)) {
@@ -5174,10 +5197,12 @@ async function initAuth() {
     const sm = h.match(/^#sub\/(.+)$/);
     const om = h.match(/^#owner\/(.+)$/);
     const em = h.match(/^#estimate\/(.+)$/);
-    if (sm) { ST.subPortalView = { token: sm[1], step: 'pick', pickedSid: null }; ST.ownerPortalView = null; ST.estPortalView = null; portalLoad(sm[1]); }
-    else if (om) { ST.ownerPortalView = { token: om[1] }; ST.subPortalView = null; ST.estPortalView = null; }
-    else if (em) { ST.estPortalView = { token: em[1] }; ST.subPortalView = null; ST.ownerPortalView = null; estPortalLoad(em[1]); }
-    else { ST.subPortalView = null; ST.ownerPortalView = null; ST.estPortalView = null; }
+    const wk = h.match(/^#worker\/(.+)$/);
+    if (sm) { ST.subPortalView = { token: sm[1], step: 'pick', pickedSid: null }; ST.ownerPortalView = null; ST.estPortalView = null; ST.workerPortalView = null; portalLoad(sm[1]); }
+    else if (om) { ST.ownerPortalView = { token: om[1] }; ST.subPortalView = null; ST.estPortalView = null; ST.workerPortalView = null; }
+    else if (em) { ST.estPortalView = { token: em[1] }; ST.subPortalView = null; ST.ownerPortalView = null; ST.workerPortalView = null; estPortalLoad(em[1]); }
+    else if (wk) { ST.workerPortalView = { token: wk[1], step: 'form' }; ST.subPortalView = null; ST.ownerPortalView = null; ST.estPortalView = null; workerPortalLoad(wk[1]); }
+    else { ST.subPortalView = null; ST.ownerPortalView = null; ST.estPortalView = null; ST.workerPortalView = null; }
   }
   checkSubHash();
   window.addEventListener('hashchange', () => { checkSubHash(); render(); });
@@ -5944,6 +5969,7 @@ function render() {
     ST.gcBreakdown ? 'gcbd' : '',
     ST.fuCompose ? 'fucompose' : '',
     ST.awardModal ? 'award' : '',
+    ST.dlogCompile ? 'dlogcompile' : '',
   ].filter(Boolean).join('|');
   const overlayJustOpened = overlaySig && overlaySig !== _lastOverlaySig;
   _lastOverlaySig = overlaySig;
@@ -6091,9 +6117,14 @@ function buildFilesTab() {
   const editing = ST.templateEditor; // 'rfp' | 'followup' | null
 
   const tplMeta = {
-    rfp:      { label:'RFP',       desc:'First-touch request for proposal.' },
-    followup: { label:'Follow-Up', desc:'Polite nudge for outstanding bids.' }
+    rfp:         { label:'RFP',                desc:'First-touch request for proposal.' },
+    followup:    { label:'RFP Follow-Up',      desc:'Polite nudge for outstanding bids.' },
+    est_send:    { label:'Estimate Email',     desc:'Base for sending an estimate to a GC/client — tokens filled at send time.' },
+    fu_estimate: { label:'Estimate Follow-Up', desc:'Base the AI adapts when chasing a sent estimate.' },
+    award:       { label:'Award Letter',       desc:'Base the AI adapts for the winning bidder.' },
+    regret:      { label:'Regret Letter',      desc:'Base the AI adapts for the other bidders — keep {{company}} in place.' },
   };
+  const tplIds = Object.keys(tplMeta);
 
   return `<div class="split" style="flex:1">
     <!-- Left rail: file categories -->
@@ -6109,16 +6140,16 @@ function buildFilesTab() {
       ${view==='templates' ? `
         <div style="display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:1px solid var(--ink-700);margin-bottom:20px">
           <div>
-            <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">[ FILES / TEMPLATES ] · 2 ACTIVE</div>
+            <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">[ FILES / TEMPLATES ] · ${tplIds.length} ACTIVE</div>
             <h1 style="font-size:28px;font-weight:600;letter-spacing:-0.02em;color:var(--ink-900);margin:0">Email Templates</h1>
           </div>
         </div>
 
         <div style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:18px;max-width:640px">
-          These templates are used when you click <b>SENT</b> on any project category. Use tokens like <code>{{project.name}}</code>, <code>{{category}}</code>, <code>{{sub.contact}}</code>, <code>{{user.name}}</code>, <code>{{user.email}}</code>, <code>{{workspace.name}}</code>, <code>{{project.dueDate}}</code>, <code>{{sub_portal_link}}</code> — they get replaced per recipient at send time. Tip: put <code>{{sub_portal_link}}</code> on its own line and it becomes an &ldquo;Open bid portal&rdquo; button in the email.
+          The first two are used when you click <b>SENT</b> on a project category (tokens like <code>{{project.name}}</code>, <code>{{category}}</code>, <code>{{sub.contact}}</code>, <code>{{sub_portal_link}}</code> get replaced per recipient — put <code>{{sub_portal_link}}</code> on its own line and it becomes a button). <b>Estimate Email</b> is filled with <code>{{gc.contact}}</code>, <code>{{project.name}}</code>, <code>{{estimate.breakdown}}</code>, <code>{{estimate.total}}</code>, <code>{{sender}}</code> at send time. The last three (<b>Estimate Follow-Up</b>, <b>Award</b>, <b>Regret</b>) are the <b>base the AI adapts</b> when drafting — edit them freely to set your voice; keep <code>{{company}}</code> in the Regret body, it's replaced per bidder.
         </div>
 
-        ${['rfp','followup'].map(tid => {
+        ${tplIds.map(tid => {
           const t = tpl[tid] || {subject:'',body:''};
           const meta = tplMeta[tid];
           const isEd = editing === tid;
@@ -7827,6 +7858,7 @@ async function subPortalDeclineSubmit() {
 
 const PORTAL_FN = (typeof SUPABASE_URL !== 'undefined' ? SUPABASE_URL : '') + '/functions/v1/portal';
 const ESTIMATE_PORTAL_FN = (typeof SUPABASE_URL !== 'undefined' ? SUPABASE_URL : '') + '/functions/v1/estimate-portal';
+const WORKER_PORTAL_FN = (typeof SUPABASE_URL !== 'undefined' ? SUPABASE_URL : '') + '/functions/v1/worker-portal';
 const _estPortalChecked = new Set(); // pids whose portal status we've pulled this session
 
 // Load the portal snapshot from the server (works with no account).
@@ -8215,6 +8247,386 @@ function estPortalDownloadPdf(token) {
   const w = window.open('', '_blank');
   if (!w) { showToast('Allow pop-ups to download the estimate PDF.', 'warn'); return; }
   w.document.open(); w.document.write(html); w.document.close();
+}
+
+// ============================================================
+// WORKER DAILY-LOG PORTAL — field crew side + office side.
+// A worker opens #worker/<token> (no account), types OR dictates what
+// happened today (browser speech-to-text — no audio stored), attaches up to
+// 3 photos, and submits. The office sees a "worker reports waiting" strip in
+// Daily Log and one AI pass MERGES duplicate reports (several workers
+// describing the same work → said once) into a single reviewable log entry.
+// Backed by the 'worker-portal' edge function + worker_log_* tables.
+// ============================================================
+
+async function workerPortalLoad(token) {
+  if (!token) return;
+  if (!ST.workerPortalData) ST.workerPortalData = {};
+  if (ST.workerPortalData[token]?.loading) return;
+  ST.workerPortalData[token] = { ...(ST.workerPortalData[token] || {}), loading: true };
+  render();
+  try {
+    const res = await fetch(`${WORKER_PORTAL_FN}/load?token=${encodeURIComponent(token)}`, {
+      headers: { 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) { ST.workerPortalData[token] = { loading: false, ok: false, error: data.error || 'expired' }; render(); return; }
+    ST.workerPortalData[token] = { loading: false, ok: true, ...data };
+  } catch (e) {
+    ST.workerPortalData[token] = { loading: false, ok: false, error: e.message };
+  }
+  render();
+}
+
+// Voice → text via the browser's SpeechRecognition (Chrome/Edge/Android).
+// Nothing is recorded or uploaded — the transcript lands in the textarea.
+let _workerRec = null;
+function workerDictate(lang) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { showToast('Voice input is not supported in this browser — type instead.', 'warn'); return; }
+  const d = ST.workerDraft = ST.workerDraft || { photos: [] };
+  if (lang) d.lang = lang;
+  if (d.listening) { try { _workerRec && _workerRec.stop(); } catch (_e) {} d.listening = false; render(); return; }
+  const rec = new SR();
+  _workerRec = rec;
+  rec.lang = d.lang || 'es-US';
+  rec.continuous = true;
+  rec.interimResults = false;
+  rec.onresult = (ev) => {
+    let addl = '';
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      if (ev.results[i].isFinal) addl += ev.results[i][0].transcript + ' ';
+    }
+    if (addl) {
+      const ta = document.getElementById('wk-text');
+      if (ta) { ta.value = (ta.value ? ta.value.trim() + ' ' : '') + addl.trim(); d.text = ta.value; }
+      else { d.text = ((d.text || '') + ' ' + addl).trim(); }
+    }
+  };
+  rec.onend = () => { if (ST.workerDraft) ST.workerDraft.listening = false; render(); };
+  rec.onerror = () => { if (ST.workerDraft) ST.workerDraft.listening = false; render(); };
+  try { rec.start(); d.listening = true; render(); }
+  catch (e) { showToast('Could not start the microphone: ' + (e.message || e), 'error'); }
+}
+
+// Photos: compress client-side exactly like the office Daily Log does.
+function workerAddPhotos(ev) {
+  const d = ST.workerDraft = ST.workerDraft || { photos: [] };
+  d.photos = d.photos || [];
+  const files = Array.from(ev.target.files || []);
+  const remaining = 3 - d.photos.length;
+  if (remaining <= 0) { showToast('Max 3 photos per report.', 'warn'); return; }
+  const toProcess = files.slice(0, remaining);
+  let done = 0;
+  toProcess.forEach(file => {
+    if (!/^image\//.test(file.type)) { done++; return; }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 1000;
+        const scale = Math.min(1, maxW / img.width);
+        const cw = Math.round(img.width * scale), ch = Math.round(img.height * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = cw; canvas.height = ch;
+        canvas.getContext('2d').drawImage(img, 0, 0, cw, ch);
+        if (d.photos.length < 3) d.photos.push(canvas.toDataURL('image/jpeg', 0.7));
+        done++;
+        if (done === toProcess.length) render();
+      };
+      img.onerror = () => { done++; if (done === toProcess.length) render(); };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+function workerRemovePhoto(i) {
+  const d = ST.workerDraft; if (!d || !d.photos) return;
+  d.photos.splice(i, 1); render();
+}
+
+async function workerSubmit() {
+  const v = ST.workerPortalView; if (!v || ST.workerSubmitting) return;
+  const d = ST.workerDraft = ST.workerDraft || { photos: [] };
+  d.name = (document.getElementById('wk-name')?.value || d.name || '').trim();
+  d.text = (document.getElementById('wk-text')?.value || d.text || '').trim();
+  if (!d.name) { showToast('Add your name first.', 'warn'); return; }
+  if (!d.text && !(d.photos || []).length) { showToast('Write (or dictate) what happened today, or attach a photo.', 'warn'); return; }
+  if (d.listening) { try { _workerRec && _workerRec.stop(); } catch (_e) {} d.listening = false; }
+  ST.workerSubmitting = true; render();
+  try {
+    const res = await fetch(`${WORKER_PORTAL_FN}/entry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`, 'apikey': SUPABASE_ANON_KEY },
+      body: JSON.stringify({
+        token: v.token,
+        workerName: d.name,
+        logDate: new Date().toISOString().slice(0, 10),
+        text: d.text,
+        photos: (d.photos || []).map((b64, i) => ({ base64: b64, name: 'photo_' + (i + 1) + '.jpg' })),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'failed');
+    ST.workerDraft = { name: d.name, text: '', photos: [], lang: d.lang }; // keep the name for tomorrow
+    v.step = 'done';
+    workerPortalLoad(v.token); // refresh "reported today"
+  } catch (e) {
+    showToast('Could not submit: ' + (e.message || e), 'error');
+  } finally {
+    ST.workerSubmitting = false; render();
+  }
+}
+
+function buildWorkerPortal() {
+  const v = ST.workerPortalView;
+  const pd = (ST.workerPortalData || {})[v.token];
+  const wm = 'NOVANTU';
+  const shell = (inner) => `<div class="sp-page"><div class="sp-wrap">${inner}</div></div>`;
+  const kicker = `<div class="sp-kicker"><span class="sq"></span><span class="brk">[</span> <b>${wm}</b> <span class="brk">/</span> DAILY&nbsp;LOG <span class="brk">]</span></div>`;
+
+  if (!pd || pd.loading) return shell(buildPortalLoader(wm));
+  if (!pd.ok) {
+    return shell(`<div class="sp-result">${kicker}
+      <div class="sp-stamp dead"><span class="corner tl"></span><span class="corner br"></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M5 5 L19 19 M19 5 L5 19"></path></svg></div>
+      <h1>Link expired</h1>
+      <p>This crew link is no longer valid. Ask the office for a fresh one.</p>
+      <div class="after">ERROR · TOKEN_EXPIRED · ${esc(v.token)}</div>
+    </div>`);
+  }
+
+  const projName = pd.project?.name || '';
+  const d = ST.workerDraft || { photos: [] };
+  const today = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+  const reported = pd.today || [];
+  const hasSR = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+
+  if (v.step === 'done') {
+    return shell(`<div class="sp-result">${kicker}
+      <div class="sp-stamp done"><span class="corner tl"></span><span class="corner br"></span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="4,12 10,18 20,6"></polyline></svg></div>
+      <h1>Report received</h1>
+      <p>Thanks <b>${esc(d.name || '')}</b> — your report for <b>${esc(projName)}</b> is in. The office will add it to today's log.</p>
+      <div style="margin-top:24px"><button class="btn btn-accent btn-sm" onclick="ST.workerPortalView.step='form';render()">+ Submit another report</button></div>
+    </div>`);
+  }
+
+  return shell(`
+    ${kicker}
+    <h1 class="sp-h1">Today on the job</h1>
+    <div class="sp-meta"><b>${esc(projName)}</b><span class="sep">·</span>${esc(today)}</div>
+
+    ${reported.length ? `<div style="font-family:var(--mono);font-size:10px;color:#8a857a;margin:-6px 0 14px">Already reported today: ${reported.map(r => esc(r.worker_name || '')).filter(Boolean).join(', ')}</div>` : ''}
+
+    <div class="sp-card">
+      <div class="sp-card-head"><span class="modal-label">Your report</span><span class="modal-label" style="color:var(--fg-4)">2 MINUTES · NO ACCOUNT</span></div>
+      <div class="sp-card-body" style="display:flex;flex-direction:column;gap:12px">
+        <div>
+          <div class="modal-label" style="margin-bottom:5px">Your name</div>
+          <input id="wk-name" type="text" value="${esc(d.name || '')}" placeholder="e.g. Luis" oninput="ST.workerDraft=ST.workerDraft||{photos:[]};ST.workerDraft.name=this.value"
+            style="width:100%;box-sizing:border-box;border:1px solid var(--line2,#c7bda4);border-radius:8px;padding:10px 12px;font-family:var(--sans);font-size:14px;outline:none">
+        </div>
+        <div>
+          <div class="modal-label" style="margin-bottom:5px">What happened today — type it or dictate it</div>
+          <textarea id="wk-text" rows="5" placeholder="e.g. Terminamos el ducto del segundo piso, faltan 4 difusores. El inspector viene mañana…" oninput="ST.workerDraft=ST.workerDraft||{photos:[]};ST.workerDraft.text=this.value"
+            style="width:100%;box-sizing:border-box;border:1px solid var(--line2,#c7bda4);border-radius:8px;padding:10px 12px;font-family:var(--sans);font-size:14px;line-height:1.5;resize:vertical;outline:none">${esc(d.text || '')}</textarea>
+          ${hasSR ? `<div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+            <button onclick="workerDictate()" style="display:inline-flex;align-items:center;gap:8px;background:${d.listening ? '#c44a2c' : '#181613'};color:#fff;border:none;border-radius:8px;padding:9px 16px;font-family:var(--mono);font-size:12px;cursor:pointer">${d.listening ? '⏹ Stop — I’m done talking' : '🎤 Dictate'}</button>
+            <span style="display:inline-flex;gap:4px">
+              ${[['es-US', 'ES'], ['en-US', 'EN']].map(([code, lbl]) => `<button onclick="ST.workerDraft=ST.workerDraft||{photos:[]};ST.workerDraft.lang='${code}';render()" style="font-family:var(--mono);font-size:10px;padding:5px 10px;border-radius:8px;border:1px solid ${(d.lang || 'es-US') === code ? '#181613' : '#c7bda4'};background:${(d.lang || 'es-US') === code ? '#181613' : 'transparent'};color:${(d.lang || 'es-US') === code ? '#fff' : 'inherit'};cursor:pointer">${lbl}</button>`).join('')}
+            </span>
+            ${d.listening ? '<span style="font-family:var(--mono);font-size:10px;color:#c44a2c">● listening — talk normally, it types for you</span>' : ''}
+          </div>` : ''}
+        </div>
+        <div>
+          <div class="modal-label" style="margin-bottom:5px">Photos · ${(d.photos || []).length}/3</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            ${(d.photos || []).map((ph, i) => `<div style="position:relative"><img src="${ph}" style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1px solid #c7bda4"><button onclick="workerRemovePhoto(${i})" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:#c44a2c;color:#fff;border:none;font-size:11px;cursor:pointer;line-height:1">✕</button></div>`).join('')}
+            ${(d.photos || []).length < 3 ? `<label style="width:74px;height:74px;border:1px dashed #c7bda4;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:22px;color:#8a857a;cursor:pointer">＋<input type="file" accept="image/*" capture="environment" multiple style="display:none" onchange="workerAddPhotos(event)"></label>` : ''}
+          </div>
+        </div>
+        <button onclick="workerSubmit()" ${ST.workerSubmitting ? 'disabled' : ''} class="btn btn-primary" style="width:100%;justify-content:center;padding:13px;font-size:15px;background:#c44a2c;color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer">${ST.workerSubmitting ? 'Sending…' : '▸ Send my report'}</button>
+      </div>
+    </div>
+    <div class="after" style="text-align:center">Sent securely with NOVANTU</div>
+  `);
+}
+
+// ── Office side: link, inbox, AI compile-with-dedup ──────────────────────────
+async function workerPortalLink(pid) {
+  if (!sb || !AUTH.session || !ST.activeWorkspace) { showToast('Sign in first.', 'warn'); return; }
+  if (!ST.overrides[pid]) ST.overrides[pid] = {};
+  let token = ST.overrides[pid]._workerToken;
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  if (!token) {
+    token = 'w_' + Math.random().toString(36).slice(2, 12);
+    try {
+      const { error } = await sb.from('worker_log_tokens').insert({ token, workspace_id: ST.activeWorkspace, pid, project_name: p.name || '' });
+      if (error) throw error;
+      ST.overrides[pid]._workerToken = token;
+      saveSt();
+    } catch (e) {
+      showToast('Could not create the worker link — deploy the worker-portal backend first (see activation steps). ' + (e.message || ''), 'error');
+      return;
+    }
+  }
+  const link = window.location.origin + window.location.pathname + '#worker/' + token;
+  try { await navigator.clipboard.writeText(link); showToast('Worker link copied — share it with the crew (WhatsApp works great).', 'success'); }
+  catch (_e) { prompt('Copy the worker link:', link); }
+}
+
+async function workerInboxLoad(pid, force) {
+  if (!sb || !AUTH.session) return;
+  if (!force && ST.workerInbox && ST.workerInbox[pid] && ST.workerInbox[pid].loaded) return;
+  if (!ST.workerInbox) ST.workerInbox = {};
+  ST.workerInbox[pid] = { loaded: false, entries: [] };
+  try {
+    const { data, error } = await sb.from('worker_log_entries')
+      .select('*')
+      .eq('workspace_id', ST.activeWorkspace)
+      .eq('pid', pid)
+      .eq('used', false)
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    ST.workerInbox[pid] = { loaded: true, entries: data || [] };
+    render();
+  } catch (e) {
+    ST.workerInbox[pid] = { loaded: true, entries: [], error: e.message };
+  }
+}
+
+// Merge the day's worker reports into ONE reviewable daily-log entry. The core
+// rule: several workers describing the SAME work → it appears once.
+async function dlogCompileAI(pid) {
+  if (ST.dlogCompileLoading) return;
+  const inbox = ST.workerInbox && ST.workerInbox[pid];
+  const entries = (inbox && inbox.entries) || [];
+  if (!entries.length) { showToast('No new worker reports to compile.', 'info'); return; }
+  const dates = [...new Set(entries.map(e => e.log_date))].sort();
+  const date = dates[dates.length - 1];
+  const dayEntries = entries.filter(e => e.log_date === date);
+  // Fast path — ONE report needs no merging: map it straight into the review
+  // modal without spending an AI action.
+  if (dayEntries.length === 1) {
+    const e0 = dayEntries[0];
+    ST.dlogCompile = {
+      pid, date,
+      work: e0.text || '', issues: '', notes: '',
+      crew: e0.worker_name || '',
+      entryIds: [e0.id],
+      photoPaths: (e0.photos || []).map(ph => ph && ph.path).filter(Boolean).slice(0, DLOG_MAX_PHOTOS),
+      workerCount: 1,
+    };
+    render();
+    return;
+  }
+  if (!trialGuardAI()) return;
+  ST.dlogCompileLoading = pid; render();
+  try {
+    const reports = dayEntries.map(e => `— ${e.worker_name || 'Worker'}: ${(e.text || '(photo only)').replace(/\n/g, ' ')}`).join('\n');
+    const prompt = `You are consolidating field-worker reports into ONE daily construction log entry.
+
+DATE: ${date}
+WORKER REPORTS (${dayEntries.length}):
+${reports}
+
+Rules:
+- MERGE duplicates: when several workers describe the SAME work, say it ONCE — never repeat it per worker.
+- Keep every unique fact. Plain jobsite language, no fluff.
+- Anything that sounds like a problem, delay or safety issue goes in "issues".
+- "crew" = the names of the workers who reported, comma-separated.
+
+Return STRICT JSON ONLY — no prose, no code fences:
+{"work":"what was done today (merged)","issues":"problems/delays, or empty string","notes":"anything else worth recording, or empty string","crew":"names"}`;
+    const text = await aiCompleteText(pid, prompt);
+    const parsed = parseAIJson(text);
+    if (!parsed || !parsed.work) throw new Error('Could not read the compiled log. Try again.');
+    const photoPaths = [];
+    for (const e of dayEntries) for (const ph of (e.photos || [])) { if (photoPaths.length < DLOG_MAX_PHOTOS && ph && ph.path) photoPaths.push(ph.path); }
+    ST.dlogCompile = {
+      pid, date,
+      work: String(parsed.work || ''), issues: String(parsed.issues || ''), notes: String(parsed.notes || ''),
+      crew: String(parsed.crew || dayEntries.map(e => e.worker_name).filter(Boolean).join(', ')),
+      entryIds: dayEntries.map(e => e.id), photoPaths, workerCount: dayEntries.length,
+    };
+  } catch (err) {
+    showToast('Compile failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.dlogCompileLoading = null; render();
+  }
+}
+
+async function dlogCompileApply(pid) {
+  const c = ST.dlogCompile; if (!c || c.pid !== pid || ST.dlogCompileSaving) return;
+  c.work = document.getElementById('dlc-work')?.value ?? c.work;
+  c.issues = document.getElementById('dlc-issues')?.value ?? c.issues;
+  c.notes = document.getElementById('dlc-notes')?.value ?? c.notes;
+  c.crew = document.getElementById('dlc-crew')?.value ?? c.crew;
+  ST.dlogCompileSaving = true; render();
+  // Pull up to 3 worker photos from Storage → compressed base64 (the Daily Log
+  // stores photos inline). Best-effort: a failed photo never blocks the entry.
+  const photos = [];
+  for (const path of (c.photoPaths || []).slice(0, DLOG_MAX_PHOTOS)) {
+    try {
+      const { data, error } = await sb.storage.from(PLAN_PDF_BUCKET).createSignedUrl(path, 600);
+      if (error) throw error;
+      const resp = await fetch(data.signedUrl);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const blob = await resp.blob();
+      const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
+      const small = await new Promise((res) => {
+        const img = new Image();
+        img.onload = () => {
+          const maxW = 1000, scale = Math.min(1, maxW / img.width);
+          const cw = Math.round(img.width * scale), ch = Math.round(img.height * scale);
+          const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+          cv.getContext('2d').drawImage(img, 0, 0, cw, ch);
+          res(cv.toDataURL('image/jpeg', 0.7));
+        };
+        img.onerror = () => res(null);
+        img.src = b64;
+      });
+      if (small) photos.push(small);
+    } catch (_e) { /* skip photo */ }
+  }
+  const list = dlogGet(pid);
+  list.push({
+    id: dlogGenId(), date: c.date, weather: '', tempF: '', crew: c.crew, hours: '',
+    work: c.work, issues: c.issues,
+    notes: (c.notes || '') + (c.workerCount ? `${c.notes ? '\n' : ''}(Compiled from ${c.workerCount} worker report${c.workerCount === 1 ? '' : 's'})` : ''),
+    photos,
+  });
+  try { await sb.from('worker_log_entries').update({ used: true }).in('id', c.entryIds); } catch (_e) { console.warn('could not mark worker entries used'); }
+  if (ST.workerInbox && ST.workerInbox[pid]) ST.workerInbox[pid].entries = (ST.workerInbox[pid].entries || []).filter(e => !c.entryIds.includes(e.id));
+  ST.dlogCompile = null;
+  ST.dlogCompileSaving = false;
+  ST.dailyLogSelProj = pid;
+  saveSt(); render();
+  showToast('Daily log entry created from the worker reports.', 'success');
+}
+
+function buildDlogCompileModal() {
+  const c = ST.dlogCompile; if (!c) return '';
+  const p = allProjects().find(x => x.id === c.pid) || { name: c.pid };
+  return `<div class="backdrop" onclick="if(event.target===this){ST.dlogCompile=null;render()}">
+    <div class="modal" style="max-width:560px" onclick="event.stopPropagation()">
+      <div class="modal-title">✦ Compiled daily log</div>
+      <div class="modal-sub">${esc(p.name)} · ${esc(c.date)} · merged from ${c.workerCount} worker report${c.workerCount === 1 ? '' : 's'}${c.photoPaths.length ? ` · ${Math.min(c.photoPaths.length, DLOG_MAX_PHOTOS)} photo${c.photoPaths.length === 1 ? '' : 's'}` : ''} — edit anything, then add it to the log</div>
+      <div class="modal-label" style="margin-top:14px">Work performed</div>
+      <textarea id="dlc-work" rows="4" class="minp" style="width:100%;box-sizing:border-box;font-size:12.5px;line-height:1.5;resize:vertical">${esc(c.work)}</textarea>
+      <div class="modal-label">Issues / delays</div>
+      <textarea id="dlc-issues" rows="2" class="minp" style="width:100%;box-sizing:border-box;font-size:12.5px;line-height:1.5;resize:vertical">${esc(c.issues)}</textarea>
+      <div class="modal-label">Notes</div>
+      <textarea id="dlc-notes" rows="2" class="minp" style="width:100%;box-sizing:border-box;font-size:12.5px;line-height:1.5;resize:vertical">${esc(c.notes)}</textarea>
+      <div class="modal-label">Crew</div>
+      <input id="dlc-crew" type="text" class="modal-input" value="${esc(c.crew)}">
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="ST.dlogCompile=null;render()">Discard</button>
+        <button class="btn btn-amber" ${ST.dlogCompileSaving ? 'disabled' : ''} onclick="dlogCompileApply('${c.pid}')">${ST.dlogCompileSaving ? 'Saving…' : '✓ Add to Daily Log'}</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 function buildSubPortal() {
@@ -9889,6 +10301,7 @@ function buildApp() {
   if (ST.subPortalView) return buildSubPortal();
   if (ST.ownerPortalView) return buildOwnerPortalV2();
   if (ST.estPortalView) return buildEstimatePortal();
+  if (ST.workerPortalView) return buildWorkerPortal();
   if (!AUTH.loaded && !window.BYPASS_LOGIN) return '<div style="padding:40px;font-family:var(--mono);color:var(--text3)">Loading…</div>';
   if (!AUTH.session && !window.BYPASS_LOGIN) return buildLoginScreen();
 
@@ -9974,6 +10387,7 @@ function buildApp() {
       ${ST.gcBreakdown && !ST.sendDialog ? buildGcBreakdownModal() : ''}
       ${ST.fuCompose ? buildFuComposeModal() : ''}
       ${ST.awardModal ? buildAwardModal() : ''}
+      ${ST.dlogCompile ? buildDlogCompileModal() : ''}
     </div>`;
 }
 
@@ -10349,7 +10763,7 @@ function buildEstEmailReviewModal() {
   const uid = AUTH.user?.id;
   const gmailReady = !!(uid && ST.gmailStatus?.[uid]?.connected);
   const hasEstimate = (ST.estimates[pid]?.groups || []).length > 0;
-  const subject = `Estimate — ${p.name} — ${subSenderName()}`;
+  const subject = subEstimateEmailSubject(pid);
   const body = subEstimateEmailBody(pid);
   return `<div class="backdrop" onclick="if(event.target===this){ST.estEmailReview=null;render()}">
     <div class="modal modal-wide" style="max-width:600px" onclick="event.stopPropagation()">
@@ -10419,7 +10833,7 @@ async function subEmailToGC(pid) {
   const gc = subGcGet(pid);
   if (!gc.email) { showToast('Add the GC email first.', 'warn'); return; }
   const p = allProjects().find(x => x.id === pid) || { name: pid };
-  const subject = `Estimate — ${p.name} — ${subSenderName()}`;
+  const subject = subEstimateEmailSubject(pid);
   const link = await estPortalEnsure(pid);
   let body = subEstimateEmailBody(pid);
   if (link) body += `\n\nReview the estimate and reply online:\n${link}`;
@@ -10428,34 +10842,44 @@ async function subEmailToGC(pid) {
   showToast('Opened your email with the estimate filled in.', 'success');
 }
 
-// The estimate as a plain-text email body — cover note + line-item breakdown +
-// total. nvEmailHtml() wraps this in the branded NOVANTU template when sending.
-function subEstimateEmailBody(pid) {
+// The estimate as a plain-text email body. Uses the editable "Estimate Email"
+// template (Files → Templates, id est_send) with tokens filled at send time;
+// falls back to the built-in wording if the template is missing/emptied.
+// nvEmailHtml() wraps the result in the branded NOVANTU shell when sending.
+function subEstimateTokens(pid) {
   const gc = subGcGet(pid);
   const p = allProjects().find(x => x.id === pid) || { name: pid };
   const est = ST.estimates[pid] || { groups: [] };
   const t = builderTotals(pid);
-  const L = [];
-  L.push(`Hi ${gc.contact || gc.company || 'there'},`);
-  L.push('');
-  L.push(`Please find our estimate for ${p.name} below.`);
-  L.push('');
+  const B = [];
   for (const g of (est.groups || [])) {
     const gt = builderGroupTotals(pid, g.id);
-    L.push(`${g.code ? g.code + ' · ' : ''}${g.title || ''} — ${fmt$(gt.client)}`);
+    B.push(`${g.code ? g.code + ' · ' : ''}${g.title || ''} — ${fmt$(gt.client)}`);
     for (const it of (g.items || [])) {
       const qty = Number(it.qty || 0), uc = Number(it.unitCost || 0), mk = Number(it.markup || 0);
-      const line = qty * uc * (1 + mk / 100);
-      L.push(`   • ${it.title || it.code} — ${qty} ${it.unit || ''} — ${fmt$(line)}`);
+      B.push(`   • ${it.title || it.code} — ${qty} ${it.unit || ''} — ${fmt$(qty * uc * (1 + mk / 100))}`);
     }
   }
-  L.push('');
-  L.push(`TOTAL: ${fmt$(t.client)}`);
-  L.push('');
-  L.push('Happy to walk through any line. Thank you for the opportunity.');
-  L.push('');
-  L.push(subSenderName());
-  return L.join('\n');
+  const rep = (s) => String(s || '')
+    .replaceAll('{{gc.contact}}', gc.contact || gc.company || 'there')
+    .replaceAll('{{gc.company}}', gc.company || '')
+    .replaceAll('{{project.name}}', p.name || '')
+    .replaceAll('{{estimate.breakdown}}', B.join('\n'))
+    .replaceAll('{{estimate.total}}', fmt$(t.client))
+    .replaceAll('{{sender}}', subSenderName());
+  return { rep, gc, p, t, breakdown: B.join('\n') };
+}
+function subEstimateEmailSubject(pid) {
+  const { rep, p } = subEstimateTokens(pid);
+  const tpl = (ST.emailTemplates || DEFAULT_TEMPLATES).est_send;
+  if (tpl && (tpl.subject || '').trim()) return rep(tpl.subject);
+  return `Estimate — ${p.name} — ${subSenderName()}`;
+}
+function subEstimateEmailBody(pid) {
+  const { rep, gc, p, t, breakdown } = subEstimateTokens(pid);
+  const tpl = (ST.emailTemplates || DEFAULT_TEMPLATES).est_send;
+  if (tpl && (tpl.body || '').trim()) return rep(tpl.body);
+  return `Hi ${gc.contact || gc.company || 'there'},\n\nPlease find our estimate for ${p.name} below.\n\n${breakdown}\n\nTOTAL: ${fmt$(t.client)}\n\nHappy to walk through any line. Thank you for the opportunity.\n\n${subSenderName()}`;
 }
 
 // Send the estimate straight from the user's connected Gmail (the "linked"
@@ -10477,7 +10901,7 @@ async function subSendEstimateEmail(pid) {
   if (!trialGuardEmail()) return; // free-trial email cap
 
   const p = allProjects().find(x => x.id === pid) || { name: pid };
-  const subject = `Estimate — ${p.name} — ${subSenderName()}`;
+  const subject = subEstimateEmailSubject(pid);
   ST.subSendingEmail = pid; render();
   // Publish the estimate to its portal and get the shareable link (a button in
   // the email). Degrades to a body-only email if the portal backend isn't live.
@@ -13633,10 +14057,34 @@ function buildGcBreakdownModal() {
 // review modal, and only leaves the building through an explicit send/save.
 // ============================================================
 
-// ── Skill: AI follow-up composer (sub) ───────────────────────────────────────
-// Drafts the chase email from what actually happened: days since the send,
-// the follow-up log, and the outcome so far.
-async function subComposeFollowUp(pid) {
+// ── Skill: follow-up composer (sub) ──────────────────────────────────────────
+// TEMPLATE-FIRST (zero AI tokens): the modal opens instantly with your
+// Estimate Follow-Up template filled in. "✦ Rewrite with AI" is optional —
+// only then does it read the send history + log and spend 1 AI action.
+function subComposeFollowUp(pid) {
+  const gc = subGcGet(pid);
+  const d = subDeliveryGet(pid);
+  if (!d.sends.length) { showToast('Send the estimate first — then you can chase it.', 'warn'); return; }
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  const t = builderTotals(pid);
+  const tpl = (ST.emailTemplates || DEFAULT_TEMPLATES).fu_estimate || {};
+  const rep = (s) => String(s || '')
+    .replaceAll('{{gc.contact}}', gc.contact || gc.company || 'there')
+    .replaceAll('{{gc.company}}', gc.company || '')
+    .replaceAll('{{project.name}}', p.name || '')
+    .replaceAll('{{estimate.total}}', fmt$(t.client))
+    .replaceAll('{{sender}}', subSenderName());
+  ST.fuCompose = {
+    pid,
+    subject: rep((tpl.subject || '').trim() || ('Following up — ' + p.name)),
+    body: rep((tpl.body || '').trim() || `Hi {{gc.contact}},\n\nJust circling back on the estimate we sent for {{project.name}} ({{estimate.total}}). Happy to answer questions — is there a good time this week for a quick call?\n\nThanks,\n{{sender}}`),
+  };
+  render();
+}
+
+// Optional AI pass — personalizes from what actually happened: days since the
+// send, the follow-up log, and the outcome so far. Costs 1 AI action.
+async function subComposeFollowUpAI(pid) {
   if (ST.fuComposeLoading) return;
   const gc = subGcGet(pid);
   const d = subDeliveryGet(pid);
@@ -13649,7 +14097,14 @@ async function subComposeFollowUp(pid) {
     const lastSend = d.sends[d.sends.length - 1];
     const days = Math.max(0, Math.floor((Date.now() - new Date(lastSend.ts).getTime()) / 86400000));
     const fuLog = d.followUps.map(f => `- ${new Date(f.ts).toLocaleDateString()}: ${f.note || ''}`).join('\n') || '(none)';
+    const baseTpl = (ST.emailTemplates || DEFAULT_TEMPLATES).fu_estimate || {};
     const prompt = `You are helping a subcontractor chase an estimate they sent. Write ONE short, professional, friendly follow-up email (60-110 words) that moves the deal forward without sounding pushy.
+${(baseTpl.body || '').trim() ? `
+THE SENDER'S BASE TEMPLATE — match its tone and structure, adapt the specifics to the context below:
+Subject: ${baseTpl.subject || ''}
+Body:
+${baseTpl.body}
+` : ''}
 
 CONTEXT:
 - Project: ${p.name}
@@ -13736,6 +14191,7 @@ function buildFuComposeModal() {
       ${isTrialPlan() ? `<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:6px">Trial: ${trialEmailsLeft()}/${TRIAL_LIMITS.emails} sends left</div>` : ''}
       <div class="modal-btns" style="margin-top:14px">
         <button class="btn btn-ghost" onclick="ST.fuCompose=null;render()">Discard</button>
+        <button class="btn btn-ghost" ${ST.fuComposeLoading ? 'disabled' : ''} onclick="subComposeFollowUpAI('${m.pid}')" title="Personalizes from the send history, log and outcome — uses 1 AI action">${ST.fuComposeLoading ? '✦ Rewriting…' : '✦ Rewrite with AI'}</button>
         <button class="btn btn-ghost" onclick="fuComposeMailto('${m.pid}')">✉ Open in mail app</button>
         <button class="btn btn-amber" ${ST.fuSending ? 'disabled' : ''} onclick="fuComposeSend('${m.pid}')">${ST.fuSending ? 'Sending…' : '✓ Send follow-up'}</button>
       </div>
@@ -13802,7 +14258,36 @@ Return STRICT JSON ONLY — no prose, no code fences:
 }
 
 // ── Skill: award & regret letters after bid leveling (GC) ────────────────────
-async function gcAwardLetters(pid, projName, cat) {
+// TEMPLATE-FIRST (zero AI tokens): both letters open instantly from your Award
+// and Regret templates with tokens filled. "✦ Rewrite with AI" is optional.
+function gcAwardLetters(pid, projName, cat) {
+  const sel = getSelectedBid(pid, cat);
+  if (!sel) { showToast('Select the winning bid first (open the bids for this category and pick the winner).', 'warn'); return; }
+  const bids = getBidsForProjCat(projName, cat);
+  const losers = bids.filter(b => b.sub.id !== sel.sid).map(b => b.sub).filter(s => s.email && s.email.includes('@'));
+  const eff = Number(sel.bid.discPrice || sel.bid.price || 0);
+  const tpls = ST.emailTemplates || DEFAULT_TEMPLATES;
+  const awTpl = tpls.award || DEFAULT_TEMPLATES.award, rgTpl = tpls.regret || DEFAULT_TEMPLATES.regret;
+  const repShared = (s) => String(s || '')
+    .replaceAll('{{category}}', cat)
+    .replaceAll('{{project.name}}', projName)
+    .replaceAll('{{price}}', fmt$(eff))
+    .replaceAll('{{sender}}', subSenderName());
+  // Award: {{company}} = the winner. Regret: {{company}} stays literal — it's
+  // replaced per bidder at send time in awardSendAll.
+  const repAward = (s) => repShared(s).replaceAll('{{company}}', sel.sub.company || '');
+  ST.awardModal = {
+    pid, cat, projName,
+    winner: { sid: sel.sid, company: sel.sub.company, email: sel.sub.email || '' },
+    losers: losers.map(s => ({ sid: s.id, company: s.company, email: s.email })),
+    award: { subject: repAward(awTpl.subject || ''), body: repAward(awTpl.body || '') },
+    regret: { subject: repShared(rgTpl.subject || ''), body: repShared(rgTpl.body || '') },
+  };
+  render();
+}
+
+// Optional AI pass — rewrites both letters with context. Costs 1 AI action.
+async function gcAwardLettersAI(pid, projName, cat) {
   if (ST.awardLoading) return;
   const sel = getSelectedBid(pid, cat);
   if (!sel) { showToast('Select the winning bid first (open the bids for this category and pick the winner).', 'warn'); return; }
@@ -13812,7 +14297,18 @@ async function gcAwardLetters(pid, projName, cat) {
   ST.awardLoading = pid + '|' + cat; render();
   try {
     const eff = Number(sel.bid.discPrice || sel.bid.price || 0);
+    const tpls = ST.emailTemplates || DEFAULT_TEMPLATES;
+    const awTpl = tpls.award || {}, rgTpl = tpls.regret || {};
     const prompt = `You are writing two short emails for a general contractor who just awarded a trade.
+${((awTpl.body || '').trim() || (rgTpl.body || '').trim()) ? `
+THE SENDER'S BASE TEMPLATES — match their tone and structure, adapt the specifics. In the regret body you MUST keep the literal token {{company}} exactly as written:
+AWARD subject: ${awTpl.subject || ''}
+AWARD body:
+${awTpl.body || ''}
+REGRET subject: ${rgTpl.subject || ''}
+REGRET body:
+${rgTpl.body || ''}
+` : ''}
 
 CONTEXT:
 - Project: ${projName}
@@ -13905,6 +14401,7 @@ function buildAwardModal() {
       ${isTrialPlan() ? `<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:6px">Trial: ${trialEmailsLeft()}/${TRIAL_LIMITS.emails} sends left — each email counts</div>` : ''}
       <div class="modal-btns" style="margin-top:14px">
         <button class="btn btn-ghost" onclick="ST.awardModal=null;render()">Cancel</button>
+        <button class="btn btn-ghost" ${ST.awardLoading ? 'disabled' : ''} onclick="gcAwardLettersAI('${m.pid}','${esc(m.projName)}','${esc(m.cat)}')" title="Rewrites both letters with context — uses 1 AI action">${ST.awardLoading ? '✦ Rewriting…' : '✦ Rewrite with AI'}</button>
         <button class="btn btn-amber" ${(ST.awardSending || !gmailReady || !total) ? 'disabled' : ''} title="${gmailReady ? '' : 'Connect your Gmail in Settings → Email first'}" onclick="awardSendAll()">${ST.awardSending ? 'Sending…' : `✓ Send ${total} email${total === 1 ? '' : 's'}`}</button>
       </div>
     </div>
@@ -16641,9 +17138,31 @@ function buildDailyLogTab() {
       </div>
       <div style="flex:1"></div>
       <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">${logs.length} ${logs.length===1?'entry':'entries'}</span>
+      <button class="btn btn-ghost btn-sm" onclick="workerPortalLink('${p.id}')" title="Create/copy the link where your crew reports the day — photos, voice-to-text or typing. No account needed.">👷 Worker portal</button>
       <button class="btn btn-ghost btn-sm" onclick="clientUpdateOpen('${p.id}')" title="AI drafts a client-friendly progress update from this week's logs + schedule">▤ Client update</button>
       <button class="btn btn-amber btn-sm" onclick="dlogOpenModal('${p.id}',null)">+ New entry</button>
     </div>
+
+    ${(() => {
+      // Worker reports inbox — auto-pull once when this project has a crew link.
+      if (ST.overrides[p.id]?._workerToken && !(ST.workerInbox && ST.workerInbox[p.id])) {
+        setTimeout(() => workerInboxLoad(p.id), 60);
+      }
+      const wi = ST.workerInbox && ST.workerInbox[p.id];
+      const n = wi && wi.entries ? wi.entries.length : 0;
+      if (!ST.overrides[p.id]?._workerToken && !n) return '';
+      if (!n) return '';
+      const names = [...new Set(wi.entries.map(e => e.worker_name).filter(Boolean))].slice(0, 6).join(', ');
+      return `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r2);padding:10px 14px;margin-bottom:14px">
+        <span style="font-size:15px">👷</span>
+        <div style="flex:1;min-width:180px">
+          <div style="font-size:12.5px;color:var(--ink-900);font-weight:600">${n} worker report${n === 1 ? '' : 's'} waiting</div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:1px">${esc(names)}${wi.entries.length > 6 ? '…' : ''} — the AI merges duplicates into one entry</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="workerInboxLoad('${p.id}', true)" title="Refresh">⟳</button>
+        <button class="btn btn-amber btn-sm" onclick="dlogCompileAI('${p.id}')" ${ST.dlogCompileLoading ? 'disabled' : ''}>${ST.dlogCompileLoading === p.id ? '✦ Merging…' : '✦ Compile into daily log'}</button>
+      </div>`;
+    })()}
 
     ${logs.length === 0
       ? nvEmpty({icon:'dlog',title:'No log entries yet',line:'Record weather, crew, and work performed — two minutes a day.',btn:{label:"+ Log today's work",onclick:`dlogOpenModal('${p.id}',null)`}})
