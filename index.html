@@ -4749,6 +4749,9 @@ async function loadSt() {
     ST.dlogCompile = null;
     ST.dlogCompileLoading = null;
     ST.dlogCompileSaving = false;
+    ST.toAI = null;
+    ST.toAILoading = null;
+    ST.toSheet = null;
     if (typeof _estPortalChecked !== 'undefined' && _estPortalChecked.clear) _estPortalChecked.clear();
     if (ST.estimator) {
       for (const pid of Object.keys(ST.estimator)) {
@@ -5970,6 +5973,8 @@ function render() {
     ST.fuCompose ? 'fucompose' : '',
     ST.awardModal ? 'award' : '',
     ST.dlogCompile ? 'dlogcompile' : '',
+    ST.toAI ? 'toai' : '',
+    ST.toSheet ? 'tosheet' : '',
   ].filter(Boolean).join('|');
   const overlayJustOpened = overlaySig && overlaySig !== _lastOverlaySig;
   _lastOverlaySig = overlaySig;
@@ -8539,7 +8544,7 @@ Rules:
 
 Return STRICT JSON ONLY — no prose, no code fences:
 {"work":"what was done today (merged)","issues":"problems/delays, or empty string","notes":"anything else worth recording, or empty string","crew":"names"}`;
-    const text = await aiCompleteText(pid, prompt);
+    const text = await aiCompleteText(pid, prompt, null, { lean: true });
     const parsed = parseAIJson(text);
     if (!parsed || !parsed.work) throw new Error('Could not read the compiled log. Try again.');
     const photoPaths = [];
@@ -10388,6 +10393,8 @@ function buildApp() {
       ${ST.fuCompose ? buildFuComposeModal() : ''}
       ${ST.awardModal ? buildAwardModal() : ''}
       ${ST.dlogCompile ? buildDlogCompileModal() : ''}
+      ${ST.toAI ? buildTakeoffAIModal() : ''}
+      ${ST.toSheet ? buildTakeoffSheetModal() : ''}
     </div>`;
 }
 
@@ -13451,11 +13458,16 @@ async function estSendMessage(pid) {
 
   // ── Render uploaded plans to images (in-memory cache) ──────────────────────
   // If no plans uploaded with binaries, skip — AI runs in metadata-only mode.
+  // TOKEN GATE: the full plan set rides along ONLY on the first exchange (the
+  // AI builds its picture once) or when the message actually talks about the
+  // drawings — a pricing/wording question after that costs text-only tokens.
+  const isFirstAsk = chat.filter(m => m.role === 'user').length <= 1;
+  const wantsPlans = isFirstAsk || /plan|sheet|hoja|drawing|dibujo|page|pagina|página|dimension|medida|scale|escala|detail|detalle|elevation|section|corte|rcp|finish|schedule|legend|leyenda|room|cuarto|baño|bath|kitchen|cocina|wall|muro|ceiling|techo|floor|piso|\b[AMEPS]-?\d/i.test(text);
   let planImages = [];
   try {
     const e = getEstProj(pid);
     const hasUploaded = (e.plans || []).some(pl => hasPlanBinary(pl));
-    if (hasUploaded) {
+    if (hasUploaded && wantsPlans) {
       // Stream the progress into the assistant message placeholder so the user
       // sees "Reading X of Y pages…" before tokens arrive.
       const setStatus = (s) => {
@@ -13486,7 +13498,10 @@ async function estSendMessage(pid) {
   // streaming placeholder, located fresh by id (the array may have been rebased).
   const liveChat = estGetChat(pid);
   const phIdx = liveChat.findIndex(m => m.id === msgId);
+  // Last 12 turns only — the projectContext carries the durable facts, so an
+  // old conversation never balloons the per-message token bill.
   const messages = liveChat.slice(0, phIdx < 0 ? liveChat.length : phIdx)
+    .slice(-12)
     .map(m => ({ role: m.role, content: m.content }));
 
   const EDGE_URL = `${SUPABASE_URL}/functions/v1/ask-ai`;
@@ -13581,8 +13596,13 @@ function parseAIJson(text) {
 
 // Call ask-ai and return the full completion text (no streaming UI).
 // Optional planImages = [{discipline,name,pageNum,base64}] gives the AI vision.
-async function aiCompleteText(pid, userPrompt, planImages) {
-  const body = { projectContext: estBuildContext(pid), messages: [{ role: 'user', content: userPrompt }] };
+// opts.lean strips the price list / plan-review noise from the context —
+// one-shot prompts embed exactly what they need, so re-sending the whole
+// catalog on every letter/schedule/log call was pure token waste.
+async function aiCompleteText(pid, userPrompt, planImages, opts) {
+  const ctx = estBuildContext(pid);
+  if (opts && opts.lean) { ctx.priceList = []; ctx.reviewItems = []; ctx.derivedCodes = []; ctx.openRfis = []; }
+  const body = { projectContext: ctx, messages: [{ role: 'user', content: userPrompt }] };
   if (Array.isArray(planImages) && planImages.length) body.planImages = planImages;
   const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
     method: 'POST',
@@ -13633,7 +13653,7 @@ Rules:
 
 Return EXACTLY this shape and nothing else:
 {"groups":[{"code":"<cost code>","title":"<group title>","items":[{"code":"<price list code>","qty":<number>}]}],"notes":"<one short line of quantity assumptions>"}`;
-    const text = await aiCompleteText(pid, prompt);
+    const text = await aiCompleteText(pid, prompt, null, { lean: true }); // price list already in the prompt — don't send it twice
     const parsed = parseAIJson(text);
     if (!parsed || !Array.isArray(parsed.groups)) throw new Error('Could not read a draft from the AI. Try again.');
     const byCode = {}; priceList.forEach(r => { byCode[r.code] = r; });
@@ -13725,6 +13745,12 @@ async function dbeGenerate(pid) {
     if (hasBin && typeof renderAllProjectPlans === 'function') {
       const r = await renderAllProjectPlans(pid);
       planImages = r.images || [];
+      // A design-build quote works from the key sheets — 15 pages is plenty and
+      // caps the vision-token bill on big sets.
+      if (planImages.length > 15) {
+        showToast(`Large set — the first 15 of ${planImages.length} pages will be read.`, 'info');
+        planImages = planImages.slice(0, 15);
+      }
     }
   } catch (err) { console.warn('dbe: plan render failed', err); }
 
@@ -13749,7 +13775,7 @@ Do ALL of this:
 Return STRICT JSON ONLY — no prose, no code fences:
 {"projectType":"...","scope":["..."],"codeNotes":"...","recommendations":["design/build element recommendations"],"groups":[{"code":"23 81.13","title":"Air Handlers","items":[{"code":"hv-ahu-35","qty":2}]}],"missing":["..."],"notes":"..."}`;
 
-    const text = await aiCompleteText(pid, prompt, planImages);
+    const text = await aiCompleteText(pid, prompt, planImages, { lean: true }); // price list already in the prompt — don't send it twice
     const parsed = parseAIJson(text);
     if (!parsed) throw new Error('Could not read the AI result. Try again.');
     const byCode = {}; priceList.forEach(r => { byCode[r.code] = r; });
@@ -13937,7 +13963,7 @@ Do ALL of this:
 
 Return STRICT JSON ONLY — no prose, no code fences:
 {"categories":[{"category":"<EXACT name from the list>","items":[{"name":"...","qty":0,"unit":""}]}],"uncategorized":["..."],"missing":["..."],"notes":"one short line"}`;
-    const text = await aiCompleteText(pid, prompt, planImages);
+    const text = await aiCompleteText(pid, prompt, planImages, { lean: true });
     const parsed = parseAIJson(text);
     if (!parsed || !Array.isArray(parsed.categories)) throw new Error('Could not read a breakdown from the AI. Try again.');
     const catSet = new Set(cats);
@@ -14052,6 +14078,319 @@ function buildGcBreakdownModal() {
 }
 
 // ============================================================
+// AI TAKE-OFF — upload plans, pick WHAT to quantify, get an editable
+// take-off sheet (level · space · material · dims × height = SF) with
+// live totals by material and by level, CSV export (Excel-ready) and
+// push-to-Builder. Modeled on the estimator's manual workflow: read
+// legends + "TYPICAL ... UNLESS OTHERWISE NOTED" notes + RCP ceiling
+// heights + finish spec tag tables, prefer printed dims, flag estimates.
+// ONE vision AI call per generation — everything after is deterministic.
+// ============================================================
+
+const TAKEOFF_PRESETS = {
+  walls: {
+    label: 'Interior walls + ceilings',
+    sub: 'Plaster / stucco / gyp — SF per room = length × level ceiling height; ceilings per room.',
+    prompt: `TAKE-OFF TYPE: INTERIOR WALL FINISHES + CEILINGS.
+For every level and room: take off interior wall finish areas (plaster/stucco, gypsum board, or whatever the typical-assembly note says) and ceiling areas.
+- Read the ASSEMBLY DIAGRAM legend colors and the "TYPICAL ASSEMBLIES" notes ("ALL INTERIOR WALLS TO BE ... UNLESS OTHERWISE NOTED") — untagged walls ARE the typical assembly.
+- Read each level's ceiling height from the RCP sheets (they differ per level — READ them, never assume).
+- WALLS rows: cat "WALLS", material = assembly/finish tag or name, dims = wall segment length in FT (sum segments within the same room+material), height = that level's ceiling height in FT, unit "SF" (total computes dims × height).
+- CEILING rows: cat "CEILING", material = ceiling assembly tag, dims = room ceiling area in SF (no height), unit "SF".`,
+  },
+  tiles: {
+    label: 'Tile, countertops & floors',
+    sub: 'TL-x wall tile (length × height), CT-x countertops SF, FF-x floor areas — reads the finish spec table.',
+    prompt: `TAKE-OFF TYPE: TILE, COUNTERTOPS & FLOOR FINISHES.
+Use the FINISH SPECIFICATIONS sheet (tag tables: TL-x tile, CT-x countertops, FF-x floors, ST-x stone — note printed $/SF when shown) plus the FINISH FLOOR PLANS and INTERIOR ELEVATIONS.
+- Tiled/stone WALLS rows: cat "WALLS", material = the tag (e.g. TL-2), dims = wall length in FT, height = tiled height in FT, unit "SF" (total computes dims × height).
+- COUNTERTOP rows: cat "COUNTERTOP", material = CT tag, dims = countertop area in SF (from casework elevations/plans), no height, unit "SF".
+- FLOOR rows: cat "FLOOR", material = FF tag, dims = room floor area in SF, no height, unit "SF".
+- Every row carries the room/space name+number when shown (e.g. "BATH 106", "WELLNESS").`,
+  },
+  plumbing: {
+    label: 'Plumbing fixtures',
+    sub: 'WC, lavs, sinks, tubs, showers, drains… counted per level & room (EA).',
+    prompt: `TAKE-OFF TYPE: PLUMBING FIXTURE COUNT.
+Count plumbing fixtures per level and room: water closets, lavatories, kitchen/bar/laundry sinks, tubs, showers (rain heads and hand showers separately), steam/sauna gear, washer boxes, hose bibbs, floor drains, pool/spa equipment when shown.
+- Rows: cat "FIXTURE", material = fixture type (e.g. "WC", "LAV", "RAIN SHOWER HEAD"), dims = the count, unit "EA", no height.`,
+  },
+  custom: {
+    label: 'Custom take-off',
+    sub: 'Describe it: "doors & windows", "LF of baseboard", "light fixtures by type"…',
+    prompt: `TAKE-OFF TYPE: CUSTOM — quantify exactly what the user asks for below. Choose the right cat per row (WALLS / CEILING / FLOOR / COUNTERTOP / FIXTURE / OTHER) and unit (SF, LF or EA).`,
+  },
+};
+
+function takeoffsGet(pid) {
+  const ov = ST.overrides[pid];
+  return (ov && Array.isArray(ov._takeoffs)) ? ov._takeoffs : [];
+}
+function takeoffFind(pid, tid) { return takeoffsGet(pid).find(t => t.id === tid) || null; }
+function takeoffOpen(pid) { ST.toAI = { pid, type: 'walls', extra: '' }; render(); }
+function takeoffRowTotal(r) { return (r.unit === 'SF' && r.height) ? r.dims * r.height : r.dims; }
+function toFmtNum(n) { return (Math.round(Number(n) * 100) / 100).toLocaleString(); }
+
+async function takeoffGenerate(pid) {
+  if (ST.toAILoading) return;
+  const m = ST.toAI; if (!m || m.pid !== pid) return;
+  m.extra = document.getElementById('toai-extra')?.value ?? m.extra;
+  const preset = TAKEOFF_PRESETS[m.type] || TAKEOFF_PRESETS.custom;
+  if (m.type === 'custom' && !(m.extra || '').trim()) { showToast('Describe what you want quantified first.', 'warn'); return; }
+  const e = getEstProj(pid);
+  const plansWithBin = (e.plans || []).filter(pl => hasPlanBinary(pl));
+  if (!plansWithBin.length) { showToast('Upload the plan set first (Estimator → Plan Sets), then run the take-off.', 'warn'); return; }
+  ST.toAILoading = pid; render();
+  let planImages = [];
+  try {
+    const r = await renderAllProjectPlans(pid);
+    planImages = r.images || [];
+  } catch (err) { console.warn('takeoff: plan render failed', err); }
+  // Never let the AI fabricate a take-off with no pages in front of it —
+  // and never spend a trial AI credit on one.
+  if (!planImages.length) {
+    ST.toAILoading = null; render();
+    showToast('Could not read the plan pages — re-upload the PDF and try again.', 'error');
+    return;
+  }
+  if (!trialGuardAI()) { ST.toAILoading = null; render(); return; }
+  try {
+    const p = allProjects().find(x => x.id === pid) || { name: pid };
+    const prompt = `You are a professional construction estimator doing a QUANTITY TAKE-OFF from the attached plan pages.
+
+PROJECT: ${p.name}
+
+${preset.prompt}
+${(m.extra || '').trim() ? `
+USER GUIDANCE — respect this:
+${String(m.extra).slice(0, 500)}` : ''}
+
+HOW TO MEASURE (follow the sheets, not assumptions):
+- Read legends, tag tables and "TYPICAL / UNLESS OTHERWISE NOTED" notes FIRST — they define what untagged elements are.
+- Prefer PRINTED dimensions, areas and schedules. When you must estimate from the drawing scale (e.g. 1/4" = 1'-0"), be conservative and set "est": true on that row.
+- One row per room × material. "level" exactly as the sheets name it (e.g. "LEVEL 0"). "space" = room name + number when shown (e.g. "BATH 106").
+- Deductions (openings, casework within a tiled wall, pools within a floor area): add a row with NEGATIVE dims and note what it deducts — do not silently net areas.
+- Do NOT invent rooms, tags or fixtures that are not on the sheets. If pages are unreadable or a sheet type is missing (RCP, finish plan…), say so in "missing" instead of guessing.
+
+Return STRICT JSON ONLY — no prose, no code fences:
+{"rows":[{"cat":"WALLS","level":"LEVEL 0","space":"BATH 106","material":"TL-2","dims":16.81,"height":8,"unit":"SF","est":false,"note":""}],"missing":["..."],"notes":"one short line"}
+Row rules: cat is one of WALLS|CEILING|FLOOR|COUNTERTOP|FIXTURE|OTHER. unit SF WITH height → total computes dims×height; unit SF WITHOUT height → dims IS the SF; unit EA → dims is the count; unit LF → dims is linear feet.`;
+    const text = await aiCompleteText(pid, prompt, planImages, { lean: true });
+    const parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.rows) || !parsed.rows.length) throw new Error('Could not read take-off rows from the AI. Try again.');
+    const CATS_OK = ['WALLS', 'CEILING', 'FLOOR', 'COUNTERTOP', 'FIXTURE', 'OTHER'];
+    const rows = parsed.rows.map(r => ({
+      cat: CATS_OK.includes(String((r && r.cat) || '').toUpperCase()) ? String(r.cat).toUpperCase() : 'OTHER',
+      level: String((r && r.level) || '').slice(0, 24),
+      space: String((r && r.space) || '').slice(0, 48),
+      material: String((r && r.material) || '').slice(0, 32),
+      dims: Number(r && r.dims) || 0, // negative = deduction (openings), like a SUBSTRACTION row
+
+      height: (r && r.height != null && r.height !== '' && Number(r.height) > 0) ? Number(r.height) : null,
+      unit: ['SF', 'LF', 'EA'].includes(String((r && r.unit) || '').toUpperCase()) ? String(r.unit).toUpperCase() : 'SF',
+      est: !!(r && r.est),
+      note: String((r && r.note) || '').slice(0, 120),
+    })).filter(r => r.dims !== 0 || r.note);
+    if (!rows.length) throw new Error('The AI returned no usable rows.');
+    const t = {
+      id: 'to_' + Date.now(),
+      ts: new Date().toISOString(),
+      type: m.type,
+      label: preset.label + ' · ' + new Date().toLocaleDateString(),
+      rows,
+      missing: Array.isArray(parsed.missing) ? parsed.missing.map(x => String(x).slice(0, 160)).slice(0, 12) : [],
+      notes: String(parsed.notes || '').slice(0, 240),
+    };
+    if (!ST.overrides[pid]) ST.overrides[pid] = {};
+    if (!Array.isArray(ST.overrides[pid]._takeoffs)) ST.overrides[pid]._takeoffs = [];
+    ST.overrides[pid]._takeoffs.push(t);
+    saveSt();
+    ST.toAI = null;
+    ST.toSheet = { pid, tid: t.id };
+  } catch (err) {
+    showToast('Take-off failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.toAILoading = null; render();
+  }
+}
+
+// Cell edits update totals in place (no full render — keeps input focus).
+function takeoffSetCell(pid, tid, idx, field, value) {
+  const t = takeoffFind(pid, tid); if (!t || !t.rows[idx]) return;
+  if (field === 'dims' || field === 'height') {
+    const n = Number(value);
+    // dims may be NEGATIVE — a deduction row (openings), like the estimator's
+    // SUBSTRACTION rows in Excel. Heights stay positive.
+    t.rows[idx][field] = (field === 'height' && (value === '' || value == null)) ? null : (isNaN(n) ? 0 : (field === 'height' ? Math.max(0, n) : n));
+    if (t.rows[idx].est) t.rows[idx].est = false; // a hand-corrected number is no longer an AI estimate
+  } else {
+    t.rows[idx][field] = String(value);
+  }
+  saveSt();
+  const el = document.getElementById('to-total-' + idx);
+  if (el) el.textContent = toFmtNum(takeoffRowTotal(t.rows[idx]));
+  const foot = document.getElementById('to-footer');
+  if (foot) foot.innerHTML = buildTakeoffTotalsHtml(t);
+}
+function takeoffAddRow(pid, tid) {
+  const t = takeoffFind(pid, tid); if (!t) return;
+  const last = t.rows[t.rows.length - 1] || {};
+  t.rows.push({ cat: last.cat || 'WALLS', level: last.level || '', space: '', material: last.material || '', dims: 0, height: (last.height != null ? last.height : null), unit: last.unit || 'SF', est: false, note: '' });
+  saveSt(); render();
+}
+function takeoffDelRow(pid, tid, idx) {
+  const t = takeoffFind(pid, tid); if (!t) return;
+  t.rows.splice(idx, 1); saveSt(); render();
+}
+function takeoffDelete(pid, tid) {
+  if (!confirm('Delete this take-off? The Excel/CSV you exported stays on your computer.')) return;
+  const ov = ST.overrides[pid]; if (!ov || !Array.isArray(ov._takeoffs)) return;
+  ov._takeoffs = ov._takeoffs.filter(t => t.id !== tid);
+  ST.toSheet = null; saveSt(); render();
+}
+
+function takeoffTotals(t) {
+  const byMat = {}, byLevel = {};
+  for (const r of t.rows) {
+    const tot = takeoffRowTotal(r);
+    const mk = (r.material || '(untagged)') + '|' + r.unit;
+    const lk = (r.level || '(no level)') + '|' + r.unit;
+    byMat[mk] = (byMat[mk] || 0) + tot;
+    byLevel[lk] = (byLevel[lk] || 0) + tot;
+  }
+  return { byMat, byLevel };
+}
+function buildTakeoffTotalsHtml(t) {
+  const { byMat, byLevel } = takeoffTotals(t);
+  const box = (title, obj, keyLabel) => `<div style="flex:1;min-width:200px;border:1px solid var(--ink-700,var(--border));background:var(--bg1);padding:10px 12px">
+    <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);font-weight:600;margin-bottom:6px">${title}</div>
+    ${Object.entries(obj).map(([k, v]) => { const [name, unit] = k.split('|'); return `<div style="display:flex;justify-content:space-between;gap:10px;font-family:var(--mono);font-size:11.5px;padding:2px 0"><span style="color:var(--text2)">${esc(name)}</span><b style="color:var(--ink-900)">${toFmtNum(v)} ${esc(unit)}</b></div>`; }).join('') || '<div style="font-family:var(--mono);font-size:10px;color:var(--text3)">—</div>'}
+  </div>`;
+  return `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">${box('Totals by material', byMat)}${box('Totals by level', byLevel)}</div>`;
+}
+
+function takeoffCSV(pid, tid) {
+  const t = takeoffFind(pid, tid); if (!t) return;
+  const proj = allProjects().find(x => x.id === pid);
+  const rows = [['Category', 'Level', 'Space', 'Material', 'Dims', 'Height', 'Unit', 'Total', 'AI estimate', 'Note']];
+  for (const r of t.rows) rows.push([r.cat, r.level, r.space, r.material, r.dims, r.height ?? '', r.unit, takeoffRowTotal(r).toFixed(2), r.est ? 'YES' : '', r.note]);
+  const { byMat, byLevel } = takeoffTotals(t);
+  rows.push([]); rows.push(['TOTALS BY MATERIAL']);
+  for (const [k, v] of Object.entries(byMat)) { const [mat, unit] = k.split('|'); rows.push(['', '', '', mat, '', '', unit, v.toFixed(2)]); }
+  rows.push([]); rows.push(['TOTALS BY LEVEL']);
+  for (const [k, v] of Object.entries(byLevel)) { const [lv, unit] = k.split('|'); rows.push(['', lv, '', '', '', '', unit, v.toFixed(2)]); }
+  if (t.missing.length) { rows.push([]); rows.push(['MISSING / VERIFY']); t.missing.forEach(x => rows.push(['', x])); }
+  const csv = rows.map(r => r.map(c => { const s = String(c ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob); const a = document.createElement('a');
+  a.href = url; a.download = ((proj?.name || 'project').replace(/[^a-zA-Z0-9._-]/g, '_')) + '-takeoff-' + t.type + '-' + new Date().toISOString().slice(0, 10) + '.csv'; a.click();
+  URL.revokeObjectURL(url); showToast('Take-off CSV downloaded — opens straight in Excel.', 'success');
+}
+
+// One Builder line per material total — quantities land ready to price.
+function takeoffPushToBuilder(pid, tid) {
+  const t = takeoffFind(pid, tid); if (!t) return;
+  const { byMat } = takeoffTotals(t);
+  builderEnsure(pid);
+  const mk = (typeof getSettings === 'function' && getSettings().defaultMarkup) ? getSettings().defaultMarkup : {};
+  const baseMarkup = Number(mk.Materials) || 0;
+  let seq = 0;
+  const uid = (pfx) => pfx + Date.now().toString(36) + '_' + (seq++).toString(36) + Math.random().toString(36).slice(2, 5);
+  const items = Object.entries(byMat).map(([k, v]) => {
+    const [mat, unit] = k.split('|');
+    return { id: uid('i_'), code: mat, title: (t.label.split('·')[0].trim() + ' — ' + mat).slice(0, 120), description: '', qty: Math.round(v * 100) / 100, unit, unitCost: 0, costType: 'Materials', markup: baseMarkup, taxable: false };
+  });
+  ST.estimates[pid].groups.push({ id: uid('g_'), code: 'TO', title: 'Take-off — ' + t.label.split('·')[0].trim(), items });
+  saveSt();
+  ST.toSheet = null;
+  setTab('builder');
+  showToast('Take-off totals added to the Builder — set your unit costs there.', 'success');
+}
+
+function buildTakeoffAIModal() {
+  const m = ST.toAI; if (!m) return '';
+  const p = allProjects().find(x => x.id === m.pid) || { name: m.pid };
+  const saved = takeoffsGet(m.pid);
+  const loading = ST.toAILoading === m.pid;
+  return `<div class="backdrop" onclick="if(event.target===this){ST.toAI=null;render()}">
+    <div class="modal" style="max-width:600px" onclick="event.stopPropagation()">
+      <div class="modal-title">▦ AI take-off</div>
+      <div class="modal-sub">${esc(p.name)} — pick what to quantify from the uploaded plan set. You get an editable sheet: fix any number, then export to Excel or push to the Builder.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px">
+        ${Object.entries(TAKEOFF_PRESETS).map(([k, pr]) => `
+          <div onclick="ST.toAI.type='${k}';render()" style="cursor:pointer;border:1px solid ${m.type === k ? 'var(--amber)' : 'var(--border)'};background:${m.type === k ? 'var(--amber-bg)' : 'var(--bg1)'};border-radius:var(--r2);padding:10px 12px">
+            <div style="font-size:12.5px;font-weight:600;color:var(--ink-900)">${esc(pr.label)}</div>
+            <div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:3px;line-height:1.45">${esc(pr.sub)}</div>
+          </div>`).join('')}
+      </div>
+      <div class="modal-label" style="margin-top:12px">Guidance <span style="color:var(--text3)">(optional${m.type === 'custom' ? ' — required for custom' : ''} — e.g. "only levels 2 and 3", "plaster walls only", "heights per RCP")</span></div>
+      <textarea id="toai-extra" rows="2" class="minp" style="width:100%;box-sizing:border-box;font-size:12.5px;resize:vertical">${esc(m.extra || '')}</textarea>
+      ${saved.length ? `<div class="modal-label" style="margin-top:12px">Saved take-offs <span style="color:var(--text3)">(reopen — no AI credit)</span></div>
+        <div style="display:flex;flex-direction:column;gap:4px;max-height:130px;overflow-y:auto">
+          ${saved.slice().reverse().map(t => `<div onclick="ST.toAI=null;ST.toSheet={pid:'${m.pid}',tid:'${t.id}'};render()" style="cursor:pointer;border:1px solid var(--border);padding:7px 10px;display:flex;justify-content:space-between;gap:8px;font-size:12px"><span style="color:var(--ink-900)">${esc(t.label)}</span><span style="font-family:var(--mono);font-size:10px;color:var(--text3)">${t.rows.length} rows</span></div>`).join('')}
+        </div>` : ''}
+      ${isTrialPlan() ? `<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:8px">Trial: ${trialAILeft()}/${TRIAL_LIMITS.aiCalls} AI actions left — one take-off = one action</div>` : ''}
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="ST.toAI=null;render()">Cancel</button>
+        <button class="btn btn-amber" ${loading ? 'disabled' : ''} onclick="takeoffGenerate('${m.pid}')">${loading ? '<span class="rp-spinner"></span> Reading the sheets…' : '✦ Run take-off'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildTakeoffSheetModal() {
+  const s = ST.toSheet; if (!s) return '';
+  const t = takeoffFind(s.pid, s.tid);
+  if (!t) { ST.toSheet = null; return ''; }
+  const p = allProjects().find(x => x.id === s.pid) || { name: s.pid };
+  const estCount = t.rows.filter(r => r.est).length;
+  const inp = (idx, field, val, w, align) => `<input class="minp" value="${esc(val == null ? '' : String(val))}" oninput="takeoffSetCell('${s.pid}','${s.tid}',${idx},'${field}',this.value)" style="width:${w};font-family:var(--mono);font-size:11px;padding:4px 6px;${align ? 'text-align:right;' : ''}box-sizing:border-box">`;
+  return `<div class="backdrop" onclick="if(event.target===this){ST.toSheet=null;render()}">
+    <div class="modal modal-wide" style="max-width:980px" onclick="event.stopPropagation()">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+        <div>
+          <div class="modal-title">▦ ${esc(t.label)}</div>
+          <div class="modal-sub">${esc(p.name)} · ${t.rows.length} rows${estCount ? ` · <span style="color:var(--amber)">${estCount} marked ~ were estimated from scale — verify those dims</span>` : ''} — every cell is editable; totals update live</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="takeoffDelete('${s.pid}','${s.tid}')">Delete</button>
+      </div>
+      ${t.notes ? `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);margin-top:8px">${esc(t.notes)}</div>` : ''}
+      <div style="margin-top:12px;max-height:46vh;overflow:auto;border:1px solid var(--border)">
+        <table style="width:100%;border-collapse:collapse;font-size:11.5px">
+          <thead><tr style="position:sticky;top:0;background:var(--bg1);z-index:1">
+            ${['Cat', 'Level', 'Space', 'Material', 'Dims', 'Ht (ft)', 'Unit', 'Total', ''].map(h => `<th style="text-align:left;font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:7px 8px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>
+            ${t.rows.map((r, idx) => `<tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:3px 6px;font-family:var(--mono);font-size:9.5px;color:var(--text3)">${esc(r.cat)}</td>
+              <td style="padding:3px 6px">${inp(idx, 'level', r.level, '78px')}</td>
+              <td style="padding:3px 6px">${inp(idx, 'space', r.space, '130px')}</td>
+              <td style="padding:3px 6px">${inp(idx, 'material', r.material, '90px')}</td>
+              <td style="padding:3px 6px">${inp(idx, 'dims', r.dims, '74px', true)}</td>
+              <td style="padding:3px 6px">${r.unit === 'SF' ? inp(idx, 'height', r.height, '58px', true) : ''}</td>
+              <td style="padding:3px 6px;font-family:var(--mono);font-size:10px;color:var(--text3)">${esc(r.unit)}</td>
+              <td style="padding:3px 8px;text-align:right;font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--ink-900)">${r.est ? '<span title="Estimated from drawing scale — verify" style="color:var(--amber)">~</span> ' : ''}<span id="to-total-${idx}">${toFmtNum(takeoffRowTotal(r))}</span></td>
+              <td style="padding:3px 6px"><button class="edit-btn" style="color:var(--red);border-color:var(--red-border);padding:2px 6px" onclick="takeoffDelRow('${s.pid}','${s.tid}',${idx})">✕</button></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:8px"><button class="edit-btn" onclick="takeoffAddRow('${s.pid}','${s.tid}')">+ Add row</button></div>
+      <div id="to-footer">${buildTakeoffTotalsHtml(t)}</div>
+      ${t.missing.length ? `<div style="margin-top:10px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:9px 12px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--amber);font-weight:600;margin-bottom:4px">⚠ Missing / verify</div>
+        ${t.missing.map(x => `<div style="font-size:12px;color:var(--ink-900);line-height:1.5">• ${esc(x)}</div>`).join('')}
+      </div>` : ''}
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="ST.toSheet=null;render()">Close</button>
+        <button class="btn btn-ghost" onclick="takeoffCSV('${s.pid}','${s.tid}')">⬇ Excel / CSV</button>
+        <button class="btn btn-amber" onclick="takeoffPushToBuilder('${s.pid}','${s.tid}')" title="One Builder line per material total, quantities set — you price them">→ Push totals to Builder</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ============================================================
 // AI TASK SKILLS — follow-up composer (sub), award/regret letters (GC),
 // change order from plan diff. Each drafts with AI, is fully editable in a
 // review modal, and only leaves the building through an explicit send/save.
@@ -14119,7 +14458,7 @@ ${fuLog}
 Rules: reference the estimate naturally, make ONE clear ask (a reply, a quick call, or a decision date), and match the tone to the history — the more follow-ups already sent, the shorter and more direct. Sign off with the sender name.
 
 Return STRICT JSON ONLY — no prose, no code fences: {"subject":"...","body":"..."}`;
-    const text = await aiCompleteText(pid, prompt);
+    const text = await aiCompleteText(pid, prompt, null, { lean: true });
     const parsed = parseAIJson(text);
     if (!parsed || !parsed.body) throw new Error('Could not read a draft from the AI. Try again.');
     ST.fuCompose = { pid, subject: String(parsed.subject || ('Following up — ' + p.name)), body: String(parsed.body) };
@@ -14231,7 +14570,7 @@ Rules:
 
 Return STRICT JSON ONLY — no prose, no code fences:
 {"title":"CO — ...","description":"2-3 lines: what changed and why this CO exists","items":[{"title":"...","qty":1,"unitCost":0,"markup":0}],"notes":"one line of assumptions"}`;
-    const text = await aiCompleteText(pid, prompt);
+    const text = await aiCompleteText(pid, prompt, null, { lean: true }); // price list already in the prompt when relevant
     const parsed = parseAIJson(text);
     if (!parsed || !Array.isArray(parsed.items) || !parsed.items.length) throw new Error('Could not read CO items from the AI. Try again.');
     const mkDef = Number(getSettings().defaultMarkup?.Materials) || 0;
@@ -14323,7 +14662,7 @@ Write:
 
 Return STRICT JSON ONLY — no prose, no code fences:
 {"award":{"subject":"...","body":"..."},"regret":{"subject":"...","body":"..."}}`;
-    const text = await aiCompleteText(pid, prompt);
+    const text = await aiCompleteText(pid, prompt, null, { lean: true });
     const parsed = parseAIJson(text);
     if (!parsed || !parsed.award || !parsed.regret) throw new Error('Could not read the letters from the AI. Try again.');
     ST.awardModal = {
@@ -14437,17 +14776,21 @@ function aiCmdExamples() {
   if (isSubAccount()) {
     return [
       { ic: '✎', label: 'Ask for an estimate', fill: `Generate an estimate for ${pn} — read the plans and use my prices` },
+      { ic: '▦', label: 'Ask for a take-off', fill: `Take off quantities from the plans of ${pn}` },
       { ic: '✉', label: 'Ask to send a follow-up', fill: `Send a follow-up for ${pn}` },
-      { ic: '▦', label: 'Ask for a schedule (Gantt)', fill: `Create a construction schedule for ${pn} — keep in mind demolition goes first` },
+      { ic: '▤', label: 'Ask for a schedule (Gantt)', fill: `Create a construction schedule for ${pn} — keep in mind demolition goes first` },
       { ic: '✦', label: 'Ask for design advice', fill: `What size system would you design for ${pn}?` },
+      { ic: '≡', label: 'Ask for project status — 0 AI', fill: `Status of ${pn}` },
     ];
   }
   return [
     { ic: '▤', label: 'Ask to break down plans → RFPs', fill: `Break down the plans of ${pn} and prep RFPs by category` },
-    { ic: '▦', label: 'Ask for a schedule (Gantt)', fill: `Create a construction schedule for ${pn}` },
+    { ic: '▦', label: 'Ask for a take-off', fill: `Take off quantities from the plans of ${pn}` },
+    { ic: '◫', label: 'Ask for a schedule (Gantt)', fill: `Create a construction schedule for ${pn}` },
     { ic: '⇆', label: 'Ask for award & regret letters', fill: `Award letters for HVAC on ${pn}` },
     { ic: '✉', label: 'Ask to send RFP follow-ups', fill: `Follow up HVAC bids on ${pn}` },
     { ic: '✎', label: 'Ask for a budget estimate', fill: `Generate a budget estimate for ${pn} using my unit prices` },
+    { ic: '≡', label: 'Ask for project status — 0 AI', fill: `Status of ${pn}` },
   ];
 }
 
@@ -14456,11 +14799,48 @@ function aiCmdIntent(msg) {
   const m = msg.toLowerCase();
   const has = (...ws) => ws.some(w => m.includes(w));
   if (has('award', 'regret', 'adjudic', 'ganador')) return 'award';
+  if (has('take off', 'take-off', 'takeoff', 'metrado', 'cuantifica', 'quantities', 'quantify')) return 'takeoff';
   if (has('break down', 'breakdown', 'desglos', 'rfp', 'rfq')) return 'breakdown';
-  if (has('follow', 'seguimiento')) return 'followup';
+  if (has('follow', 'seguimiento', 'correo', 'email', 'mail', 'chase')) return 'followup';
   if (has('schedule', 'gantt', 'cronograma', 'calendario')) return 'schedule';
+  if (has('status', 'estado', 'resumen', 'summary', 'avance', 'progress', 'como va', 'cómo va', 'how many', 'cuantas', 'cuántas', 'cuantos', 'cuántos')) return 'status';
   if (has('estimate', 'estimado', 'presupuesto', 'cotiza', 'quote', 'design-build', 'design/build', 'precio')) return 'estimate';
   return 'chat';
+}
+
+// Project status — answered ENTIRELY from workspace data. Zero AI tokens: the
+// assistant should never pay a model to read numbers the app already has.
+function asstProjectStatus(p) {
+  const pid = p.id;
+  const L = [];
+  const t = (typeof builderTotals === 'function') ? builderTotals(pid) : { itemCount: 0, client: 0 };
+  L.push(t.itemCount ? `• Estimate: ${t.itemCount} item(s) — ${fmt$(t.client)}` : '• Estimate: not started');
+  const e = getEstProj(pid);
+  const planN = (e.plans || []).length;
+  L.push(`• Plans: ${planN ? planN + ' file(s) uploaded' : 'none uploaded'}`);
+  if (isSubAccount()) {
+    const d = subDeliveryGet(pid);
+    if (d.sends.length) {
+      const last = d.sends[d.sends.length - 1];
+      L.push(`• Estimate sent ${d.sends.length}× — last ${new Date(last.ts).toLocaleDateString()} · ${d.followUps.length} follow-up(s) · outcome: ${d.status || 'no response yet'}`);
+    } else {
+      L.push('• Estimate not sent yet');
+    }
+  } else {
+    const withBids = [];
+    for (const cat of CATS) {
+      const bids = getBidsForProjCat(p.name, cat);
+      if (!bids.length) continue;
+      const prices = bids.map(b => Number(b.bid.discPrice || b.bid.price || 0)).filter(Boolean);
+      const low = prices.length ? Math.min(...prices) : 0;
+      const win = (typeof getSelectedBid === 'function') && getSelectedBid(pid, cat);
+      withBids.push(`${cat} ${bids.length}${low ? ' (low ' + fmt$(low) + ')' : ''}${win ? ' ✓ awarded' : ''}`);
+    }
+    L.push(withBids.length ? `• Bids: ${withBids.join(' · ')}` : '• Bids: none received yet');
+  }
+  try { const sc = schedGet(pid); if (sc && sc.tasks && sc.tasks.length) L.push(`• Schedule: ${sc.phases.length} phase(s) / ${sc.tasks.length} task(s)`); } catch (_e) {}
+  try { const rf = rfiGet(pid); if (rf && rf.length) L.push(`• RFIs: ${rf.length}`); } catch (_e) {}
+  return `▤ ${p.name} — status:\n${L.join('\n')}\n(0 AI tokens — computed from your workspace data)`;
 }
 
 // Match the message to a project: full-name substring, then word overlap,
@@ -14507,6 +14887,11 @@ function aiCmdPickProject(pid) {
 
 async function aiCmdDispatch(intent, p, msg) {
   const pid = p.id;
+
+  if (intent === 'status') {
+    assistantPush('assistant', asstProjectStatus(p));
+    return;
+  }
 
   if (intent === 'schedule') {
     if (!hasFeature('fieldops')) { assistantPush('assistant', 'Scheduling (Gantt) is part of the Pro plan — upgrade to unlock it.'); return; }
@@ -14560,6 +14945,14 @@ async function aiCmdDispatch(intent, p, msg) {
     if (!getSelectedBid(pid, cat)) { assistantPush('assistant', `No winner selected yet for ${cat} on “${p.name}” — open that category's bids, pick the winning bid, then ask me again.`); return; }
     assistantPush('assistant', `✦ Drafting the award letter + regret emails for ${cat} on “${p.name}” — you review both before anything sends.`);
     await gcAwardLetters(pid, p.name || '', cat);
+    return;
+  }
+
+  if (intent === 'takeoff') {
+    const e = getEstProj(pid);
+    if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { assistantPush('assistant', `No plans uploaded for “${p.name}” yet — add the plan set (Estimator → Plan Sets) and ask me again.`); return; }
+    assistantPush('assistant', `✦ Opening the take-off tool for “${p.name}” — pick what to quantify (interior walls, tile & countertops, plumbing fixtures, or describe it). You get an editable sheet with totals by material and level → Excel or straight into the Builder.`);
+    takeoffOpen(pid);
     return;
   }
 
@@ -14760,6 +15153,13 @@ function buildEstAskAI(p, e) {
         </div>
       </div>
 
+      <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg1)">
+        <button onclick="takeoffOpen('${p.id}')" ${ST.toAILoading?'disabled':''}
+          style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:${ST.toAILoading===p.id?'var(--bg2)':'transparent'};color:${ST.toAILoading===p.id?'var(--text3)':'var(--ink-900)'};border:1px solid var(--ink-700,var(--border));border-radius:var(--r2);padding:9px 12px;font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.04em;cursor:${ST.toAILoading===p.id?'wait':'pointer'}"
+          title="AI reads the plan set and quantifies what you pick — interior walls, tile & countertops, plumbing fixtures, or anything you describe. Editable sheet → Excel / Builder.">
+          ${ST.toAILoading===p.id?'<span class="rp-spinner"></span> Measuring the sheets…':`▦ AI take-off · quantities from plans${takeoffsGet(p.id).length?` (${takeoffsGet(p.id).length} saved)`:''}`}
+        </button>
+      </div>
       ${isSubAccount() ? `
       <div style="padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg1);display:flex;flex-direction:column;gap:8px">
         <button onclick="dbeOpen('${p.id}')"
@@ -17905,6 +18305,7 @@ function aiParseJSON(out) {
 async function rfiAiDraft() {
   const brief = (document.getElementById('rfi-ai-brief')?.value || '').trim();
   if (!brief) { showToast('Type a quick description of the issue first.', 'warn'); return; }
+  if (!trialGuardAI()) return; // free-trial AI cap
   const btn = document.getElementById('rfi-ai-btn');
   const proj = allProjects().find(p => p.id === ST.rfiModal?.pid);
   const disc = document.getElementById('rfi-discipline')?.value || '';
@@ -18309,7 +18710,7 @@ Return STRICT JSON ONLY (no prose, no code fences):
 
   ST.schedAILoading = pid; render();
   try {
-    const text = await aiCompleteText(pid, prompt);
+    const text = await aiCompleteText(pid, prompt, null, { lean: true }); // scope is already in the prompt
     const parsed = parseAIJson(text);
     if (!parsed || !Array.isArray(parsed.phases)) throw new Error('Could not read a schedule from the AI. Try again.');
     const phases = [];
@@ -20805,10 +21206,10 @@ function buildBidComparisonView(pid, projName, cat) {
           <div class="bcv-no-lineitems-icon">▤</div>
           <div class="bcv-no-lineitems-title">No itemized data yet</div>
           <div class="bcv-no-lineitems-sub">
-            These bids came in as lump sums. Click <strong>Extract line items with AI</strong> below to let Claude read each PDF and pull out the categories — then this section will show a normalized side-by-side comparison so you can mix the best lines across subs.
+            These bids came in as lump sums. Click <strong>Apply typical breakdown</strong> to split each total by the typical cost structure of ${esc(cat)} work — instant, 0 AI tokens — and compare the lines side by side. Every line stays editable; ask the subs for their real itemization to replace it.
           </div>
           <button class="btn btn-amber" style="margin-top:14px" onclick="bcvExtractLineItems('${pid}','${esc(cat)}')">
-            ✦ Extract line items with AI
+            ▦ Apply typical breakdown (0 AI)
           </button>
         </div>
       `}
@@ -20841,109 +21242,58 @@ function buildBidComparisonView(pid, projName, cat) {
   `;
 }
 
-// AI extraction — sends each bid PDF to Claude Vision and parses out line items
-async function bcvExtractLineItems(pid, cat) {
+// Typical-split breakdown — DETERMINISTIC, zero AI tokens, instant.
+// A lump-sum bid carries no real line items anywhere we can read (the old AI
+// version received NO PDF and simply invented a plausible split from the same
+// total, one paid call per bid). An industry-typical split per trade produces
+// the same comparison grid honestly labeled as an allocation — every line
+// stays editable where it doesn't match the sub's actual scope.
+const BCV_TYPICAL_SPLITS = {
+  'HVAC': [['Equipment · units & condensers', .38], ['Ductwork & distribution', .27], ['Labor · install & start-up', .25], ['Controls, permits & misc', .10]],
+  'PLUMB': [['Fixtures & equipment', .32], ['Rough-in piping', .30], ['Labor', .28], ['Permits & misc', .10]],
+  'ELECTRIC': [['Panels & gear', .22], ['Wire, conduit & devices', .30], ['Labor', .38], ['Permits & misc', .10]],
+  'ROOF': [['Tear-off + dump', .15], ['Materials · membrane/shingles', .40], ['Labor', .35], ['Flashing & misc', .10]],
+  'FRAM': [['Lumber / steel', .45], ['Labor', .45], ['Hardware & misc', .10]],
+  'DRYWALL': [['Board & materials', .35], ['Hang / tape / finish labor', .55], ['Misc', .10]],
+  'CONCRETE': [['Material · mix & rebar', .40], ['Formwork & labor', .50], ['Pumping & misc', .10]],
+  'DEMO': [['Labor', .55], ['Hauling & dump fees', .35], ['Protection & misc', .10]],
+  'PAINT': [['Materials', .30], ['Labor', .60], ['Prep & misc', .10]],
+};
+const BCV_DEFAULT_SPLIT = [['Materials', .40], ['Labor', .42], ['Equipment / rentals', .08], ['Overhead & misc', .10]];
+function bcvExtractLineItems(pid, cat) {
   const proj = allProjects().find(p => p.id === pid);
   if (!proj) return;
   const bids = getBidsForProjCat(proj.name, cat);
   if (!bids.length) return;
-
-  // Mark loading state
-  ST.bcvExtracting = { pid, cat, total: bids.length, done: 0 };
-  render();
-
-  let extracted = 0, failed = 0;
+  const catU = String(cat || '').toUpperCase();
+  const splitKey = Object.keys(BCV_TYPICAL_SPLITS).find(k => catU.includes(k));
+  const split = splitKey ? BCV_TYPICAL_SPLITS[splitKey] : BCV_DEFAULT_SPLIT;
+  const maxShare = Math.max(...split.map(s => s[1]));
+  let done = 0;
   for (const { sub, bid, key } of bids) {
-    if (Array.isArray(bid.lineItems) && bid.lineItems.length > 0) {
-      extracted++;
-      ST.bcvExtracting.done++;
-      continue; // already done
+    if (Array.isArray(bid.lineItems) && bid.lineItems.length > 0) continue; // already itemized
+    const total = Number(bid.discPrice || bid.price || 0);
+    if (!total) continue;
+    let acc = 0;
+    const lineItems = split.map(([label, share], i) => {
+      // last line takes the remainder so the split sums EXACTLY to the bid
+      const amount = i === split.length - 1 ? Math.round((total - acc) * 100) / 100 : Math.round(total * share);
+      acc += amount;
+      return { label, category: label, amount, highlight: share === maxShare };
+    });
+    const targetSub = allSubs().find(s => s.id === sub.id);
+    if (targetSub && targetSub.bids && targetSub.bids[key]) {
+      targetSub.bids[key].lineItems = lineItems;
+      // Persist via subOverrides
+      if (!ST.subOverrides[sub.id]) ST.subOverrides[sub.id] = {};
+      if (!ST.subOverrides[sub.id].bids) ST.subOverrides[sub.id].bids = {};
+      ST.subOverrides[sub.id].bids[key] = { ...(ST.subOverrides[sub.id].bids[key] || {}), ...targetSub.bids[key], lineItems };
+      done++;
     }
-    try {
-      // Build prompt asking for structured line items
-      const userMsg = `You are extracting line items from a subcontractor bid PDF.
-
-CONTEXT:
-- Project: ${proj.name}
-- Category: ${cat}
-- Sub: ${sub.company}
-- Bid total: ${fmt$(Number(bid.discPrice || bid.price || 0))}
-- Bid notes/comments: ${bid.comments || '(none)'}
-
-Based on the bid total and any comments, infer a plausible breakdown of line items typical for ${cat} work.
-Respond with ONLY a JSON array of line items, each with:
-- "label": short item description (e.g., "Tear-off · existing shingles")
-- "category": normalized CSI-style category (e.g., "Tear-off + dump")
-- "amount": dollar amount (number, no formatting)
-- "highlight": true if this is the largest/most important line, else false
-
-Example: [{"label":"Demo","category":"Tear-off + dump","amount":8420,"highlight":false},...]
-
-Return 4-6 line items that sum to approximately the bid total. ONLY the JSON array, no other text.`;
-
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
-          projectContext: { project: proj.name, category: cat, sub: sub.company },
-          messages: [{ role: 'user', content: userMsg }],
-        }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      // Read full stream
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '', fullText = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const payload = line.slice(6);
-          if (payload === '[DONE]') continue;
-          try {
-            const obj = JSON.parse(payload);
-            const delta = obj.delta || obj.content || obj.text || '';
-            if (delta) fullText += delta;
-          } catch(e) {}
-        }
-      }
-
-      // Parse the JSON array
-      const m = fullText.match(/\[[\s\S]*\]/);
-      if (!m) throw new Error('No JSON array in response');
-      const lineItems = JSON.parse(m[0]);
-      if (!Array.isArray(lineItems)) throw new Error('Not an array');
-
-      // Save back to the bid
-      const targetSub = allSubs().find(s => s.id === sub.id);
-      if (targetSub && targetSub.bids && targetSub.bids[key]) {
-        targetSub.bids[key].lineItems = lineItems;
-        // Persist via subOverrides
-        if (!ST.subOverrides[sub.id]) ST.subOverrides[sub.id] = {};
-        if (!ST.subOverrides[sub.id].bids) ST.subOverrides[sub.id].bids = {};
-        ST.subOverrides[sub.id].bids[key] = { ...(ST.subOverrides[sub.id].bids[key] || {}), ...targetSub.bids[key], lineItems };
-      }
-      extracted++;
-    } catch(e) {
-      console.warn(`Failed to extract for ${sub.company}:`, e);
-      failed++;
-    }
-    ST.bcvExtracting.done++;
-    render();
   }
-
-  ST.bcvExtracting = null;
   saveSt();
   render();
-  showToast(`Extracted line items: ${extracted} succeeded, ${failed} failed`, failed > 0 ? 'warn' : 'success');
+  showToast(done ? `Typical ${cat} split applied to ${done} bid${done === 1 ? '' : 's'} — 0 AI tokens. Edit any line that doesn't match a sub's actual scope.` : 'All bids already have line items.', done ? 'success' : 'info');
 }
 
 // Helper called from the comparison view to select a bid
@@ -20988,8 +21338,8 @@ function openRfiGenerator(pid, disc, idx) {
     recordedAt: null,
   };
   render();
-  // Auto-start generation
-  setTimeout(() => generateRfiDraft(), 50);
+  // No auto-start: the AI call (and its tokens / trial credit) fires only when
+  // the user clicks Generate in the modal.
 }
 
 function closeRfiGenerator() {
@@ -21000,6 +21350,7 @@ function closeRfiGenerator() {
 async function generateRfiDraft() {
   const g = ST.rfiGenerator;
   if (!g) return;
+  if (!trialGuardAI()) return; // free-trial AI cap
   g.streaming = true;
   g.error = null;
   g.subject = '';
@@ -21043,7 +21394,9 @@ Keep the body under 200 words. Be specific about WHAT needs clarification and WH
         'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
       },
       body: JSON.stringify({
-        projectContext: (typeof estBuildContext === 'function') ? estBuildContext(g.pid) : null,
+        // Lean context — the RFI prompt above already carries the item, note and
+        // setup; the price list / review list would be dead tokens here.
+        projectContext: (typeof estBuildContext === 'function') ? (() => { const c = estBuildContext(g.pid); c.priceList = []; c.reviewItems = []; c.derivedCodes = []; c.openRfis = []; return c; })() : null,
         messages: [{ role: 'user', content: userMsg }],
       }),
     });
