@@ -224,17 +224,33 @@ async function engineText(p) {
 }
 
 // Scale: find "X" = 1'-0"" notations → points per foot. 72 pt = 1 inch paper.
+// pdf.js splits text into fragments and plan sets use typographic primes
+// (′ ″ ” ’), so we JOIN items into visual lines and normalize the quotes
+// BEFORE matching — per-fragment matching is why v0.3 found no scale.
+function normQuotes(s) { return String(s).replace(/[′’´`]/g, "'").replace(/[″“”]/g, '"'); }
+function engineLines(text) {
+  const items = text.items.slice().sort((a, b) => (b.y - a.y) || (a.x - b.x));
+  const lines = [];
+  let cur = null;
+  for (const it of items) {
+    if (cur && Math.abs(it.y - cur.y) < Math.max(3, it.h * 0.7)) { cur.str += ' ' + it.str; }
+    else { cur = { y: it.y, str: it.str }; lines.push(cur); }
+  }
+  return lines.map(l => normQuotes(l.str));
+}
 function engineScale(text) {
   const counts = {};
-  for (const it of text.items) {
-    const m = it.str.match(/(\d+(?:\s*\/\s*\d+)?|\d*\.?\d+)\s*("|”|'')\s*=\s*1'\s*-\s*0/);
-    if (!m) continue;
-    let inches;
-    if (m[1].includes('/')) { const [a, b] = m[1].split('/').map(s => parseFloat(s)); inches = a / b; }
-    else inches = parseFloat(m[1]);
-    if (!inches || inches <= 0 || inches > 12) continue;
-    const key = String(inches);
-    counts[key] = (counts[key] || 0) + 1;
+  const re = /(\d+\s*\/\s*\d+|\d+(?:\.\d+)?)\s*"?\s*=\s*1\s*'\s*-?\s*0/g;
+  for (const line of engineLines(text)) {
+    let m;
+    while ((m = re.exec(line)) !== null) {
+      let inches;
+      if (m[1].includes('/')) { const [a, b] = m[1].split('/').map(s => parseFloat(s)); inches = b ? a / b : 0; }
+      else inches = parseFloat(m[1]);
+      if (!inches || inches <= 0 || inches > 12) continue;
+      const key = String(inches);
+      counts[key] = (counts[key] || 0) + 1;
+    }
   }
   const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
   return best ? { inches: parseFloat(best[0]) } : null;
@@ -268,17 +284,23 @@ function engineRooms(text) {
 }
 
 // Sheet title / level from the title-block zone (right 15% of the page).
+// Level = the MOST FREQUENT "LEVEL n" (title-zone hits count ×3) — one stray
+// "OUTLINE OF LEVEL 2 ABOVE" note can no longer hijack the page's level.
 function engineTitleInfo(text) {
-  const zone = text.items.filter(it => it.x > text.pageW * 0.84);
-  let sheet = '', level = '';
-  for (const it of zone) {
+  let sheet = '';
+  const votes = {};
+  const tally = (s, w) => {
+    let m; const re = /LEVEL\s*([0-9]+)/gi;
+    while ((m = re.exec(s)) !== null) votes['LEVEL ' + m[1]] = (votes['LEVEL ' + m[1]] || 0) + w;
+  };
+  for (const it of text.items) {
     const s = it.str.trim();
-    if (!sheet && /^[A-Z]{1,2}\d\.\d{1,2}$/.test(s)) sheet = s;
-    const lm = s.match(/LEVEL\s*([0-9]+)/i);
-    if (!level && lm) level = 'LEVEL ' + lm[1];
+    const inZone = it.x > text.pageW * 0.84;
+    if (!sheet && inZone && /^[A-Z]{1,2}\d\.\d{1,2}$/.test(s)) sheet = s;
+    tally(s, inZone ? 3 : 1);
   }
-  if (!level) { const lm2 = text.items.map(t => t.str).join(' ').match(/LEVEL\s*([0-9]+)/i); if (lm2) level = 'LEVEL ' + lm2[1]; }
-  return { sheet, level };
+  const best = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+  return { sheet, level: best ? best[0] : '' };
 }
 
 // ── Vector layer: stroked segments with color ────────────────────────────────
@@ -330,8 +352,17 @@ async function engineVectors(p) {
     }
     else if (fn === OPS.fill || fn === OPS.eoFill || fn === OPS.endPath) { pending = []; }
   }
-  p._segs = segs;
-  return segs;
+  // Dedupe identical segments (re-stroked overlays, repeated legend swatches):
+  // same endpoints + same color counted once.
+  const seen = new Set(); const uniq = [];
+  for (const s of segs) {
+    const a = Math.round(s.x1) + ',' + Math.round(s.y1), b = Math.round(s.x2) + ',' + Math.round(s.y2);
+    const k = (a < b ? a + '|' + b : b + '|' + a) + '|' + s.key;
+    if (seen.has(k)) continue;
+    seen.add(k); uniq.push(s);
+  }
+  p._segs = uniq;
+  return uniq;
 }
 
 // Analyze one page: scale + rooms + title + colored line families.
@@ -432,22 +463,24 @@ async function autoGenerate() {
   const rows = [];
   for (const idx of a.idxs) {
     const eng = S.pages[idx]._eng; if (!eng) continue;
-    const scale = eng.scale || (S.pages[idx]._calibPtPerFt ? { ptPerFt: S.pages[idx]._calibPtPerFt } : null);
-    if (!scale) continue;
-    const level = eng.title.level || '';
-    const ht = (level && S.autoHt && S.autoHt[level]) ? Number(S.autoHt[level]) : null;
+    const ppf = pagePtPerFt(idx);                              // calib > sheet text > manual dropdown
+    if (!ppf) continue;
+    const level = (S.pages[idx]._levelOverride != null && S.pages[idx]._levelOverride !== '') ? S.pages[idx]._levelOverride : (eng.title.level || '');
+    const ht = (level && S.autoHt && Number(S.autoHt[level]) > 0) ? Number(S.autoHt[level]) : (Number(S.autoHtDef) > 0 ? Number(S.autoHtDef) : null);
     for (const f of useFams) {
       const pf = f.byPage[idx]; if (!pf) continue;
       // group this color's segments by nearest room label
       const groups = {};
-      const TH = 45 * scale.ptPerFt; // a room label further than ~45 ft away is another room
+      const TH = 45 * ppf; // a room label further than ~45 ft away is another room
       for (const s of pf.segs) {
+        const ftLen = s.len / ppf;
+        if (ftLen < 0.8 || ftLen > 200) continue;              // hatch ticks / border frames (re-applied with the EFFECTIVE scale)
         const mx = (s.x1 + s.x2) / 2, my = (s.y1 + s.y2) / 2;
         let best = null, bd = Infinity;
         for (const r of eng.rooms) { const d = Math.hypot(r.x - mx, r.y - my); if (d < bd) { bd = d; best = r; } }
         const room = (best && bd < TH) ? best.name : '(unassigned)';
         if (!groups[room]) groups[room] = { ft: 0, segs: [] };
-        groups[room].ft += s.len / scale.ptPerFt;
+        groups[room].ft += ftLen;
         groups[room].segs.push(s);
       }
       for (const [room, g] of Object.entries(groups)) {
@@ -917,8 +950,10 @@ async function drawMarkedPage(idx) {
 // page's detected scale (or a 2-click calibration on a printed dimension).
 function pagePtPerFt(idx) {
   const p = S.pages[idx]; if (!p) return null;
-  if (p._calibPtPerFt) return p._calibPtPerFt;
-  return (p._eng && p._eng.scale) ? p._eng.scale.ptPerFt : null;
+  if (p._calibPtPerFt) return p._calibPtPerFt;                 // 2-click calibration wins
+  if (p._eng && p._eng.scale) return p._eng.scale.ptPerFt;     // scale text read off the sheet
+  if (S.manualScaleIn) return S.manualScaleIn * 72;            // user-annotated scale (dropdown)
+  return null;
 }
 function toolValue(idx) {
   const t = S.tool; if (!t || !t.pts.length) return '';
@@ -1151,12 +1186,31 @@ function render() {
             <div class="kicker" style="color:var(--green)">2 · Automatic engine — vector geometry · <b>0 AI tokens</b></div>
             <button class="btn btn-sm" ${S.autoBusy || !S.pages.length ? 'disabled' : ''} onclick="autoAnalyze()">${S.autoBusy ? '<span class="spin"></span> Analyzing…' : '⚙ Analyze vectors'}</button>
           </div>
-          <div style="font-size:12px;color:var(--text2);line-height:1.5">Reads the PDF's real geometry: colored assembly lines (exact lengths × printed scale), room labels and levels — like Bluebeam, but automatic. ☑ pages to limit it (e.g. only the assembly diagrams).</div>
+          <div style="font-size:12px;color:var(--text2);line-height:1.5">Reads the PDF's real geometry: colored assembly lines (exact lengths × scale), room labels and levels — like Bluebeam, but automatic. ☑ pages to limit it (e.g. only the assembly diagrams).</div>
+          ${S.pages.length ? `<div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
+            <span class="kicker">Scale:</span>
+            <select class="minp" onchange="S.manualScaleIn=parseFloat(this.value)||null;render()">
+              ${[['', 'Auto — read from each sheet'], ['0.09375', '3/32″ = 1′-0″'], ['0.125', '1/8″ = 1′-0″'], ['0.1875', '3/16″ = 1′-0″'], ['0.25', '1/4″ = 1′-0″'], ['0.375', '3/8″ = 1′-0″'], ['0.5', '1/2″ = 1′-0″'], ['0.75', '3/4″ = 1′-0″'], ['1', '1″ = 1′-0″'], ['1.5', '1-1/2″ = 1′-0″'], ['3', '3″ = 1′-0″']].map(([v, l]) => `<option value="${v}"${String(S.manualScaleIn || '') === v ? ' selected' : ''}>${l}</option>`).join('')}
+            </select>
+            <span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">pick the drawing scale here — it fills in wherever the sheet has no readable scale text. No clicking, no measuring.</span>
+          </div>` : ''}
           ${S.auto ? `
-            <div style="margin-top:10px;display:flex;flex-direction:column;gap:5px">
+            <div style="margin-top:10px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
+              ${S.auto.info.map(pg => {
+                const ppf = pagePtPerFt(pg.idx);
+                const lvl = (S.pages[pg.idx]._levelOverride != null) ? S.pages[pg.idx]._levelOverride : (pg.level || '');
+                const src = S.pages[pg.idx]._calibPtPerFt ? 'calibrated ✓' : (S.pages[pg.idx]._eng && S.pages[pg.idx]._eng.scale ? S.pages[pg.idx]._eng.scale.inches + '″=1′-0″ ✓' : (S.manualScaleIn ? 'manual scale' : '⚠ no scale'));
+                return `<div style="display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:10.5px;background:var(--bg1)">
+                <b style="width:58px;color:var(--ink-900)">${esc(pg.sheet)}</b>
+                <span style="color:var(--text3)">level</span>
+                <input class="minp" value="${esc(lvl)}" placeholder="LEVEL ?" oninput="S.pages[${pg.idx}]._levelOverride=this.value" onchange="render()" style="width:88px;padding:3px 6px;font-size:10px">
+                <span style="color:${ppf ? 'var(--green)' : 'var(--red)'};margin-left:auto">${src}</span>
+                <span style="color:var(--text3)">${pg.rooms} rooms</span>
+              </div>`; }).join('')}
+            </div>
+            <div style="margin-top:8px;display:flex;flex-direction:column;gap:5px">
               ${S.auto.fams.map((f, fi) => {
-                const anyScale = S.auto.info.some(x => x.scale);
-                const lf = anyScale ? S.auto.info.reduce((acc, pg) => acc + ((f.byPage[pg.idx] && pg.scale) ? f.byPage[pg.idx].pt / pg.scale.ptPerFt : 0), 0) : 0;
+                const lf = S.auto.info.reduce((acc, pg) => { const ppf = pagePtPerFt(pg.idx); return acc + ((f.byPage[pg.idx] && ppf) ? f.byPage[pg.idx].pt / ppf : 0); }, 0);
                 return `<div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);padding:6px 10px;border-radius:var(--r)">
                 <input type="checkbox" ${f.use ? 'checked' : ''} onchange="S.auto.fams[${fi}].use=this.checked" style="accent-color:var(--green)">
                 <span style="width:16px;height:16px;border-radius:3px;background:${f.css};flex-shrink:0;border:1px solid var(--border)"></span>
@@ -1164,12 +1218,19 @@ function render() {
                 <span style="font-family:var(--mono);font-size:10.5px;color:var(--text2);margin-left:auto">${f.count} seg · ${lf ? fmtNum(lf) + ' LF' : fmtNum(f.pt) + ' pt'}</span>
               </div>`; }).join('')}
             </div>
-            ${S.auto.levels.length ? `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;align-items:center">
+            ${(() => {
+              const lvls = [...new Set(S.auto.info.map(pg => (S.pages[pg.idx]._levelOverride != null && S.pages[pg.idx]._levelOverride !== '') ? S.pages[pg.idx]._levelOverride : pg.level).filter(Boolean))];
+              if (!S.autoHt) S.autoHt = {};
+              for (const lv of lvls) if (!S.autoHt[lv]) S.autoHt[lv] = 8;
+              if (S.autoHtDef == null) S.autoHtDef = 8;
+              return `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;align-items:center">
               <span class="kicker">Wall heights (ft):</span>
-              ${S.auto.levels.map(lv => `<label style="font-family:var(--mono);font-size:10.5px;color:var(--text2)">${esc(lv)} <input class="minp" type="number" step="0.5" value="${S.autoHt[lv]}" oninput="S.autoHt['${esc(lv)}']=Number(this.value)" style="width:56px;text-align:right"></label>`).join('')}
-            </div>` : ''}
+              ${lvls.map(lv => `<label style="font-family:var(--mono);font-size:10.5px;color:var(--text2)">${esc(lv)} <input class="minp" type="number" step="0.5" value="${S.autoHt[lv]}" oninput="S.autoHt['${esc(lv)}']=Number(this.value)" style="width:56px;text-align:right"></label>`).join('')}
+              <label style="font-family:var(--mono);font-size:10.5px;color:var(--text2)">Default <input class="minp" type="number" step="0.5" value="${S.autoHtDef}" oninput="S.autoHtDef=Number(this.value)" style="width:56px;text-align:right"></label>
+            </div>`;
+            })()}
             <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:8px;flex-wrap:wrap">
-              <span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">${S.auto.info.filter(x => !x.scale).length ? '⚠ pages without scale text: open them and ⨯ Calibrate on a printed dimension' : 'scale read from the sheets ✓'}</span>
+              <span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">${(() => { const n = S.auto.info.filter(x => !pagePtPerFt(x.idx)).length; return n ? '⚠ ' + n + ' page(s) without scale — pick a manual scale above' : 'scale resolved for every page ✓'; })()}</span>
               <button class="btn" style="background:var(--green);border-color:var(--green);color:#fff" onclick="autoGenerate()">▦ Generate take-off (0 tokens)</button>
             </div>` : ''}
         </div>
