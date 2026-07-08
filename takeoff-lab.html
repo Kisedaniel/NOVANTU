@@ -197,6 +197,165 @@ async function tileImagesFor(p, grid) {
   }
   return imgs;
 }
+// ============================================================
+// DETERMINISTIC ENGINE — zero AI, zero tokens. Architectural PDFs are
+// VECTOR files: every wall line (with its legend color) and every text
+// ("BATH 106", "8'-0\"", "1/4\" = 1'-0\"") exists inside the PDF with
+// exact coordinates. We read them directly:
+//   · text layer  → rooms, scale, sheet titles, printed dims
+//   · operator list → stroked line segments + their stroke color
+//   · scale → EXACT lengths in feet (1/4"=1'-0" ⇒ 18 pt per foot)
+// This is the Bluebeam-style core: measure by geometry, not by vision.
+// ============================================================
+
+// ── Text layer ────────────────────────────────────────────────────────────────
+async function engineText(p) {
+  if (p._text) return p._text;
+  const tc = await p._page.getTextContent();
+  const view = p._page.view; // [x0,y0,x1,y1] in PDF points
+  const items = tc.items.map(it => ({
+    str: it.str,
+    x: it.transform[4], y: it.transform[5],
+    h: Math.hypot(it.transform[1], it.transform[3]) || 8,
+    w: it.width || 0,
+  })).filter(it => it.str && it.str.trim());
+  p._text = { items, pageW: view[2] - view[0], pageH: view[3] - view[1] };
+  return p._text;
+}
+
+// Scale: find "X" = 1'-0"" notations → points per foot. 72 pt = 1 inch paper.
+function engineScale(text) {
+  const counts = {};
+  for (const it of text.items) {
+    const m = it.str.match(/(\d+(?:\s*\/\s*\d+)?|\d*\.?\d+)\s*("|”|'')\s*=\s*1'\s*-\s*0/);
+    if (!m) continue;
+    let inches;
+    if (m[1].includes('/')) { const [a, b] = m[1].split('/').map(s => parseFloat(s)); inches = a / b; }
+    else inches = parseFloat(m[1]);
+    if (!inches || inches <= 0 || inches > 12) continue;
+    const key = String(inches);
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return best ? { inches: parseFloat(best[0]) } : null;
+}
+// The math, auditable: at X" = 1'-0", X inches of paper = 1 foot real.
+// 1 inch = 72 pt ⇒ ptPerFt = X × 72. For 1/4" scale: 0.25 × 72 = 18 pt/ft. ✓
+function engineScaleFixed(text) {
+  const s = engineScale(text);
+  if (!s) return null;
+  return { ptPerFt: s.inches * 72, inches: s.inches, auto: true };
+}
+
+// Rooms: "NAME + number" text pairs (e.g. "BATH" over "106") or single items.
+function engineRooms(text) {
+  const rooms = [];
+  const items = text.items;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (!/^[A-Z][A-Z /&.-]{2,24}$/.test(it.str.trim())) continue;
+    if (/^(LEVEL|SCALE|NORTH|TRUE|NOTES?|LEGEND|TYPICAL|SEE|ALL|UNO|NO)$/.test(it.str.trim())) continue;
+    // number just below (within ~2 line heights)?
+    let num = '';
+    for (let j = 0; j < items.length; j++) {
+      const jt = items[j];
+      if (!/^\d{3}[A-Z]?$/.test(jt.str.trim())) continue;
+      if (Math.abs(jt.x - it.x) < 40 && (it.y - jt.y) > 0 && (it.y - jt.y) < it.h * 3.2) { num = jt.str.trim(); break; }
+    }
+    rooms.push({ name: it.str.trim() + (num ? ' ' + num : ''), x: it.x + (it.w || 0) / 2, y: it.y });
+  }
+  return rooms;
+}
+
+// Sheet title / level from the title-block zone (right 15% of the page).
+function engineTitleInfo(text) {
+  const zone = text.items.filter(it => it.x > text.pageW * 0.84);
+  let sheet = '', level = '';
+  for (const it of zone) {
+    const s = it.str.trim();
+    if (!sheet && /^[A-Z]{1,2}\d\.\d{1,2}$/.test(s)) sheet = s;
+    const lm = s.match(/LEVEL\s*([0-9]+)/i);
+    if (!level && lm) level = 'LEVEL ' + lm[1];
+  }
+  if (!level) { const lm2 = text.items.map(t => t.str).join(' ').match(/LEVEL\s*([0-9]+)/i); if (lm2) level = 'LEVEL ' + lm2[1]; }
+  return { sheet, level };
+}
+
+// ── Vector layer: stroked segments with color ────────────────────────────────
+function _mul(a, b) { return [a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1], a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3], a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5]]; }
+function _pt(m, x, y) { return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]; }
+function _colKey(rgb) { return rgb.map(v => Math.round(v / 24) * 24).join(','); }
+function _isGrayish(rgb) { const [r, g, b] = rgb; const mx = Math.max(r, g, b), mn = Math.min(r, g, b); return (mx - mn) < 28; }
+
+async function engineVectors(p) {
+  if (p._segs) return p._segs;
+  const OPS = pdfjsLib.OPS;
+  const ol = await p._page.getOperatorList();
+  const segs = [];
+  let ctm = [1, 0, 0, 1, 0, 0], stroke = [0, 0, 0];
+  const stack = [];
+  let pending = [];
+  const norm = (v) => (v <= 1.001 && v >= 0) ? Math.round(v * 255) : Math.round(v);
+  for (let i = 0; i < ol.fnArray.length; i++) {
+    const fn = ol.fnArray[i], args = ol.argsArray[i];
+    if (fn === OPS.save) { stack.push({ ctm: ctm.slice(), stroke: stroke.slice() }); }
+    else if (fn === OPS.restore) { const s = stack.pop(); if (s) { ctm = s.ctm; stroke = s.stroke; } }
+    else if (fn === OPS.transform) { ctm = _mul(ctm, args); }
+    else if (fn === OPS.setStrokeRGBColor) { stroke = [norm(args[0]), norm(args[1]), norm(args[2])]; }
+    else if (fn === OPS.setStrokeGray) { const g = norm(args[0]); stroke = [g, g, g]; }
+    else if (fn === OPS.setStrokeCMYKColor) { const [c, m, y, k] = args; stroke = [Math.round(255 * (1 - Math.min(1, c + k))), Math.round(255 * (1 - Math.min(1, m + k))), Math.round(255 * (1 - Math.min(1, y + k)))]; }
+    else if (fn === OPS.constructPath) {
+      const ops = args[0], co = args[1];
+      let ci = 0, cur = null, start = null;
+      for (const op of ops) {
+        if (op === OPS.moveTo) { cur = _pt(ctm, co[ci], co[ci + 1]); start = cur; ci += 2; }
+        else if (op === OPS.lineTo) { const nx = _pt(ctm, co[ci], co[ci + 1]); if (cur) pending.push([cur[0], cur[1], nx[0], nx[1]]); cur = nx; ci += 2; }
+        else if (op === OPS.curveTo) { const nx = _pt(ctm, co[ci + 4], co[ci + 5]); if (cur) pending.push([cur[0], cur[1], nx[0], nx[1]]); cur = nx; ci += 6; }
+        else if (op === OPS.curveTo2 || op === OPS.curveTo3) { const nx = _pt(ctm, co[ci + 2], co[ci + 3]); if (cur) pending.push([cur[0], cur[1], nx[0], nx[1]]); cur = nx; ci += 4; }
+        else if (op === OPS.closePath) { if (cur && start) pending.push([cur[0], cur[1], start[0], start[1]]); cur = start; }
+        else if (op === OPS.rectangle) {
+          const x = co[ci], y = co[ci + 1], w = co[ci + 2], h = co[ci + 3];
+          const p1 = _pt(ctm, x, y), p2 = _pt(ctm, x + w, y), p3 = _pt(ctm, x + w, y + h), p4 = _pt(ctm, x, y + h);
+          pending.push([p1[0], p1[1], p2[0], p2[1]], [p2[0], p2[1], p3[0], p3[1]], [p3[0], p3[1], p4[0], p4[1]], [p4[0], p4[1], p1[0], p1[1]]);
+          ci += 4;
+        }
+      }
+    }
+    else if (fn === OPS.stroke || fn === OPS.closeStroke || fn === OPS.fillStroke || fn === OPS.eoFillStroke || fn === OPS.closeFillStroke) {
+      for (const s of pending) {
+        const len = Math.hypot(s[2] - s[0], s[3] - s[1]);
+        if (len > 0.5) segs.push({ x1: s[0], y1: s[1], x2: s[2], y2: s[3], len, rgb: stroke.slice(), key: _colKey(stroke) });
+      }
+      pending = [];
+    }
+    else if (fn === OPS.fill || fn === OPS.eoFill || fn === OPS.endPath) { pending = []; }
+  }
+  p._segs = segs;
+  return segs;
+}
+
+// Analyze one page: scale + rooms + title + colored line families.
+async function engineAnalyze(idx) {
+  const p = S.pages[idx]; if (!p) return null;
+  if (p._eng) return p._eng;
+  const text = await engineText(p);
+  const scale = engineScaleFixed(text);
+  const rooms = engineRooms(text);
+  const title = engineTitleInfo(text);
+  const segs = await engineVectors(p);
+  const fams = {};
+  for (const s of segs) {
+    if (_isGrayish(s.rgb)) continue;                       // linework/dims — not legend colors
+    const ftLen = scale ? s.len / scale.ptPerFt : 0;
+    if (scale && (ftLen < 0.8 || ftLen > 200)) continue;   // hatch ticks / border frames
+    if (!fams[s.key]) fams[s.key] = { key: s.key, rgb: s.rgb, css: `rgb(${s.rgb.join(',')})`, count: 0, pt: 0, segs: [] };
+    fams[s.key].count++; fams[s.key].pt += s.len; fams[s.key].segs.push(s);
+  }
+  const families = Object.values(fams).sort((a, b) => b.pt - a.pt).slice(0, 12);
+  p._eng = { text, scale, rooms, title, families, pageW: text.pageW, pageH: text.pageH };
+  return p._eng;
+}
+
 // Title-block strip (right edge, where sheet number + title + level live) at
 // readable zoom — used by the classifier.
 async function titleStripFor(p) {
@@ -209,13 +368,133 @@ async function titleStripFor(p) {
   return strip.toDataURL('image/jpeg', 0.8);
 }
 
+// ── AUTO TAKE-OFF (0 tokens) — walls by legend color ─────────────────────────
+// Analyze the selected pages' vectors, group colored line families across
+// pages, let the user name each color (Plaster, Gypsum…) and set the level
+// heights → EXACT rows: sum of real segment lengths × height, grouped by the
+// nearest room label. Marks come from real geometry, so they land perfectly.
+function guessMat(rgb) {
+  const [r, g, b] = rgb;
+  if (b > 140 && r < 110 && g < 160) return 'Plaster';
+  if (g > 140 && b > 140 && r < 120) return 'Gypsum Board';
+  if (r > 150 && g < 110 && b < 110) return 'Stone';
+  if (r > 110 && b > 150 && g < 120) return 'Tile';
+  if (g > 130 && r < 120 && b < 120) return 'Wood';
+  if (r > 170 && g > 110 && b < 90) return 'Metal';
+  return '';
+}
+function autoPages() {
+  const checked = S.pages.map((p, i) => ({ p, i })).filter(x => x.p.use === true);
+  if (checked.length) return checked.map(x => x.i);
+  return S.pages.map((_, i) => i);
+}
+async function autoAnalyze() {
+  if (S.autoBusy || !S.pages.length) return;
+  S.autoBusy = true; S.cancel = false; render();
+  const idxs = autoPages();
+  log(`Engine — analyzing vectors + text of ${idxs.length} page(s)… (0 tokens)`);
+  try {
+    const fams = {};
+    const info = [];
+    for (const idx of idxs) {
+      if (S.cancel) break;
+      const eng = await engineAnalyze(idx);
+      if (!eng) continue;
+      info.push({ idx, sheet: eng.title.sheet || ('p.' + S.pages[idx].num), level: eng.title.level, scale: eng.scale, rooms: eng.rooms.length, famN: eng.families.length });
+      for (const f of eng.families) {
+        if (!fams[f.key]) fams[f.key] = { key: f.key, rgb: f.rgb, css: f.css, pt: 0, count: 0, byPage: {}, mat: guessMat(f.rgb), use: true };
+        fams[f.key].pt += f.pt; fams[f.key].count += f.count;
+        fams[f.key].byPage[idx] = f;
+      }
+      log(`Engine — ${eng.title.sheet || 'p.' + S.pages[idx].num}: ${eng.scale ? 'scale ' + eng.scale.inches + '"=1\'-0" ✓' : '⚠ no scale text found'} · ${eng.families.length} color famil${eng.families.length === 1 ? 'y' : 'ies'} · ${eng.rooms.length} room label(s)`);
+    }
+    const levels = [...new Set(info.map(x => x.level).filter(Boolean))];
+    if (!S.autoHt) S.autoHt = {};
+    for (const lv of levels) if (!S.autoHt[lv]) S.autoHt[lv] = 8;
+    S.auto = { idxs, fams: Object.values(fams).sort((a, b) => b.pt - a.pt), info, levels };
+    log(`Engine done — ${S.auto.fams.length} color families across ${idxs.length} page(s). Name the materials and generate.`, 'ok');
+  } catch (e) {
+    log('Engine failed: ' + (e.message || e), 'err');
+  } finally {
+    S.autoBusy = false; render();
+  }
+}
+function segNormBox(s, eng) {
+  const pad = 4;
+  const x = Math.min(s.x1, s.x2) - pad, y = Math.max(s.y1, s.y2) + pad;
+  const w = Math.abs(s.x2 - s.x1) + pad * 2, h = Math.abs(s.y2 - s.y1) + pad * 2;
+  return { x: Math.max(0, x / eng.pageW * 1000), y: Math.max(0, (eng.pageH - y) / eng.pageH * 1000), w: Math.min(1000, w / eng.pageW * 1000), h: Math.min(1000, h / eng.pageH * 1000) };
+}
+async function autoGenerate() {
+  const a = S.auto; if (!a) return;
+  const useFams = a.fams.filter(f => f.use && (f.mat || '').trim());
+  if (!useFams.length) { alert('Name at least one color family (material) first.'); return; }
+  const rows = [];
+  for (const idx of a.idxs) {
+    const eng = S.pages[idx]._eng; if (!eng) continue;
+    const scale = eng.scale || (S.pages[idx]._calibPtPerFt ? { ptPerFt: S.pages[idx]._calibPtPerFt } : null);
+    if (!scale) continue;
+    const level = eng.title.level || '';
+    const ht = (level && S.autoHt && S.autoHt[level]) ? Number(S.autoHt[level]) : null;
+    for (const f of useFams) {
+      const pf = f.byPage[idx]; if (!pf) continue;
+      // group this color's segments by nearest room label
+      const groups = {};
+      const TH = 45 * scale.ptPerFt; // a room label further than ~45 ft away is another room
+      for (const s of pf.segs) {
+        const mx = (s.x1 + s.x2) / 2, my = (s.y1 + s.y2) / 2;
+        let best = null, bd = Infinity;
+        for (const r of eng.rooms) { const d = Math.hypot(r.x - mx, r.y - my); if (d < bd) { bd = d; best = r; } }
+        const room = (best && bd < TH) ? best.name : '(unassigned)';
+        if (!groups[room]) groups[room] = { ft: 0, segs: [] };
+        groups[room].ft += s.len / scale.ptPerFt;
+        groups[room].segs.push(s);
+      }
+      for (const [room, g] of Object.entries(groups)) {
+        if (g.ft < 1) continue;
+        const marks = g.segs.slice().sort((x, y) => y.len - x.len).slice(0, 4).map(s => ({ page: idx, ...segNormBox(s, eng) }));
+        rows.push({
+          cat: 'WALLS', level, space: room === '(unassigned)' ? '' : room,
+          material: f.mat.trim(), dims: Math.round(g.ft * 100) / 100,
+          height: ht, unit: 'SF', est: false,
+          note: 'engine: ' + g.segs.length + ' segment(s)', src: (eng.title.sheet || 'p.' + S.pages[idx].num) + ' · vector', marks,
+        });
+      }
+    }
+  }
+  if (!rows.length) { alert('No rows produced — check that the pages have a readable scale (or calibrate in the viewer) and colored assembly lines.'); return; }
+  S.takeoff = {
+    id: 'to_' + Date.now(), ts: new Date().toISOString(), preset: 'walls',
+    label: 'Engine · Walls by color · ' + (S.projectName || 'plans') + ' · ' + new Date().toLocaleDateString(),
+    rows, missing: [], notes: 'Deterministic vector measurement — 0 AI tokens. Lengths are exact path geometry × printed scale; verify color→material naming and heights.',
+    issues: [],
+  };
+  S.saved.push(S.takeoff); persist();
+  S.sheetOpen = true;
+  log(`Engine take-off — ${rows.length} rows, 0 tokens.`, 'ok');
+  render();
+}
+
 // ── AI plumbing (ask-ai SSE) ──────────────────────────────────────────────────
+// CRITICAL CONTRACT: ask-ai expects planImages as OBJECTS {name, pageNum,
+// base64} — a plain dataURL string is silently DROPPED by the function (the
+// model then sees "N pages attached" in its prompt but no actual images, and
+// fabricates). Every image goes through normImgs() so that can never happen.
+function normImgs(images) {
+  return (images || []).slice(0, MAX_IMAGES).map((im, i) => ({
+    discipline: 'PLAN',
+    name: (typeof im === 'string' ? ('image ' + (i + 1)) : (im.label || ('image ' + (i + 1)))).slice(0, 90),
+    pageNum: i + 1,
+    base64: typeof im === 'string' ? im : im.url,
+  })).filter(x => typeof x.base64 === 'string' && x.base64.startsWith('data:image/'));
+}
 async function aiCall(prompt, images) {
   const body = {
     projectContext: { name: S.projectName || 'Take-off Lab', isSub: false },
     messages: [{ role: 'user', content: prompt }],
   };
-  if (images && images.length) body.planImages = images.slice(0, MAX_IMAGES);
+  const imgs = normImgs(images);
+  if (imgs.length) body.planImages = imgs;
   const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
@@ -268,9 +547,10 @@ async function agentClassify() {
       if (S.cancel) { log('Stopped by user.', 'warn'); break; }
       const batch = S.pages.slice(b, b + BATCH);
       const imgs = [];
-      for (const p of batch) {
-        imgs.push(await titleStripFor(p));
-        imgs.push((await renderPageImage(p, 900)).toDataURL('image/jpeg', 0.7));
+      for (let k = 0; k < batch.length; k++) {
+        const p = batch[k];
+        imgs.push({ label: `PAGE ${k + 1} — title-block strip (zoomed)`, url: await titleStripFor(p) });
+        imgs.push({ label: `PAGE ${k + 1} — full-page overview`, url: (await renderPageImage(p, 900)).toDataURL('image/jpeg', 0.7) });
       }
       const prompt = `You are indexing a construction plan set. The attached images come in PAIRS per page: first the TITLE-BLOCK STRIP (right edge, zoomed — read the sheet number, sheet title and level here), then a small full-page overview. So images 1-2 = PAGE 1, images 3-4 = PAGE 2, and so on. There are ${batch.length} pages.
 
@@ -391,7 +671,7 @@ Extract, ONLY what is actually printed:
 - Anything else an estimator needs from this sheet (scale, level name).
 
 Return STRICT JSON ONLY: {"facts":["one fact per line, compact, e.g. 'RCP LEVEL 1: typical ceiling height 8-6'","'TL-2 = tile $30/SF material only'"]}. If the sheet is unreadable return {"facts":[]}.`;
-      const text = await aiCall(prompt, tiles.map(t => t.url));
+      const text = await aiCall(prompt, tiles);
       const parsed = parseAIJson(text);
       if (parsed && Array.isArray(parsed.facts) && parsed.facts.length) {
         ctx += `\nFROM ${name}:\n` + parsed.facts.slice(0, 30).map(f => '- ' + String(f).slice(0, 160)).join('\n');
@@ -441,12 +721,13 @@ HOW TO MEASURE:
 - One row per room × material. "level" exactly as named. "space" = room name + number (e.g. "BATH 106").
 - Deductions (openings, casework, pools within an area): NEGATIVE dims row with a note.
 - If THIS sheet is still not legible enough to measure, return {"rows":[],"missing":["${name}: what exactly is unreadable"]} — NEVER fabricate numbers.
+- SANITY CHECK: start "notes" with the sheet number you ACTUALLY read in the title block of image 1. If you cannot read any sheet at all, you are not seeing the images — return {"rows":[],"missing":["no image data visible"]}.
 - MARKS: rectangles locating what you measured, on IMAGE 1 (the overview): {"x":0-1000,"y":0-1000,"w":0-1000,"h":0-1000}, up to 4 per row, tight boxes.
 
 Return STRICT JSON ONLY:
 {"rows":[{"cat":"WALLS","level":"LEVEL 0","space":"BATH 106","material":"TL-2","dims":16.81,"height":8,"unit":"SF","est":false,"note":"","marks":[{"x":410,"y":220,"w":180,"h":14}]}],"missing":[],"notes":""}
 Row rules: cat WALLS|CEILING|FLOOR|COUNTERTOP|FIXTURE|OTHER · unit SF with height → total = dims×height · SF without height → dims IS the SF · EA → count · LF → linear feet.`;
-        const text = await aiCall(prompt, tiles.map(t => t.url));
+        const text = await aiCall(prompt, tiles);
         const parsed = parseAIJson(text);
         if (!parsed) { allMissing.push(name + ': unreadable AI reply'); continue; }
         const rows = (Array.isArray(parsed.rows) ? parsed.rows : []).map(r => ({
@@ -499,7 +780,7 @@ async function agentVerify() {
     const imgs = [];
     for (const s of plan.sheets.slice(0, 4)) {
       const tiles = await tileImagesFor(s.p, 2);
-      for (const ti of tiles) imgs.push(ti.url);
+      for (const ti of tiles) imgs.push({ label: (((s.p.cls && s.p.cls.sheet) || ("page " + s.p.num)) + " — " + ti.label).slice(0, 90), url: ti.url });
     }
     const sheetTxt = t.rows.map(r => `${r.cat} | ${r.level} | ${r.space} | ${r.material} | ${r.dims}${r.height ? ' × ' + r.height : ''} = ${fmtNum(rowTotal(r))} ${r.unit}`).join('\n');
     const prompt = `You are a senior estimator CHECKING a colleague's take-off against the attached plan pages. Be adversarial but practical.
@@ -597,11 +878,13 @@ function marksByPage() {
   });
   return map;
 }
-async function drawMarkedPage(idx) {
+async function baseMarkedCanvas(idx) {
   const p = S.pages[idx]; if (!p) return null;
+  const marks = marksByPage()[idx] || [];
+  const key = idx + '|' + marks.length + '|' + (S.takeoff ? S.takeoff.id : '');
+  if (S._cvCache && S._cvCache.key === key) return S._cvCache.cv;
   const cv = await renderPageImage(p, FULL_W, 0.85);
   const ctx = cv.getContext('2d');
-  const marks = marksByPage()[idx] || [];
   for (const mk of marks) {
     const col = matColor(mk.material);
     const x = mk.x / 1000 * cv.width, y = mk.y / 1000 * cv.height;
@@ -609,7 +892,6 @@ async function drawMarkedPage(idx) {
     ctx.save();
     ctx.globalAlpha = 0.22; ctx.fillStyle = col; ctx.fillRect(x, y, w, h);
     ctx.globalAlpha = 1; ctx.lineWidth = 2.5; ctx.strokeStyle = col; ctx.strokeRect(x, y, w, h);
-    // label chip
     ctx.font = '700 15px Consolas, monospace';
     const tw = ctx.measureText(mk.label).width + 12;
     const ly = Math.max(2, y - 22);
@@ -617,7 +899,126 @@ async function drawMarkedPage(idx) {
     ctx.fillStyle = '#fff'; ctx.fillText(mk.label, x + 6, ly + 15);
     ctx.restore();
   }
+  S._cvCache = { key, cv };
   return cv;
+}
+async function drawMarkedPage(idx) {
+  const base = await baseMarkedCanvas(idx); if (!base) return null;
+  const cv = document.createElement('canvas');
+  cv.width = base.width; cv.height = base.height;
+  const ctx = cv.getContext('2d');
+  ctx.drawImage(base, 0, 0);
+  drawToolOverlay(ctx, cv, idx);
+  return cv;
+}
+
+// ── Bluebeam-style manual tools (measure · area · count · calibrate) ─────────
+// Clicks land in PDF coordinates via the page dims; lengths/areas use the
+// page's detected scale (or a 2-click calibration on a printed dimension).
+function pagePtPerFt(idx) {
+  const p = S.pages[idx]; if (!p) return null;
+  if (p._calibPtPerFt) return p._calibPtPerFt;
+  return (p._eng && p._eng.scale) ? p._eng.scale.ptPerFt : null;
+}
+function toolValue(idx) {
+  const t = S.tool; if (!t || !t.pts.length) return '';
+  const ppf = pagePtPerFt(idx);
+  if (t.mode === 'count') return t.pts.length + ' EA';
+  if (!ppf) return '⚠ no scale — calibrate first';
+  if (t.mode === 'measure') {
+    let ft = 0;
+    for (let i = 1; i < t.pts.length; i++) ft += Math.hypot(t.pts[i][0] - t.pts[i - 1][0], t.pts[i][1] - t.pts[i - 1][1]) / ppf;
+    return fmtNum(ft) + ' LF';
+  }
+  if (t.mode === 'area' && t.pts.length >= 3) {
+    let a = 0;
+    for (let i = 0; i < t.pts.length; i++) { const [x1, y1] = t.pts[i], [x2, y2] = t.pts[(i + 1) % t.pts.length]; a += x1 * y2 - x2 * y1; }
+    return fmtNum(Math.abs(a / 2) / (ppf * ppf)) + ' SF';
+  }
+  if (t.mode === 'calib' && t.pts.length === 2) return 'now enter the real length →';
+  return t.pts.length + ' pt(s)';
+}
+function toolStart(mode) {
+  S.tool = { mode, pts: [] };
+  render();
+}
+function toolClick(e, idx) {
+  const t = S.tool; if (!t || !t.mode) return;
+  const p = S.pages[idx]; const eng = p._eng;
+  const pageW = eng ? eng.pageW : (p._page.view[2] - p._page.view[0]);
+  const pageH = eng ? eng.pageH : (p._page.view[3] - p._page.view[1]);
+  const r = e.target.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width * pageW;
+  const y = pageH * (1 - (e.clientY - r.top) / r.height);
+  if (t.mode === 'calib' && t.pts.length >= 2) t.pts = [];
+  t.pts.push([x, y]);
+  if (t.mode === 'calib' && t.pts.length === 2) {
+    const distPt = Math.hypot(t.pts[1][0] - t.pts[0][0], t.pts[1][1] - t.pts[0][1]);
+    const ftStr = prompt('Real length of what you just clicked (in feet, e.g. 10 or 27.87):');
+    const ft = parseFloat(ftStr);
+    if (ft && ft > 0) {
+      S.pages[idx]._calibPtPerFt = distPt / ft;
+      log(`Calibrated ${((S.pages[idx].cls || {}).sheet) || 'p.' + S.pages[idx].num}: ${fmtNum(distPt / ft)} pt/ft.`, 'ok');
+    }
+    t.pts = [];
+  }
+  paintViewer();
+}
+function toolAddRow(idx) {
+  const t = S.tool; if (!t || !t.pts.length) return;
+  const val = toolValue(idx);
+  const m = val.match(/^([\d.,-]+)\s+(LF|SF|EA)/);
+  if (!m) { alert('Nothing measurable yet — click points on the page first.'); return; }
+  const num = parseFloat(m[1].replace(/,/g, ''));
+  const unit = m[2];
+  const material = document.getElementById('tool-mat')?.value?.trim() || '';
+  const space = document.getElementById('tool-space')?.value?.trim() || '';
+  const p = S.pages[idx]; const eng = p._eng;
+  const pageW = eng ? eng.pageW : 1, pageH = eng ? eng.pageH : 1;
+  const xs = t.pts.map(q => q[0]), ys = t.pts.map(q => q[1]);
+  const mark = {
+    page: idx,
+    x: Math.min(...xs) / pageW * 1000 - 4, y: (pageH - Math.max(...ys)) / pageH * 1000 - 4,
+    w: Math.max(8, (Math.max(...xs) - Math.min(...xs)) / pageW * 1000 + 8), h: Math.max(8, (Math.max(...ys) - Math.min(...ys)) / pageH * 1000 + 8),
+  };
+  if (!S.takeoff) {
+    S.takeoff = { id: 'to_' + Date.now(), ts: new Date().toISOString(), preset: 'custom', label: 'Manual take-off · ' + (S.projectName || 'plans'), rows: [], missing: [], notes: 'Measured by hand in the viewer (0 tokens).', issues: [] };
+    S.saved.push(S.takeoff);
+  }
+  S.takeoff.rows.push({
+    cat: unit === 'EA' ? 'FIXTURE' : (unit === 'SF' ? 'CEILING' : 'WALLS'),
+    level: (eng && eng.title.level) || '', space, material,
+    dims: num, height: null, unit, est: false,
+    note: 'manual ' + (t.mode || ''), src: ((p.cls || {}).sheet || 'p.' + p.num) + ' · manual', marks: [mark],
+  });
+  persist();
+  S.tool.pts = [];
+  S.sheetOpen = true;
+  log(`Manual row added — ${val}.`, 'ok');
+  render();
+}
+function drawToolOverlay(ctx, cv, idx) {
+  const t = S.tool; if (!t || !t.pts.length) return;
+  const p = S.pages[idx]; const eng = p._eng;
+  const pageW = eng ? eng.pageW : (p._page.view[2] - p._page.view[0]);
+  const pageH = eng ? eng.pageH : (p._page.view[3] - p._page.view[1]);
+  const px = (q) => [q[0] / pageW * cv.width, (1 - q[1] / pageH) * cv.height];
+  ctx.save();
+  ctx.strokeStyle = '#c44a2c'; ctx.fillStyle = '#c44a2c'; ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  t.pts.forEach((q, i) => { const [cx, cy] = px(q); if (i === 0) ctx.moveTo(cx, cy); else ctx.lineTo(cx, cy); });
+  if (t.mode === 'area' && t.pts.length >= 3) ctx.closePath();
+  ctx.stroke();
+  for (const q of t.pts) { const [cx, cy] = px(q); ctx.beginPath(); ctx.arc(cx, cy, 5, 0, Math.PI * 2); ctx.fill(); }
+  const last = px(t.pts[t.pts.length - 1]);
+  const label = toolValue(idx);
+  if (label) {
+    ctx.font = '700 16px Consolas, monospace';
+    const tw = ctx.measureText(label).width + 14;
+    ctx.fillStyle = '#181613'; ctx.fillRect(last[0] + 8, last[1] - 26, tw, 22);
+    ctx.fillStyle = '#fff'; ctx.fillText(label, last[0] + 15, last[1] - 10);
+  }
+  ctx.restore();
 }
 async function openViewer(idx) { S.viewer = { idx }; render(); await paintViewer(); }
 async function paintViewer() {
@@ -627,7 +1028,11 @@ async function paintViewer() {
   const cv = await drawMarkedPage(v.idx);
   if (!cv || !S.viewer || S.viewer.idx !== v.idx) return;
   cv.style.width = '100%'; cv.style.height = 'auto'; cv.style.display = 'block';
+  if (S.tool && S.tool.mode) cv.style.cursor = 'crosshair';
+  cv.onclick = (e) => toolClick(e, v.idx);
   holder.innerHTML = ''; holder.appendChild(cv);
+  const ro = document.getElementById('tool-readout');
+  if (ro) ro.textContent = toolValue(v.idx) || '';
 }
 async function downloadMarkedPage(idx) {
   const cv = await drawMarkedPage(idx); if (!cv) return;
@@ -741,8 +1146,36 @@ function render() {
 
       <!-- RIGHT: workflow -->
       <div>
-        <div class="card">
-          <div class="kicker" style="margin-bottom:10px">2 · What do you need quantified?</div>
+        <div class="card" style="border-color:var(--green);border-width:1.5px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+            <div class="kicker" style="color:var(--green)">2 · Automatic engine — vector geometry · <b>0 AI tokens</b></div>
+            <button class="btn btn-sm" ${S.autoBusy || !S.pages.length ? 'disabled' : ''} onclick="autoAnalyze()">${S.autoBusy ? '<span class="spin"></span> Analyzing…' : '⚙ Analyze vectors'}</button>
+          </div>
+          <div style="font-size:12px;color:var(--text2);line-height:1.5">Reads the PDF's real geometry: colored assembly lines (exact lengths × printed scale), room labels and levels — like Bluebeam, but automatic. ☑ pages to limit it (e.g. only the assembly diagrams).</div>
+          ${S.auto ? `
+            <div style="margin-top:10px;display:flex;flex-direction:column;gap:5px">
+              ${S.auto.fams.map((f, fi) => {
+                const anyScale = S.auto.info.some(x => x.scale);
+                const lf = anyScale ? S.auto.info.reduce((acc, pg) => acc + ((f.byPage[pg.idx] && pg.scale) ? f.byPage[pg.idx].pt / pg.scale.ptPerFt : 0), 0) : 0;
+                return `<div style="display:flex;align-items:center;gap:8px;border:1px solid var(--border);padding:6px 10px;border-radius:var(--r)">
+                <input type="checkbox" ${f.use ? 'checked' : ''} onchange="S.auto.fams[${fi}].use=this.checked" style="accent-color:var(--green)">
+                <span style="width:16px;height:16px;border-radius:3px;background:${f.css};flex-shrink:0;border:1px solid var(--border)"></span>
+                <input class="minp" placeholder="material name…" value="${esc(f.mat)}" oninput="S.auto.fams[${fi}].mat=this.value" style="width:170px">
+                <span style="font-family:var(--mono);font-size:10.5px;color:var(--text2);margin-left:auto">${f.count} seg · ${lf ? fmtNum(lf) + ' LF' : fmtNum(f.pt) + ' pt'}</span>
+              </div>`; }).join('')}
+            </div>
+            ${S.auto.levels.length ? `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;align-items:center">
+              <span class="kicker">Wall heights (ft):</span>
+              ${S.auto.levels.map(lv => `<label style="font-family:var(--mono);font-size:10.5px;color:var(--text2)">${esc(lv)} <input class="minp" type="number" step="0.5" value="${S.autoHt[lv]}" oninput="S.autoHt['${esc(lv)}']=Number(this.value)" style="width:56px;text-align:right"></label>`).join('')}
+            </div>` : ''}
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:8px;flex-wrap:wrap">
+              <span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">${S.auto.info.filter(x => !x.scale).length ? '⚠ pages without scale text: open them and ⨯ Calibrate on a printed dimension' : 'scale read from the sheets ✓'}</span>
+              <button class="btn" style="background:var(--green);border-color:var(--green);color:#fff" onclick="autoGenerate()">▦ Generate take-off (0 tokens)</button>
+            </div>` : ''}
+        </div>
+
+        <div class="card" style="margin-top:14px">
+          <div class="kicker" style="margin-bottom:10px">3 · AI assist (optional — scanned sets, tiles/plumbing, checking)</div>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px">
             ${Object.entries(PRESETS).map(([k, pr]) => `<div onclick="S.preset='${k}';render()" style="cursor:pointer;border:1px solid ${S.preset === k ? 'var(--amber)' : 'var(--border)'};background:${S.preset === k ? 'var(--amber-bg)' : 'var(--bg1)'};border-radius:var(--r2);padding:10px 12px">
               <div style="font-size:12.5px;font-weight:600;color:var(--ink-900)">${esc(pr.label)}</div>
@@ -778,7 +1211,7 @@ function render() {
         </div>
       </div>
     </div>
-    <div style="text-align:center;margin-top:26px;font-family:var(--mono);font-size:9px;letter-spacing:.08em;color:var(--text3)">NOVANTU LABS · TAKE-OFF v0.1 — experimental · AI-measured rows are marked ~ · always verify before bidding</div>
+    <div style="text-align:center;margin-top:26px;font-family:var(--mono);font-size:9px;letter-spacing:.08em;color:var(--text3)">NOVANTU LABS · TAKE-OFF v0.3 — vector engine (0 tokens) + AI assist · AI-measured rows are marked ~ · always verify before bidding</div>
   </div>
 
   ${S.viewer ? `<div class="backdrop" onclick="if(event.target===this){S.viewer=null;render()}">
@@ -791,8 +1224,19 @@ function render() {
           <button class="btn btn-sm" ${S.viewer.idx <= 0 ? 'disabled' : ''} onclick="openViewer(${S.viewer.idx - 1})">← Prev</button>
           <button class="btn btn-sm" ${S.viewer.idx >= S.pages.length - 1 ? 'disabled' : ''} onclick="openViewer(${S.viewer.idx + 1})">Next →</button>
           <button class="btn btn-sm" onclick="downloadMarkedPage(${S.viewer.idx})">⬇ Download marked</button>
-          <button class="btn btn-sm" onclick="S.viewer=null;render()">✕ Close</button>
+          <button class="btn btn-sm" onclick="S.tool=null;S.viewer=null;render()">✕ Close</button>
         </div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px;border:1px solid var(--border);border-radius:var(--r2);padding:6px 8px;background:var(--bg1)">
+        <span class="kicker">Tools:</span>
+        ${[['measure', '📏 Measure'], ['area', '⬠ Area'], ['count', '# Count'], ['calib', '⨯ Calibrate']].map(([m, lbl]) => `<button class="btn btn-sm" style="${S.tool && S.tool.mode === m ? 'background:var(--ink-950);color:#fff;border-color:var(--ink-950)' : ''}" onclick="toolStart('${m}')">${lbl}</button>`).join('')}
+        ${S.tool && S.tool.mode ? `
+          <span id="tool-readout" style="font-family:var(--mono);font-size:12px;font-weight:700;color:var(--red);min-width:80px">${toolValue(S.viewer.idx)}</span>
+          <input id="tool-mat" class="minp" placeholder="material…" style="width:110px">
+          <input id="tool-space" class="minp" placeholder="space/room…" style="width:110px">
+          <button class="btn btn-sm" style="background:var(--green);border-color:var(--green);color:#fff" onclick="toolAddRow(${S.viewer.idx})">＋ Add as row</button>
+          <button class="btn btn-sm" onclick="S.tool.pts=[];paintViewer()">Clear</button>
+        ` : `<span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">scale: ${pagePtPerFt(S.viewer.idx) ? fmtNum(pagePtPerFt(S.viewer.idx)) + ' pt/ft ✓' : 'none — use ⨯ Calibrate on a printed dimension'}</span>`}
       </div>
       <div id="viewer-canvas" style="border:1px solid var(--border);background:#fff"></div>
     </div>
