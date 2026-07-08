@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NOVANTU · Take-off Lab</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  :root{
+    --bg:#f5f2ea; --bg1:#efece2; --bg2:#e7e3d6; --bg3:#dfdacb;
+    --ink-950:#181613; --ink-900:#232019; --ink-700:#4a453a;
+    --bone-50:#faf8f2; --text:#2c2820; --text2:#5c564a; --text3:#8a857a;
+    --border:#d8d2c2; --rule:#c9c2b0;
+    --amber:#b8860b; --amber-bg:#f5edd8; --amber-border:#d9c48a;
+    --red:#c44a2c; --red-bg:#f7e6e0; --red-border:#e0b3a4;
+    --green:#4a7c59; --green-bg:#e4eee7;
+    --mono:'SF Mono','Cascadia Code',Consolas,monospace;
+    --sans:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    --r:4px; --r2:8px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px}
+  .kicker{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);font-weight:600}
+  .btn{display:inline-flex;align-items:center;gap:7px;border-radius:var(--r2);padding:9px 16px;font-family:var(--mono);font-size:11.5px;font-weight:600;letter-spacing:.04em;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--ink-900)}
+  .btn:disabled{opacity:.5;cursor:wait}
+  .btn-amber{background:var(--amber);border-color:var(--amber);color:var(--bone-50)}
+  .btn-ink{background:var(--ink-950);border-color:var(--ink-950);color:var(--bone-50)}
+  .btn-sm{padding:5px 10px;font-size:10.5px}
+  .btn-red{color:var(--red);border-color:var(--red-border)}
+  .card{background:var(--bone-50);border:1px solid var(--border);border-radius:var(--r2);padding:16px 18px}
+  .minp{border:1px solid var(--border);border-radius:var(--r);padding:6px 8px;font-family:var(--mono);font-size:11.5px;background:#fff;color:var(--text);outline:none}
+  .minp:focus{border-color:var(--amber)}
+  textarea.minp{font-family:var(--sans);font-size:12.5px}
+  .spin{display:inline-block;width:11px;height:11px;border:2px solid var(--text3);border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .chip{display:inline-block;font-family:var(--mono);font-size:8.5px;letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:9px;border:1px solid var(--border);background:var(--bg1);color:var(--text2)}
+  .backdrop{position:fixed;inset:0;background:rgba(24,22,19,.55);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px}
+  .modal{background:var(--bone-50);border:1px solid var(--rule);border-radius:10px;padding:20px 22px;max-height:92vh;overflow-y:auto;width:100%}
+  table.sheet{width:100%;border-collapse:collapse;font-size:11.5px}
+  table.sheet th{text-align:left;font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:7px 8px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg1);z-index:1}
+  table.sheet td{padding:3px 6px;border-bottom:1px solid var(--border)}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:5px}
+  ::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+'use strict';
+/* ============================================================
+   NOVANTU TAKE-OFF LAB — standalone experimental tool.
+   Upload a plan set → a pipeline of three AI agents quantifies it:
+     Agent 1 · Sheet classifier  — what is each page (assembly / RCP /
+                                    finish plan / spec table / elevations)
+     Agent 2 · Take-off extractor — quantities per level·space·material,
+                                    with rectangle marks on the pages
+     Agent 3 · Checker (optional) — re-reads the sheets vs the numbers
+   Output: an editable sheet with live totals by material & level,
+   Excel/CSV export, and MARKED-UP plan pages (color per material + SF
+   labels) you can download as images — like a hand-highlighted take-off.
+   AI calls go through NOVANTU's existing ask-ai edge function.
+   ============================================================ */
+
+if (window.pdfjsLib) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+const SUPABASE_URL = 'https://gvpsxsqloeklghcaxudg.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd2cHN4c3Fsb2VrbGdoY2F4dWRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk2MjM1ODcsImV4cCI6MjA5NTE5OTU4N30.KyhbD-ZEg-OG9PXAKlodBQRqgLK1_P_AkQMtJptp_VI';
+const MAX_IMAGES = 25;          // server-side cap in ask-ai
+const FULL_W = 1500;            // extraction render width (text must be legible)
+const CLS_W = 900;              // classification render width
+const THUMB_W = 230;
+
+// ── State ─────────────────────────────────────────────────────────────────────
+const S = {
+  projectName: '',
+  pages: [],          // [{doc, num, name, thumb, cls:{type,level,sheet,note}|null, canvas? }]
+  loading: false,
+  classifying: false,
+  extracting: false,
+  verifying: false,
+  preset: 'walls',
+  guidance: '',
+  takeoff: null,      // active {id, ts, preset, label, rows[], missing[], notes, issues[]}
+  saved: [],          // localStorage — sheets survive, marks need the same PDF re-uploaded
+  runLog: [],
+  viewer: null,       // {idx}
+  sheetOpen: false,
+};
+try { S.saved = JSON.parse(localStorage.getItem('nvto_saved') || '[]'); } catch (_e) { S.saved = []; }
+function persist() { try { localStorage.setItem('nvto_saved', JSON.stringify(S.saved.slice(-30))); } catch (_e) {} }
+
+// ── Utils ─────────────────────────────────────────────────────────────────────
+function esc(s) { return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+function fmtNum(n) { return (Math.round(Number(n) * 100) / 100).toLocaleString(); }
+function log(msg, cls) { S.runLog.push({ ts: new Date().toLocaleTimeString(), msg, cls: cls || '' }); render(); const el = document.getElementById('runlog'); if (el) el.scrollTop = el.scrollHeight; }
+
+// Color per material — known construction tags first, stable hash otherwise.
+const MAT_PALETTE = ['#2563eb', '#0891b2', '#7c3aed', '#c2410c', '#15803d', '#be185d', '#a16207', '#0f766e', '#dc2626', '#4d7c0f'];
+function matColor(mat) {
+  const m = String(mat || '').toUpperCase();
+  if (/^PL|PLASTER|STUCCO/.test(m)) return '#2563eb';   // blue — like the assembly legend
+  if (/^GYP|W-2|GYPSUM/.test(m)) return '#0891b2';      // cyan
+  if (/^TL|TILE/.test(m)) return '#7c3aed';             // purple
+  if (/^ST|STONE/.test(m)) return '#dc2626';            // red
+  if (/^CT/.test(m)) return '#c2410c';                  // orange — countertops
+  if (/^FF|FLOOR/.test(m)) return '#15803d';            // green
+  if (/^WD|WOOD|WP/.test(m)) return '#4d7c0f';
+  if (/^MTL|METAL/.test(m)) return '#be185d';
+  let h = 0; for (let i = 0; i < m.length; i++) h = (h * 31 + m.charCodeAt(i)) >>> 0;
+  return MAT_PALETTE[h % MAT_PALETTE.length];
+}
+
+// ── PDF loading ───────────────────────────────────────────────────────────────
+async function handleFiles(files) {
+  const list = Array.from(files || []).filter(f => /pdf$/i.test(f.name));
+  if (!list.length) return;
+  S.loading = true; render();
+  try {
+    for (const f of list) {
+      const buf = await f.arrayBuffer();
+      const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+      if (!S.projectName) S.projectName = f.name.replace(/\.pdf$/i, '');
+      for (let n = 1; n <= doc.numPages; n++) {
+        const page = await doc.getPage(n);
+        const vp1 = page.getViewport({ scale: 1 });
+        const mk = async (w, q) => {
+          const scale = w / vp1.width;
+          const vp = page.getViewport({ scale });
+          const cv = document.createElement('canvas');
+          cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+          await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+          return cv.toDataURL('image/jpeg', q);
+        };
+        S.pages.push({
+          name: f.name, num: n,
+          thumb: await mk(THUMB_W, 0.6),
+          cls: null,
+        });
+        // full/cls renders are made lazily (RAM) — keep the page handle
+        S.pages[S.pages.length - 1]._page = page;
+        render();
+      }
+      log(`Loaded ${f.name} — ${doc.numPages} page(s).`);
+    }
+  } catch (e) {
+    log('PDF load failed: ' + (e.message || e), 'err');
+  } finally {
+    S.loading = false; render();
+  }
+}
+async function renderPageImage(p, width, q) {
+  const page = p._page;
+  const vp1 = page.getViewport({ scale: 1 });
+  const vp = page.getViewport({ scale: width / vp1.width });
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+  await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+  return cv;
+}
+
+// ── AI plumbing (ask-ai SSE) ──────────────────────────────────────────────────
+async function aiCall(prompt, images) {
+  const body = {
+    projectContext: { name: S.projectName || 'Take-off Lab', isSub: false },
+    messages: [{ role: 'user', content: prompt }],
+  };
+  if (images && images.length) body.planImages = images.slice(0, MAX_IMAGES);
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buffer = '', full = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += dec.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+      if (evt.type === 'delta') full += evt.text;
+      else if (evt.type === 'error') throw new Error(evt.message || 'AI error');
+    }
+  }
+  return full;
+}
+function parseAIJson(text) {
+  if (!text) return null;
+  let t = String(text).trim();
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fence) t = fence[1].trim();
+  const start = t.search(/[{[]/);
+  if (start > 0) t = t.slice(start);
+  for (let end = t.length; end > 0; end--) {
+    const c = t[end - 1];
+    if (c !== '}' && c !== ']') continue;
+    try { return JSON.parse(t.slice(0, end)); } catch (_e) { /* keep trimming */ }
+  }
+  return null;
+}
+
+// ── Agent 1 · Sheet classifier ───────────────────────────────────────────────
+async function agentClassify() {
+  if (S.classifying || !S.pages.length) return;
+  S.classifying = true; render();
+  log('Agent 1 · Sheet classifier — reading title blocks…');
+  try {
+    const batch = S.pages.slice(0, MAX_IMAGES);
+    if (S.pages.length > MAX_IMAGES) log(`⚠ ${S.pages.length} pages — classifying the first ${MAX_IMAGES} (server cap).`, 'warn');
+    const imgs = [];
+    for (const p of batch) imgs.push((await renderPageImage(p, CLS_W, 0.72)).toDataURL('image/jpeg', 0.72));
+    const prompt = `You are indexing a construction plan set. For EACH attached page (in order, 1-based), read its title block and content and classify it.
+
+Types (pick ONE per page):
+- assembly_plan  (wall/floor assembly diagrams with a color legend)
+- rcp            (reflected ceiling plan — has ceiling heights)
+- finish_plan    (finish floor plan with material tags)
+- finish_spec    (finish specification TABLES — tags like TL-1/CT-3 with materials and $/SF)
+- floor_plan     (regular architectural floor plan)
+- elevations     (interior/exterior elevations)
+- sections       (building sections)
+- schedule       (door/window/fixture schedules)
+- cover_or_other
+
+Return STRICT JSON ONLY:
+{"pages":[{"page":1,"sheet":"A2.00","type":"assembly_plan","level":"LEVEL 0","note":"5 words max"}]}`;
+    const text = await aiCall(prompt, imgs);
+    const parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.pages)) throw new Error('Could not read the classification.');
+    for (const c of parsed.pages) {
+      const idx = Number(c.page) - 1;
+      if (idx >= 0 && idx < batch.length) {
+        batch[idx].cls = { type: String(c.type || 'cover_or_other'), sheet: String(c.sheet || ''), level: String(c.level || ''), note: String(c.note || '') };
+      }
+    }
+    log(`Agent 1 done — ${parsed.pages.length} pages classified.`, 'ok');
+  } catch (e) {
+    log('Agent 1 failed: ' + (e.message || e), 'err');
+  } finally {
+    S.classifying = false; render();
+  }
+}
+
+// ── Presets (Agent 2 briefs) ─────────────────────────────────────────────────
+const PRESETS = {
+  walls: {
+    label: 'Interior walls + ceilings',
+    sub: 'Plaster/stucco/gyp — length × RCP height per room; ceilings per room.',
+    pageTypes: ['assembly_plan', 'rcp', 'floor_plan', 'finish_spec'],
+    prompt: `TAKE-OFF TYPE: INTERIOR WALL FINISHES + CEILINGS.
+For every level and room: interior wall finish areas (plaster/stucco, gypsum, or per the typical-assembly note) and ceiling areas.
+- Assembly legend colors + "TYPICAL ASSEMBLIES ... UNLESS OTHERWISE NOTED" notes define untagged walls.
+- READ each level's ceiling height from the RCP sheets — they differ per level, never assume.
+- WALLS rows: cat "WALLS", material = assembly/finish tag or name, dims = wall length FT (sum segments per room+material), height = level ceiling height FT, unit "SF".
+- CEILING rows: cat "CEILING", dims = room ceiling area SF, no height, unit "SF".`,
+  },
+  tiles: {
+    label: 'Tile, countertops & floors',
+    sub: 'TL-x walls (len×ht), CT-x countertops SF, FF-x floors SF — from the finish spec table.',
+    pageTypes: ['finish_spec', 'finish_plan', 'elevations', 'floor_plan'],
+    prompt: `TAKE-OFF TYPE: TILE, COUNTERTOPS & FLOOR FINISHES.
+Use the FINISH SPECIFICATIONS tag tables (TL-x, CT-x, FF-x, ST-x — note printed $/SF), the FINISH FLOOR PLANS and the INTERIOR ELEVATIONS.
+- Tiled/stone WALLS: cat "WALLS", material = tag, dims = length FT, height = tiled height FT, unit "SF".
+- COUNTERTOP: cat "COUNTERTOP", material = CT tag, dims = area SF from casework elevations/plans, unit "SF".
+- FLOOR: cat "FLOOR", material = FF tag, dims = room area SF, unit "SF".
+- Every row carries the room name+number (e.g. "BATH 106").`,
+  },
+  plumbing: {
+    label: 'Plumbing fixtures',
+    sub: 'WC, lavs, sinks, tubs, showers, drains… counted per level & room (EA).',
+    pageTypes: ['floor_plan', 'finish_plan', 'elevations', 'schedule'],
+    prompt: `TAKE-OFF TYPE: PLUMBING FIXTURE COUNT.
+Count fixtures per level and room: water closets, lavatories, sinks, tubs, showers (rain heads / hand showers separately), steam/sauna gear, washer boxes, hose bibbs, floor drains, pool/spa equipment when shown.
+- Rows: cat "FIXTURE", material = fixture type (e.g. "WC", "LAV"), dims = count, unit "EA".`,
+  },
+  custom: {
+    label: 'Custom take-off',
+    sub: 'Describe it: doors & windows, LF of baseboard, light fixtures by type…',
+    pageTypes: null,
+    prompt: `TAKE-OFF TYPE: CUSTOM — quantify exactly what the user asks below. Pick the right cat (WALLS/CEILING/FLOOR/COUNTERTOP/FIXTURE/OTHER) and unit (SF, LF, EA) per row.`,
+  },
+};
+
+// ── Agent 2 · Extractor ──────────────────────────────────────────────────────
+function pagesForPreset(key) {
+  const preset = PRESETS[key];
+  const classified = S.pages.filter(p => p.cls);
+  if (!preset.pageTypes || !classified.length) return S.pages.slice(0, MAX_IMAGES).map((p, i) => ({ p, idx: S.pages.indexOf(p) }));
+  const rel = [];
+  S.pages.forEach((p, idx) => { if (p.cls && preset.pageTypes.includes(p.cls.type)) rel.push({ p, idx }); });
+  return (rel.length ? rel : S.pages.map((p, idx) => ({ p, idx }))).slice(0, MAX_IMAGES);
+}
+
+async function agentExtract() {
+  if (S.extracting || !S.pages.length) return;
+  const preset = PRESETS[S.preset];
+  S.guidance = document.getElementById('to-guidance')?.value ?? S.guidance;
+  if (S.preset === 'custom' && !S.guidance.trim()) { alert('Describe what to quantify first.'); return; }
+  S.extracting = true; render();
+  const sel = pagesForPreset(S.preset);
+  log(`Agent 2 · Extractor — sending ${sel.length} relevant page(s) (${preset.label})…`);
+  try {
+    const imgs = [];
+    for (const s of sel) imgs.push((await renderPageImage(s.p, FULL_W, 0.8)).toDataURL('image/jpeg', 0.8));
+    const pageList = sel.map((s, i) => `IMAGE ${i + 1} = ${s.p.cls ? `${s.p.cls.sheet || '?'} · ${s.p.cls.type} · ${s.p.cls.level || ''}` : `page ${s.p.num} of ${s.p.name}`}`).join('\n');
+    const prompt = `You are a professional construction estimator doing a QUANTITY TAKE-OFF from the attached plan pages.
+
+ATTACHED PAGES (refer to them by IMAGE number):
+${pageList}
+
+${preset.prompt}
+${S.guidance.trim() ? `
+USER GUIDANCE — respect this:
+${S.guidance.slice(0, 500)}` : ''}
+
+HOW TO MEASURE:
+- Read legends, tag tables and "TYPICAL / UNLESS OTHERWISE NOTED" notes FIRST.
+- Prefer PRINTED dimensions, areas and schedules. When estimating from drawing scale, be conservative and set "est": true.
+- One row per room × material. "level" exactly as the sheets name it. "space" = room name + number.
+- Deductions (openings, casework, pools within an area): NEGATIVE dims row with a note — never silently net areas.
+- Do NOT invent rooms/tags/fixtures. Unreadable or missing sheet types go in "missing".
+- MARKS: for each row, when you can locate what you measured, include "marks": rectangles on the attached images — {"img": <IMAGE number>, "x":0-1000, "y":0-1000, "w":0-1000, "h":0-1000} normalized to each image (x right, y down). Mark the actual walls/areas/fixtures, tight boxes, up to 4 per row.
+
+Return STRICT JSON ONLY:
+{"rows":[{"cat":"WALLS","level":"LEVEL 0","space":"BATH 106","material":"TL-2","dims":16.81,"height":8,"unit":"SF","est":false,"note":"","marks":[{"img":2,"x":410,"y":220,"w":180,"h":14}]}],"missing":["..."],"notes":"one short line"}
+Row rules: cat WALLS|CEILING|FLOOR|COUNTERTOP|FIXTURE|OTHER · unit SF with height → total = dims×height · unit SF without height → dims IS the SF · EA → count · LF → linear feet.`;
+    const text = await aiCall(prompt, imgs);
+    const parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.rows) || !parsed.rows.length) throw new Error('No usable rows returned. Try again or add guidance.');
+    const CATS_OK = ['WALLS', 'CEILING', 'FLOOR', 'COUNTERTOP', 'FIXTURE', 'OTHER'];
+    const rows = parsed.rows.map(r => ({
+      cat: CATS_OK.includes(String((r && r.cat) || '').toUpperCase()) ? String(r.cat).toUpperCase() : 'OTHER',
+      level: String((r && r.level) || '').slice(0, 24),
+      space: String((r && r.space) || '').slice(0, 48),
+      material: String((r && r.material) || '').slice(0, 32),
+      dims: Number(r && r.dims) || 0,
+      height: (r && r.height != null && r.height !== '' && Number(r.height) > 0) ? Number(r.height) : null,
+      unit: ['SF', 'LF', 'EA'].includes(String((r && r.unit) || '').toUpperCase()) ? String(r.unit).toUpperCase() : 'SF',
+      est: !!(r && r.est),
+      note: String((r && r.note) || '').slice(0, 120),
+      marks: Array.isArray(r && r.marks) ? r.marks.slice(0, 4).map(mk => {
+        const li = Number(mk && mk.img) - 1;
+        const gp = (li >= 0 && li < sel.length) ? sel[li].idx : -1;   // map image order → global page index
+        return { page: gp, x: Number(mk.x) || 0, y: Number(mk.y) || 0, w: Number(mk.w) || 0, h: Number(mk.h) || 0 };
+      }).filter(mk => mk.page >= 0 && mk.w > 0 && mk.h > 0) : [],
+    })).filter(r => r.dims !== 0 || r.note);
+    if (!rows.length) throw new Error('The AI returned no usable rows.');
+    S.takeoff = {
+      id: 'to_' + Date.now(), ts: new Date().toISOString(), preset: S.preset,
+      label: preset.label + ' · ' + (S.projectName || 'plans') + ' · ' + new Date().toLocaleDateString(),
+      rows,
+      missing: Array.isArray(parsed.missing) ? parsed.missing.map(x => String(x).slice(0, 160)).slice(0, 12) : [],
+      notes: String(parsed.notes || '').slice(0, 240),
+      issues: [],
+    };
+    S.saved.push(S.takeoff); persist();
+    S.sheetOpen = true;
+    const marked = rows.filter(r => r.marks.length).length;
+    log(`Agent 2 done — ${rows.length} rows, ${marked} with page marks.`, 'ok');
+  } catch (e) {
+    log('Agent 2 failed: ' + (e.message || e), 'err');
+  } finally {
+    S.extracting = false; render();
+  }
+}
+
+// ── Agent 3 · Checker (optional) ─────────────────────────────────────────────
+async function agentVerify() {
+  const t = S.takeoff; if (!t || S.verifying) return;
+  S.verifying = true; render();
+  log('Agent 3 · Checker — re-reading the sheets against the numbers…');
+  try {
+    const sel = pagesForPreset(t.preset);
+    const imgs = [];
+    for (const s of sel.slice(0, 12)) imgs.push((await renderPageImage(s.p, FULL_W, 0.8)).toDataURL('image/jpeg', 0.8));
+    const sheetTxt = t.rows.map(r => `${r.cat} | ${r.level} | ${r.space} | ${r.material} | ${r.dims}${r.height ? ' × ' + r.height : ''} = ${fmtNum(rowTotal(r))} ${r.unit}`).join('\n');
+    const prompt = `You are a senior estimator CHECKING a colleague's take-off against the attached plan pages. Be adversarial but practical.
+
+THE TAKE-OFF SHEET:
+${sheetTxt}
+
+Check for: (1) rooms/levels on the sheets that are MISSING from the take-off, (2) rows whose dims/heights contradict printed dimensions or RCP heights, (3) wrong material tags, (4) double counting. Do NOT nitpick rounding under 5%.
+
+Return STRICT JSON ONLY: {"issues":["specific, actionable finding (say the room + what is wrong + the number you'd expect)"]}. Empty array if it holds up.`;
+    const text = await aiCall(prompt, imgs);
+    const parsed = parseAIJson(text);
+    t.issues = (parsed && Array.isArray(parsed.issues)) ? parsed.issues.map(x => String(x).slice(0, 220)).slice(0, 10) : [];
+    persist();
+    log(`Agent 3 done — ${t.issues.length} finding(s).`, t.issues.length ? 'warn' : 'ok');
+  } catch (e) {
+    log('Agent 3 failed: ' + (e.message || e), 'err');
+  } finally {
+    S.verifying = false; render();
+  }
+}
+
+// ── Sheet math & edits ───────────────────────────────────────────────────────
+function rowTotal(r) { return (r.unit === 'SF' && r.height) ? r.dims * r.height : r.dims; }
+function totalsOf(t) {
+  const byMat = {}, byLevel = {};
+  for (const r of t.rows) {
+    const tot = rowTotal(r);
+    byMat[(r.material || '(untagged)') + '|' + r.unit] = (byMat[(r.material || '(untagged)') + '|' + r.unit] || 0) + tot;
+    byLevel[(r.level || '(no level)') + '|' + r.unit] = (byLevel[(r.level || '(no level)') + '|' + r.unit] || 0) + tot;
+  }
+  return { byMat, byLevel };
+}
+function setCell(idx, field, value) {
+  const t = S.takeoff; if (!t || !t.rows[idx]) return;
+  if (field === 'dims' || field === 'height') {
+    const n = Number(value);
+    t.rows[idx][field] = (field === 'height' && (value === '' || value == null)) ? null : (isNaN(n) ? 0 : (field === 'height' ? Math.max(0, n) : n));
+    if (t.rows[idx].est) t.rows[idx].est = false;
+  } else {
+    t.rows[idx][field] = String(value);
+  }
+  persist();
+  const el = document.getElementById('to-total-' + idx);
+  if (el) el.textContent = fmtNum(rowTotal(t.rows[idx]));
+  const foot = document.getElementById('to-footer');
+  if (foot) foot.innerHTML = totalsHtml(t);
+}
+function addRow() {
+  const t = S.takeoff; if (!t) return;
+  const last = t.rows[t.rows.length - 1] || {};
+  t.rows.push({ cat: last.cat || 'WALLS', level: last.level || '', space: '', material: last.material || '', dims: 0, height: last.height != null ? last.height : null, unit: last.unit || 'SF', est: false, note: '', marks: [] });
+  persist(); render();
+}
+function delRow(idx) { const t = S.takeoff; if (!t) return; t.rows.splice(idx, 1); persist(); render(); }
+function openSaved(id) {
+  const t = S.saved.find(x => x.id === id); if (!t) return;
+  S.takeoff = t; S.sheetOpen = true; S.preset = t.preset || 'walls'; render();
+}
+function deleteSaved(id) {
+  if (!confirm('Delete this saved take-off?')) return;
+  S.saved = S.saved.filter(x => x.id !== id);
+  if (S.takeoff && S.takeoff.id === id) { S.takeoff = null; S.sheetOpen = false; }
+  persist(); render();
+}
+
+// ── CSV export ───────────────────────────────────────────────────────────────
+function exportCSV() {
+  const t = S.takeoff; if (!t) return;
+  const rows = [['Category', 'Level', 'Space', 'Material', 'Dims', 'Height', 'Unit', 'Total', 'AI estimate', 'Note']];
+  for (const r of t.rows) rows.push([r.cat, r.level, r.space, r.material, r.dims, r.height ?? '', r.unit, rowTotal(r).toFixed(2), r.est ? 'YES' : '', r.note]);
+  const { byMat, byLevel } = totalsOf(t);
+  rows.push([]); rows.push(['TOTALS BY MATERIAL']);
+  for (const [k, v] of Object.entries(byMat)) { const [mat, unit] = k.split('|'); rows.push(['', '', '', mat, '', '', unit, v.toFixed(2)]); }
+  rows.push([]); rows.push(['TOTALS BY LEVEL']);
+  for (const [k, v] of Object.entries(byLevel)) { const [lv, unit] = k.split('|'); rows.push(['', lv, '', '', '', '', unit, v.toFixed(2)]); }
+  if (t.missing.length) { rows.push([]); rows.push(['MISSING / VERIFY']); t.missing.forEach(x => rows.push(['', x])); }
+  if ((t.issues || []).length) { rows.push([]); rows.push(['CHECKER FINDINGS']); t.issues.forEach(x => rows.push(['', x])); }
+  const csv = rows.map(r => r.map(c => { const s = String(c ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob); const a = document.createElement('a');
+  a.href = url; a.download = (S.projectName || 'takeoff').replace(/[^a-zA-Z0-9._-]/g, '_') + '-takeoff-' + new Date().toISOString().slice(0, 10) + '.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Marked pages (the highlighted-PDF look) ──────────────────────────────────
+function marksByPage() {
+  const map = {};
+  if (!S.takeoff) return map;
+  S.takeoff.rows.forEach((r, ri) => {
+    for (const mk of (r.marks || [])) {
+      if (!map[mk.page]) map[mk.page] = [];
+      map[mk.page].push({ ...mk, material: r.material, label: `${r.material || r.cat} · ${fmtNum(rowTotal(r))} ${r.unit}`, ri });
+    }
+  });
+  return map;
+}
+async function drawMarkedPage(idx) {
+  const p = S.pages[idx]; if (!p) return null;
+  const cv = await renderPageImage(p, FULL_W, 0.85);
+  const ctx = cv.getContext('2d');
+  const marks = marksByPage()[idx] || [];
+  for (const mk of marks) {
+    const col = matColor(mk.material);
+    const x = mk.x / 1000 * cv.width, y = mk.y / 1000 * cv.height;
+    const w = mk.w / 1000 * cv.width, h = mk.h / 1000 * cv.height;
+    ctx.save();
+    ctx.globalAlpha = 0.22; ctx.fillStyle = col; ctx.fillRect(x, y, w, h);
+    ctx.globalAlpha = 1; ctx.lineWidth = 2.5; ctx.strokeStyle = col; ctx.strokeRect(x, y, w, h);
+    // label chip
+    ctx.font = '700 15px Consolas, monospace';
+    const tw = ctx.measureText(mk.label).width + 12;
+    const ly = Math.max(2, y - 22);
+    ctx.fillStyle = col; ctx.fillRect(x, ly, tw, 20);
+    ctx.fillStyle = '#fff'; ctx.fillText(mk.label, x + 6, ly + 15);
+    ctx.restore();
+  }
+  return cv;
+}
+async function openViewer(idx) { S.viewer = { idx }; render(); await paintViewer(); }
+async function paintViewer() {
+  const v = S.viewer; if (!v) return;
+  const holder = document.getElementById('viewer-canvas'); if (!holder) return;
+  holder.innerHTML = '<div style="padding:60px;text-align:center;color:var(--text3);font-family:var(--mono);font-size:11px"><span class="spin"></span> rendering…</div>';
+  const cv = await drawMarkedPage(v.idx);
+  if (!cv || !S.viewer || S.viewer.idx !== v.idx) return;
+  cv.style.width = '100%'; cv.style.height = 'auto'; cv.style.display = 'block';
+  holder.innerHTML = ''; holder.appendChild(cv);
+}
+async function downloadMarkedPage(idx) {
+  const cv = await drawMarkedPage(idx); if (!cv) return;
+  const p = S.pages[idx];
+  const a = document.createElement('a');
+  a.href = cv.toDataURL('image/jpeg', 0.88);
+  a.download = ((p.cls && p.cls.sheet) || ('page' + p.num)).replace(/[^a-zA-Z0-9._-]/g, '_') + '-marked.jpg';
+  a.click();
+}
+async function downloadAllMarked() {
+  const pages = Object.keys(marksByPage()).map(Number).sort((a, b) => a - b);
+  if (!pages.length) { alert('No marked pages in this take-off yet.'); return; }
+  for (const idx of pages) { await downloadMarkedPage(idx); await new Promise(r => setTimeout(r, 350)); }
+}
+
+// ── Render ───────────────────────────────────────────────────────────────────
+function totalsHtml(t) {
+  const { byMat, byLevel } = totalsOf(t);
+  const box = (title, obj) => `<div style="flex:1;min-width:200px;border:1px solid var(--rule);background:var(--bg1);padding:10px 12px">
+    <div class="kicker" style="margin-bottom:6px">${title}</div>
+    ${Object.entries(obj).map(([k, v]) => { const [name, unit] = k.split('|'); return `<div style="display:flex;justify-content:space-between;gap:10px;font-family:var(--mono);font-size:11.5px;padding:2px 0"><span style="color:var(--text2)"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${matColor(name)};vertical-align:-1px;margin-right:6px"></span>${esc(name)}</span><b style="color:var(--ink-900)">${fmtNum(v)} ${esc(unit)}</b></div>`; }).join('') || '<div style="font-family:var(--mono);font-size:10px;color:var(--text3)">—</div>'}
+  </div>`;
+  return `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">${box('Totals by material', byMat)}${box('Totals by level', byLevel)}</div>`;
+}
+
+function buildSheet() {
+  const t = S.takeoff; if (!t) return '';
+  const estCount = t.rows.filter(r => r.est).length;
+  const inp = (idx, field, val, w, align) => `<input class="minp" value="${esc(val == null ? '' : String(val))}" oninput="setCell(${idx},'${field}',this.value)" style="width:${w};${align ? 'text-align:right;' : ''}">`;
+  return `<div class="card" style="margin-top:14px">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:16px;font-weight:700;color:var(--ink-900)">▦ ${esc(t.label)}</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:3px">${t.rows.length} rows${estCount ? ` · <span style="color:var(--amber)">${estCount} marked ~ estimated from scale — verify</span>` : ''} · every cell editable, totals live</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-sm" ${S.verifying ? 'disabled' : ''} onclick="agentVerify()">${S.verifying ? '<span class="spin"></span> Checking…' : '✓ Agent 3 · Check it'}</button>
+        <button class="btn btn-sm" onclick="exportCSV()">⬇ Excel / CSV</button>
+        <button class="btn btn-sm" onclick="downloadAllMarked()">⬇ Marked pages</button>
+        <button class="btn btn-sm btn-red" onclick="deleteSaved('${t.id}')">Delete</button>
+      </div>
+    </div>
+    ${t.notes ? `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);margin-top:8px">${esc(t.notes)}</div>` : ''}
+    <div style="margin-top:12px;max-height:44vh;overflow:auto;border:1px solid var(--border)">
+      <table class="sheet"><thead><tr>${['Cat', 'Level', 'Space', 'Material', 'Dims', 'Ht (ft)', 'Unit', 'Total', ''].map(h => `<th>${h}</th>`).join('')}</tr></thead>
+      <tbody>${t.rows.map((r, idx) => `<tr>
+        <td style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">${esc(r.cat)}</td>
+        <td>${inp(idx, 'level', r.level, '76px')}</td>
+        <td>${inp(idx, 'space', r.space, '128px')}</td>
+        <td><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${matColor(r.material)};margin-right:4px"></span>${inp(idx, 'material', r.material, '82px')}</td>
+        <td>${inp(idx, 'dims', r.dims, '72px', true)}</td>
+        <td>${r.unit === 'SF' ? inp(idx, 'height', r.height, '56px', true) : ''}</td>
+        <td style="font-family:var(--mono);font-size:10px;color:var(--text3)">${esc(r.unit)}</td>
+        <td style="text-align:right;font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--ink-900)">${r.est ? '<span title="Estimated from drawing scale — verify" style="color:var(--amber)">~</span> ' : ''}<span id="to-total-${idx}">${fmtNum(rowTotal(r))}</span></td>
+        <td><button class="btn btn-sm btn-red" style="padding:2px 7px" onclick="delRow(${idx})">✕</button></td>
+      </tr>`).join('')}</tbody></table>
+    </div>
+    <div style="margin-top:8px"><button class="btn btn-sm" onclick="addRow()">+ Add row</button></div>
+    <div id="to-footer">${totalsHtml(t)}</div>
+    ${t.missing.length ? `<div style="margin-top:10px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:9px 12px">
+      <div class="kicker" style="color:var(--amber);margin-bottom:4px">⚠ Missing / verify</div>
+      ${t.missing.map(x => `<div style="font-size:12px;line-height:1.5">• ${esc(x)}</div>`).join('')}
+    </div>` : ''}
+    ${(t.issues || []).length ? `<div style="margin-top:10px;background:var(--red-bg);border:1px solid var(--red-border);border-radius:var(--r);padding:9px 12px">
+      <div class="kicker" style="color:var(--red);margin-bottom:4px">Agent 3 · Checker findings</div>
+      ${t.issues.map(x => `<div style="font-size:12px;line-height:1.5">• ${esc(x)}</div>`).join('')}
+    </div>` : ''}
+  </div>`;
+}
+
+function render() {
+  const clsChip = (c) => {
+    if (!c) return '';
+    const colors = { assembly_plan: 'var(--amber)', rcp: '#2563eb', finish_plan: '#15803d', finish_spec: '#7c3aed', elevations: '#c2410c', floor_plan: 'var(--ink-700)', sections: '#0f766e', schedule: '#be185d' };
+    return `<span class="chip" style="border-color:${colors[c.type] || 'var(--border)'};color:${colors[c.type] || 'var(--text2)'}">${esc(c.sheet || c.type)}</span>`;
+  };
+  const marks = marksByPage();
+  document.getElementById('app').innerHTML = `
+  <div style="max-width:1280px;margin:0 auto;padding:22px 24px 60px">
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:14px;border-bottom:2px solid var(--ink-950);padding-bottom:14px;flex-wrap:wrap">
+      <div>
+        <div class="kicker">[ NOVANTU LABS · EXPERIMENTAL ]</div>
+        <h1 style="font-size:30px;font-weight:700;letter-spacing:-.02em;color:var(--ink-900);margin-top:2px">Take-off Lab</h1>
+        <div style="font-size:13px;color:var(--text2);margin-top:4px;max-width:640px;line-height:1.5">Upload a plan set → three AI agents classify the sheets, quantify what you pick, and check the numbers. You get the editable sheet (→ Excel) and the plans <b>marked by material with SF labels</b>, like a hand-highlighted take-off.</div>
+      </div>
+      <input class="minp" placeholder="Project name…" value="${esc(S.projectName)}" oninput="S.projectName=this.value" style="width:220px">
+    </div>
+
+    <div style="display:grid;grid-template-columns:300px 1fr;gap:16px;margin-top:16px;align-items:start">
+      <!-- LEFT: pages -->
+      <div>
+        <div class="card">
+          <div class="kicker" style="margin-bottom:8px">1 · Plan set ${S.pages.length ? `· ${S.pages.length} page(s)` : ''}</div>
+          <label class="btn btn-ink" style="width:100%;justify-content:center">${S.loading ? '<span class="spin"></span> Loading…' : '⬆ Upload PDF(s)'}
+            <input type="file" accept="application/pdf" multiple style="display:none" onchange="handleFiles(this.files)">
+          </label>
+          <div ondrop="event.preventDefault();handleFiles(event.dataTransfer.files)" ondragover="event.preventDefault()" style="margin-top:8px;border:1px dashed var(--rule);border-radius:var(--r2);padding:10px;text-align:center;font-family:var(--mono);font-size:9.5px;color:var(--text3)">…or drop the PDF here</div>
+          ${S.pages.length ? `<button class="btn btn-sm" style="width:100%;justify-content:center;margin-top:8px" ${S.classifying ? 'disabled' : ''} onclick="agentClassify()">${S.classifying ? '<span class="spin"></span> Classifying…' : '✦ Agent 1 · Classify sheets'}</button>` : ''}
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;max-height:52vh;overflow-y:auto">
+            ${S.pages.map((p, idx) => `<div onclick="openViewer(${idx})" style="cursor:pointer;border:1px solid ${marks[idx] ? matColor((marks[idx][0] || {}).material) : 'var(--border)'};border-radius:var(--r);overflow:hidden;background:#fff;position:relative">
+              <img src="${p.thumb}" style="width:100%;display:block">
+              ${marks[idx] ? `<span style="position:absolute;top:3px;right:3px;background:var(--amber);color:#fff;font-family:var(--mono);font-size:8px;padding:1px 5px;border-radius:7px">${marks[idx].length} ✎</span>` : ''}
+              <div style="padding:3px 5px;display:flex;justify-content:space-between;align-items:center;gap:3px">
+                <span style="font-family:var(--mono);font-size:8px;color:var(--text3)">p.${p.num}</span>${clsChip(p.cls)}
+              </div>
+            </div>`).join('')}
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT: workflow -->
+      <div>
+        <div class="card">
+          <div class="kicker" style="margin-bottom:10px">2 · What do you need quantified?</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px">
+            ${Object.entries(PRESETS).map(([k, pr]) => `<div onclick="S.preset='${k}';render()" style="cursor:pointer;border:1px solid ${S.preset === k ? 'var(--amber)' : 'var(--border)'};background:${S.preset === k ? 'var(--amber-bg)' : 'var(--bg1)'};border-radius:var(--r2);padding:10px 12px">
+              <div style="font-size:12.5px;font-weight:600;color:var(--ink-900)">${esc(pr.label)}</div>
+              <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px;line-height:1.45">${esc(pr.sub)}</div>
+            </div>`).join('')}
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:flex-start;flex-wrap:wrap">
+            <textarea id="to-guidance" rows="2" class="minp" placeholder="Guidance (optional) — e.g. only levels 2-3, plaster walls only, heights per RCP…" style="flex:1;min-width:260px;resize:vertical">${esc(S.guidance)}</textarea>
+            <button class="btn btn-amber" ${S.extracting || !S.pages.length ? 'disabled' : ''} onclick="agentExtract()" title="${S.pages.length ? '' : 'Upload the plan set first'}">${S.extracting ? '<span class="spin"></span> Measuring…' : '✦ Agent 2 · Run take-off'}</button>
+          </div>
+          ${S.pages.length && !S.pages.some(p => p.cls) ? '<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:6px">Tip: run Agent 1 first — the extractor then reads ONLY the relevant sheets (better accuracy, fewer tokens).</div>' : ''}
+        </div>
+
+        ${S.sheetOpen && S.takeoff ? buildSheet() : ''}
+
+        ${S.saved.length ? `<div class="card" style="margin-top:14px">
+          <div class="kicker" style="margin-bottom:8px">Saved take-offs <span style="color:var(--text3)">(sheets persist here — page marks need the same PDF uploaded)</span></div>
+          <div style="display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto">
+            ${S.saved.slice().reverse().map(t => `<div style="display:flex;justify-content:space-between;gap:8px;border:1px solid var(--border);padding:7px 10px;font-size:12px;align-items:center">
+              <span onclick="openSaved('${t.id}')" style="cursor:pointer;color:var(--ink-900)">${esc(t.label)}</span>
+              <span style="display:flex;gap:6px;align-items:center"><span style="font-family:var(--mono);font-size:10px;color:var(--text3)">${t.rows.length} rows</span><button class="btn btn-sm btn-red" style="padding:2px 7px" onclick="deleteSaved('${t.id}')">✕</button></span>
+            </div>`).join('')}
+          </div>
+        </div>` : ''}
+
+        <div class="card" style="margin-top:14px">
+          <div class="kicker" style="margin-bottom:6px">Agent run log</div>
+          <div id="runlog" style="max-height:150px;overflow-y:auto;font-family:var(--mono);font-size:10.5px;line-height:1.7">
+            ${S.runLog.length ? S.runLog.map(l => `<div style="color:${l.cls === 'err' ? 'var(--red)' : l.cls === 'ok' ? 'var(--green)' : l.cls === 'warn' ? 'var(--amber)' : 'var(--text2)'}">${l.ts} — ${esc(l.msg)}</div>`).join('') : '<span style="color:var(--text3)">Waiting for a plan set…</span>'}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:26px;font-family:var(--mono);font-size:9px;letter-spacing:.08em;color:var(--text3)">NOVANTU LABS · TAKE-OFF v0.1 — experimental · AI-measured rows are marked ~ · always verify before bidding</div>
+  </div>
+
+  ${S.viewer ? `<div class="backdrop" onclick="if(event.target===this){S.viewer=null;render()}">
+    <div class="modal" style="max-width:1060px" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:700;color:var(--ink-900)">${esc(((S.pages[S.viewer.idx] || {}).cls || {}).sheet || 'Page ' + ((S.pages[S.viewer.idx] || {}).num || ''))} <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">· ${(marksByPage()[S.viewer.idx] || []).length} mark(s)</span></div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-sm" ${S.viewer.idx <= 0 ? 'disabled' : ''} onclick="openViewer(${S.viewer.idx - 1})">← Prev</button>
+          <button class="btn btn-sm" ${S.viewer.idx >= S.pages.length - 1 ? 'disabled' : ''} onclick="openViewer(${S.viewer.idx + 1})">Next →</button>
+          <button class="btn btn-sm" onclick="downloadMarkedPage(${S.viewer.idx})">⬇ Download marked</button>
+          <button class="btn btn-sm" onclick="S.viewer=null;render()">✕ Close</button>
+        </div>
+      </div>
+      <div id="viewer-canvas" style="border:1px solid var(--border);background:#fff"></div>
+    </div>
+  </div>` : ''}`;
+  if (S.viewer) setTimeout(paintViewer, 30); // re-render rebuilt the holder — repaint it
+}
+render();
+</script>
+</body>
+</html>
