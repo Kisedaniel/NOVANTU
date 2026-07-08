@@ -894,7 +894,7 @@
       <ul>
         <li>Plans are billed <strong>monthly</strong> or <strong>annually</strong> (annual is paid once for the year). Prices are in USD.</li>
         <li>Pricing differs by account type: a general contractor's Pro/Enterprise costs more than a subcontractor's because GCs use more storage (more projects &amp; plan files) and more AI. Standard is a flat $200 for both.</li>
-        <li>The one-time set-up fee is charged once, on your first billing only. The checkout asks you to confirm whether it's already been paid.</li>
+        <li>The one-time set-up fee is charged once, as your FIRST payment — checkout takes you to it directly; your plan billing starts when your workspace is activated.</li>
         <li><strong>Cancel anytime.</strong> Your access continues to the end of the period already paid; we don't pro-rate partial months. No long-term contract.</li>
       </ul>
 
@@ -924,13 +924,12 @@
     <div class="co-cycnote" id="coCyc">Billed monthly · cancel anytime</div>
 
     <div class="co-setup">
-      <label><input type="checkbox" id="coSetup"> I've already paid the one-time personalized set-up fee.</label>
-      <div class="co-setupnote" id="coSetupNote">First-time accounts include a one-time personalized set-up (brand, trades &amp; prices configured for you). If this is your first payment, leave this unchecked and we'll include it.</div>
+      <div class="co-setupnote" id="coSetupNote"><strong>Step 1 · One-time personalized set-up.</strong> Every new account starts with the one-time set-up payment — we configure your brand, trade categories and unit prices so you can quote on day one. The button below takes you to that payment first. Your <strong id="coPlanEcho">plan</strong> subscription is billed once your workspace is activated.</div>
     </div>
 
-    <a class="btn btn-primary co-go" id="coGo" href="#" onclick="goCheckout(event)">Continue to secure payment →</a>
+    <a class="btn btn-primary co-go" id="coGo" href="#" onclick="goCheckout(event)">Pay the one-time set-up first → (Payoneer)</a>
     <div class="co-fine">
-      Payments are processed via Payoneer (cards &amp; bank transfer) for now. Once your payment is confirmed, we activate your workspace within 1 business day.<br>
+      Payments are processed securely via Payoneer (cards &amp; bank transfer). Once your set-up payment is confirmed, we activate your workspace within 1 business day and send you the payment request for the plan you picked.<br>
       By continuing you agree to our <a href="#terms" onclick="closeCheckout()">Terms &amp; services</a>.
     </div>
   </div>
@@ -1003,7 +1002,8 @@
     document.getElementById('coPrice').innerHTML = money(val) + `<span>/${pCycle === 'm' ? 'mo' : 'yr'}</span>`;
     document.getElementById('coCyc').textContent =
       pCycle === 'm' ? 'Billed monthly · cancel anytime' : `Billed annually (${money(a.y)}) · cancel anytime`;
-    document.getElementById('coSetup').checked = false;
+    const echo = document.getElementById('coPlanEcho');
+    if (echo) echo.textContent = PLAN_LABEL[planId];
     document.getElementById('coBackdrop').classList.add('show');
   }
   function closeCheckout() { document.getElementById('coBackdrop').classList.remove('show'); }
@@ -1011,7 +1011,8 @@
   function goCheckout(ev) {
     if (ev) ev.preventDefault();
     const sel = _coSel; if (!sel) return;
-    const setupPaid = document.getElementById('coSetup').checked;
+    // Every plan goes to the SAME first payment: the one-time personalized
+    // set-up via Payoneer. The plan subscription is billed at activation.
     if (CHECKOUT_URL) {
       window.open(CHECKOUT_URL, '_blank', 'noopener');
     } else {
@@ -1024,7 +1025,7 @@ I'd like to subscribe to Novantu.
 Plan: ${PLAN_LABEL[sel.id]}
 Account type: ${sel.acct === 'sub' ? 'Subcontractor' : 'General contractor'}
 Billing: ${sel.cycle === 'm' ? 'Monthly ' + money(sel.amount) : 'Annual ' + money(sel.amount)}
-One-time set-up already paid: ${setupPaid ? 'Yes' : 'No — please include it'}
+One-time set-up: to be paid first (please send me the payment link)
 
 Company:
 Contact name:
