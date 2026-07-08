@@ -162,6 +162,53 @@ async function renderPageImage(p, width, q) {
   return cv;
 }
 
+// ── Tiling — THE fix for illegible sheets ────────────────────────────────────
+// Vision models downscale every image to ~1.5k px on the long edge, so a whole
+// 36"×24" sheet can never carry legible room tags or dimensions. Each sheet is
+// sent as an OVERVIEW (for layout + marks) plus a grid of HIGH-RES TILES
+// (default 3×3 with overlap → ~2.5× effective zoom), each tile at the model's
+// resolution sweet spot.
+const OVERVIEW_W = 1100;
+const TILE_LONG = 1500;
+async function tileImagesFor(p, grid) {
+  const g = grid || 3;
+  const overlap = 0.08;
+  const srcW = Math.min(4400, Math.round(TILE_LONG * g / (1 + 2 * overlap)));
+  const cv = await renderPageImage(p, srcW);
+  const imgs = [];
+  const ov = document.createElement('canvas');
+  const os = OVERVIEW_W / cv.width;
+  ov.width = OVERVIEW_W; ov.height = Math.round(cv.height * os);
+  ov.getContext('2d').drawImage(cv, 0, 0, ov.width, ov.height);
+  imgs.push({ label: 'FULL PAGE overview — marks reference THIS image', url: ov.toDataURL('image/jpeg', 0.78) });
+  const stepX = cv.width / g, stepY = cv.height / g;
+  const padX = stepX * overlap, padY = stepY * overlap;
+  const rowName = ['TOP', 'MIDDLE', 'BOTTOM'], colName = ['LEFT', 'CENTER', 'RIGHT'];
+  for (let r = 0; r < g; r++) for (let c = 0; c < g; c++) {
+    const x0 = Math.max(0, c * stepX - padX), y0 = Math.max(0, r * stepY - padY);
+    const x1 = Math.min(cv.width, (c + 1) * stepX + padX), y1 = Math.min(cv.height, (r + 1) * stepY + padY);
+    const w = x1 - x0, h = y1 - y0;
+    const scale = Math.min(1, TILE_LONG / Math.max(w, h));
+    const t = document.createElement('canvas');
+    t.width = Math.round(w * scale); t.height = Math.round(h * scale);
+    t.getContext('2d').drawImage(cv, x0, y0, w, h, 0, 0, t.width, t.height);
+    const nm = g === 3 ? `${rowName[r]}-${colName[c]}` : `r${r + 1}c${c + 1}`;
+    imgs.push({ label: `${nm} zoom tile of the SAME page`, url: t.toDataURL('image/jpeg', 0.8) });
+  }
+  return imgs;
+}
+// Title-block strip (right edge, where sheet number + title + level live) at
+// readable zoom — used by the classifier.
+async function titleStripFor(p) {
+  const cv = await renderPageImage(p, 3000);
+  const sw = Math.round(cv.width * 0.26);
+  const strip = document.createElement('canvas');
+  const scale = Math.min(1, TILE_LONG / cv.height);
+  strip.width = Math.round(sw * scale); strip.height = Math.round(cv.height * scale);
+  strip.getContext('2d').drawImage(cv, cv.width - sw, 0, sw, cv.height, 0, 0, strip.width, strip.height);
+  return strip.toDataURL('image/jpeg', 0.8);
+}
+
 // ── AI plumbing (ask-ai SSE) ──────────────────────────────────────────────────
 async function aiCall(prompt, images) {
   const body = {
@@ -209,16 +256,23 @@ function parseAIJson(text) {
 }
 
 // ── Agent 1 · Sheet classifier ───────────────────────────────────────────────
+// Sends PAIRS per page: high-res title-block strip + small overview, batched
+// so each call stays under the 25-image server cap.
 async function agentClassify() {
   if (S.classifying || !S.pages.length) return;
-  S.classifying = true; render();
-  log('Agent 1 · Sheet classifier — reading title blocks…');
+  S.classifying = true; S.cancel = false; render();
+  log('Agent 1 · Sheet classifier — reading title blocks at high zoom…');
   try {
-    const batch = S.pages.slice(0, MAX_IMAGES);
-    if (S.pages.length > MAX_IMAGES) log(`⚠ ${S.pages.length} pages — classifying the first ${MAX_IMAGES} (server cap).`, 'warn');
-    const imgs = [];
-    for (const p of batch) imgs.push((await renderPageImage(p, CLS_W, 0.72)).toDataURL('image/jpeg', 0.72));
-    const prompt = `You are indexing a construction plan set. For EACH attached page (in order, 1-based), read its title block and content and classify it.
+    const BATCH = 12; // 12 pages × 2 images = 24 ≤ 25
+    for (let b = 0; b < S.pages.length; b += BATCH) {
+      if (S.cancel) { log('Stopped by user.', 'warn'); break; }
+      const batch = S.pages.slice(b, b + BATCH);
+      const imgs = [];
+      for (const p of batch) {
+        imgs.push(await titleStripFor(p));
+        imgs.push((await renderPageImage(p, 900)).toDataURL('image/jpeg', 0.7));
+      }
+      const prompt = `You are indexing a construction plan set. The attached images come in PAIRS per page: first the TITLE-BLOCK STRIP (right edge, zoomed — read the sheet number, sheet title and level here), then a small full-page overview. So images 1-2 = PAGE 1, images 3-4 = PAGE 2, and so on. There are ${batch.length} pages.
 
 Types (pick ONE per page):
 - assembly_plan  (wall/floor assembly diagrams with a color legend)
@@ -233,16 +287,19 @@ Types (pick ONE per page):
 
 Return STRICT JSON ONLY:
 {"pages":[{"page":1,"sheet":"A2.00","type":"assembly_plan","level":"LEVEL 0","note":"5 words max"}]}`;
-    const text = await aiCall(prompt, imgs);
-    const parsed = parseAIJson(text);
-    if (!parsed || !Array.isArray(parsed.pages)) throw new Error('Could not read the classification.');
-    for (const c of parsed.pages) {
-      const idx = Number(c.page) - 1;
-      if (idx >= 0 && idx < batch.length) {
-        batch[idx].cls = { type: String(c.type || 'cover_or_other'), sheet: String(c.sheet || ''), level: String(c.level || ''), note: String(c.note || '') };
+      const text = await aiCall(prompt, imgs);
+      const parsed = parseAIJson(text);
+      if (!parsed || !Array.isArray(parsed.pages)) throw new Error('Could not read the classification.');
+      for (const c of parsed.pages) {
+        const idx = Number(c.page) - 1;
+        if (idx >= 0 && idx < batch.length) {
+          batch[idx].cls = { type: String(c.type || 'cover_or_other'), sheet: String(c.sheet || ''), level: String(c.level || ''), note: String(c.note || '') };
+        }
       }
+      log(`Agent 1 — pages ${b + 1}-${Math.min(b + BATCH, S.pages.length)} classified.`);
+      render();
     }
-    log(`Agent 1 done — ${parsed.pages.length} pages classified.`, 'ok');
+    log('Agent 1 done.', 'ok');
   } catch (e) {
     log('Agent 1 failed: ' + (e.message || e), 'err');
   } finally {
@@ -290,14 +347,63 @@ Count fixtures per level and room: water closets, lavatories, sinks, tubs, showe
   },
 };
 
-// ── Agent 2 · Extractor ──────────────────────────────────────────────────────
-function pagesForPreset(key) {
-  const preset = PRESETS[key];
-  const classified = S.pages.filter(p => p.cls);
-  if (!preset.pageTypes || !classified.length) return S.pages.slice(0, MAX_IMAGES).map((p, i) => ({ p, idx: S.pages.indexOf(p) }));
-  const rel = [];
-  S.pages.forEach((p, idx) => { if (p.cls && preset.pageTypes.includes(p.cls.type)) rel.push({ p, idx }); });
-  return (rel.length ? rel : S.pages.map((p, idx) => ({ p, idx }))).slice(0, MAX_IMAGES);
+// ── Agent 2 · Extractor — two phases, sheet by sheet ─────────────────────────
+// Phase A reads the REFERENCE sheets (spec tables, RCP heights, typical
+// assembly notes) into a text context. Phase B loops the measurable sheets
+// ONE AT A TIME, each with its own high-res tiles + the Phase A context.
+// Slower than one big call, but each page is actually legible.
+const REF_TYPES = ['finish_spec', 'rcp'];
+const MEASURE_TYPES = { walls: ['assembly_plan', 'floor_plan'], tiles: ['finish_plan', 'elevations', 'floor_plan'], plumbing: ['floor_plan', 'finish_plan', 'elevations'], custom: null };
+
+function extractionPlan(key) {
+  const anyChecked = S.pages.some(p => p.use === true);
+  const pick = (pred) => S.pages.map((p, idx) => ({ p, idx })).filter(x => pred(x.p));
+  let refs = pick(p => p.cls && REF_TYPES.includes(p.cls.type));
+  let sheets;
+  if (anyChecked) {
+    sheets = pick(p => p.use === true);
+    refs = refs.filter(r => !sheets.some(s => s.idx === r.idx));
+  } else {
+    const types = MEASURE_TYPES[key];
+    const classified = S.pages.some(p => p.cls);
+    if (!classified) { sheets = pick(() => true).slice(0, 6); refs = []; }
+    else if (!types) { sheets = pick(p => p.cls && !['cover_or_other', 'sections'].includes(p.cls.type) && !REF_TYPES.includes(p.cls.type)); }
+    else { sheets = pick(p => p.cls && types.includes(p.cls.type)); }
+  }
+  return { refs: refs.slice(0, 6), sheets: sheets.slice(0, 12) };
+}
+
+async function agentReadReferences(refs) {
+  let ctx = '';
+  for (const ref of refs) {
+    if (S.cancel) break;
+    const name = (ref.p.cls && ref.p.cls.sheet) || ('page ' + ref.p.num);
+    log(`Agent 2a — reading reference sheet ${name}…`);
+    try {
+      const tiles = await tileImagesFor(ref.p, 3);
+      const prompt = `You are reading ONE reference sheet of a construction plan set: ${name}${ref.p.cls ? ' (' + ref.p.cls.type + (ref.p.cls.level ? ', ' + ref.p.cls.level : '') + ')' : ''}.
+The attached images are: 1 full-page overview, then ${tiles.length - 1} zoomed tiles of the SAME page (read fine text in the tiles).
+
+Extract, ONLY what is actually printed:
+- Ceiling heights per level/room (RCP: e.g. 8'-0", 10'-0") — say which level/rooms.
+- Finish/assembly tag tables: tag, material description, and printed $/SF when shown (e.g. "TL-1 TILE $45/SF").
+- "TYPICAL ..." / "UNLESS OTHERWISE NOTED" notes verbatim.
+- Anything else an estimator needs from this sheet (scale, level name).
+
+Return STRICT JSON ONLY: {"facts":["one fact per line, compact, e.g. 'RCP LEVEL 1: typical ceiling height 8-6'","'TL-2 = tile $30/SF material only'"]}. If the sheet is unreadable return {"facts":[]}.`;
+      const text = await aiCall(prompt, tiles.map(t => t.url));
+      const parsed = parseAIJson(text);
+      if (parsed && Array.isArray(parsed.facts) && parsed.facts.length) {
+        ctx += `\nFROM ${name}:\n` + parsed.facts.slice(0, 30).map(f => '- ' + String(f).slice(0, 160)).join('\n');
+        log(`Agent 2a — ${name}: ${parsed.facts.length} fact(s).`);
+      } else {
+        log(`Agent 2a — ${name}: nothing legible.`, 'warn');
+      }
+    } catch (e) {
+      log(`Agent 2a — ${name} failed: ${e.message || e}`, 'warn');
+    }
+  }
+  return ctx.trim();
 }
 
 async function agentExtract() {
@@ -305,67 +411,77 @@ async function agentExtract() {
   const preset = PRESETS[S.preset];
   S.guidance = document.getElementById('to-guidance')?.value ?? S.guidance;
   if (S.preset === 'custom' && !S.guidance.trim()) { alert('Describe what to quantify first.'); return; }
-  S.extracting = true; render();
-  const sel = pagesForPreset(S.preset);
-  log(`Agent 2 · Extractor — sending ${sel.length} relevant page(s) (${preset.label})…`);
+  S.extracting = true; S.cancel = false; render();
+  const plan = extractionPlan(S.preset);
+  if (!plan.sheets.length) { log('No measurable sheets selected/classified — run Agent 1 or tick pages to include.', 'err'); S.extracting = false; render(); return; }
+  log(`Agent 2 · Extractor — ${plan.refs.length} reference sheet(s) + ${plan.sheets.length} sheet(s) to measure, one at a time. This takes a few minutes — accuracy over speed. ☕`);
+  const CATS_OK = ['WALLS', 'CEILING', 'FLOOR', 'COUNTERTOP', 'FIXTURE', 'OTHER'];
+  const allRows = [], allMissing = [];
   try {
-    const imgs = [];
-    for (const s of sel) imgs.push((await renderPageImage(s.p, FULL_W, 0.8)).toDataURL('image/jpeg', 0.8));
-    const pageList = sel.map((s, i) => `IMAGE ${i + 1} = ${s.p.cls ? `${s.p.cls.sheet || '?'} · ${s.p.cls.type} · ${s.p.cls.level || ''}` : `page ${s.p.num} of ${s.p.name}`}`).join('\n');
-    const prompt = `You are a professional construction estimator doing a QUANTITY TAKE-OFF from the attached plan pages.
-
-ATTACHED PAGES (refer to them by IMAGE number):
-${pageList}
+    const refCtx = plan.refs.length ? await agentReadReferences(plan.refs) : '';
+    for (const s of plan.sheets) {
+      if (S.cancel) { log('Stopped by user — keeping what was measured so far.', 'warn'); break; }
+      const name = (s.p.cls && s.p.cls.sheet) || ('page ' + s.p.num);
+      log(`Agent 2b — measuring ${name}…`);
+      try {
+        const tiles = await tileImagesFor(s.p, 3);
+        const prompt = `You are a professional construction estimator doing a QUANTITY TAKE-OFF of ONE plan sheet: ${name}${s.p.cls ? ' (' + s.p.cls.type + (s.p.cls.level ? ', ' + s.p.cls.level : '') + ')' : ''}.
+Attached: image 1 = full-page overview (marks reference THIS image), images 2-${tiles.length} = zoomed tiles of the SAME page — read dimensions, room tags and legends in the tiles.
 
 ${preset.prompt}
+${refCtx ? `
+FACTS ALREADY READ FROM THE SET'S REFERENCE SHEETS (use these heights/tags — do not re-guess them):
+${refCtx}` : ''}
 ${S.guidance.trim() ? `
 USER GUIDANCE — respect this:
 ${S.guidance.slice(0, 500)}` : ''}
 
 HOW TO MEASURE:
-- Read legends, tag tables and "TYPICAL / UNLESS OTHERWISE NOTED" notes FIRST.
-- Prefer PRINTED dimensions, areas and schedules. When estimating from drawing scale, be conservative and set "est": true.
-- One row per room × material. "level" exactly as the sheets name it. "space" = room name + number.
-- Deductions (openings, casework, pools within an area): NEGATIVE dims row with a note — never silently net areas.
-- Do NOT invent rooms/tags/fixtures. Unreadable or missing sheet types go in "missing".
-- MARKS: for each row, when you can locate what you measured, include "marks": rectangles on the attached images — {"img": <IMAGE number>, "x":0-1000, "y":0-1000, "w":0-1000, "h":0-1000} normalized to each image (x right, y down). Mark the actual walls/areas/fixtures, tight boxes, up to 4 per row.
+- ONLY take off what THIS sheet shows. Prefer PRINTED dimensions; when estimating from drawing scale, be conservative and set "est": true.
+- One row per room × material. "level" exactly as named. "space" = room name + number (e.g. "BATH 106").
+- Deductions (openings, casework, pools within an area): NEGATIVE dims row with a note.
+- If THIS sheet is still not legible enough to measure, return {"rows":[],"missing":["${name}: what exactly is unreadable"]} — NEVER fabricate numbers.
+- MARKS: rectangles locating what you measured, on IMAGE 1 (the overview): {"x":0-1000,"y":0-1000,"w":0-1000,"h":0-1000}, up to 4 per row, tight boxes.
 
 Return STRICT JSON ONLY:
-{"rows":[{"cat":"WALLS","level":"LEVEL 0","space":"BATH 106","material":"TL-2","dims":16.81,"height":8,"unit":"SF","est":false,"note":"","marks":[{"img":2,"x":410,"y":220,"w":180,"h":14}]}],"missing":["..."],"notes":"one short line"}
-Row rules: cat WALLS|CEILING|FLOOR|COUNTERTOP|FIXTURE|OTHER · unit SF with height → total = dims×height · unit SF without height → dims IS the SF · EA → count · LF → linear feet.`;
-    const text = await aiCall(prompt, imgs);
-    const parsed = parseAIJson(text);
-    if (!parsed || !Array.isArray(parsed.rows) || !parsed.rows.length) throw new Error('No usable rows returned. Try again or add guidance.');
-    const CATS_OK = ['WALLS', 'CEILING', 'FLOOR', 'COUNTERTOP', 'FIXTURE', 'OTHER'];
-    const rows = parsed.rows.map(r => ({
-      cat: CATS_OK.includes(String((r && r.cat) || '').toUpperCase()) ? String(r.cat).toUpperCase() : 'OTHER',
-      level: String((r && r.level) || '').slice(0, 24),
-      space: String((r && r.space) || '').slice(0, 48),
-      material: String((r && r.material) || '').slice(0, 32),
-      dims: Number(r && r.dims) || 0,
-      height: (r && r.height != null && r.height !== '' && Number(r.height) > 0) ? Number(r.height) : null,
-      unit: ['SF', 'LF', 'EA'].includes(String((r && r.unit) || '').toUpperCase()) ? String(r.unit).toUpperCase() : 'SF',
-      est: !!(r && r.est),
-      note: String((r && r.note) || '').slice(0, 120),
-      marks: Array.isArray(r && r.marks) ? r.marks.slice(0, 4).map(mk => {
-        const li = Number(mk && mk.img) - 1;
-        const gp = (li >= 0 && li < sel.length) ? sel[li].idx : -1;   // map image order → global page index
-        return { page: gp, x: Number(mk.x) || 0, y: Number(mk.y) || 0, w: Number(mk.w) || 0, h: Number(mk.h) || 0 };
-      }).filter(mk => mk.page >= 0 && mk.w > 0 && mk.h > 0) : [],
-    })).filter(r => r.dims !== 0 || r.note);
-    if (!rows.length) throw new Error('The AI returned no usable rows.');
+{"rows":[{"cat":"WALLS","level":"LEVEL 0","space":"BATH 106","material":"TL-2","dims":16.81,"height":8,"unit":"SF","est":false,"note":"","marks":[{"x":410,"y":220,"w":180,"h":14}]}],"missing":[],"notes":""}
+Row rules: cat WALLS|CEILING|FLOOR|COUNTERTOP|FIXTURE|OTHER · unit SF with height → total = dims×height · SF without height → dims IS the SF · EA → count · LF → linear feet.`;
+        const text = await aiCall(prompt, tiles.map(t => t.url));
+        const parsed = parseAIJson(text);
+        if (!parsed) { allMissing.push(name + ': unreadable AI reply'); continue; }
+        const rows = (Array.isArray(parsed.rows) ? parsed.rows : []).map(r => ({
+          cat: CATS_OK.includes(String((r && r.cat) || '').toUpperCase()) ? String(r.cat).toUpperCase() : 'OTHER',
+          level: String((r && r.level) || (s.p.cls && s.p.cls.level) || '').slice(0, 24),
+          space: String((r && r.space) || '').slice(0, 48),
+          material: String((r && r.material) || '').slice(0, 32),
+          dims: Number(r && r.dims) || 0,
+          height: (r && r.height != null && r.height !== '' && Number(r.height) > 0) ? Number(r.height) : null,
+          unit: ['SF', 'LF', 'EA'].includes(String((r && r.unit) || '').toUpperCase()) ? String(r.unit).toUpperCase() : 'SF',
+          est: !!(r && r.est),
+          note: String((r && r.note) || '').slice(0, 120),
+          src: name,
+          marks: Array.isArray(r && r.marks) ? r.marks.slice(0, 4).map(mk => ({ page: s.idx, x: Number(mk.x) || 0, y: Number(mk.y) || 0, w: Number(mk.w) || 0, h: Number(mk.h) || 0 })).filter(mk => mk.w > 0 && mk.h > 0) : [],
+        })).filter(r => r.dims !== 0 || r.note);
+        allRows.push(...rows);
+        for (const ms of (Array.isArray(parsed.missing) ? parsed.missing : [])) allMissing.push(String(ms).slice(0, 160));
+        log(`Agent 2b — ${name}: ${rows.length} row(s).`, rows.length ? 'ok' : 'warn');
+      } catch (e) {
+        allMissing.push(name + ': ' + (e.message || e));
+        log(`Agent 2b — ${name} failed: ${e.message || e}`, 'warn');
+      }
+    }
+    if (!allRows.length) throw new Error('No sheet produced usable rows — see Missing/verify and the log.');
     S.takeoff = {
       id: 'to_' + Date.now(), ts: new Date().toISOString(), preset: S.preset,
       label: preset.label + ' · ' + (S.projectName || 'plans') + ' · ' + new Date().toLocaleDateString(),
-      rows,
-      missing: Array.isArray(parsed.missing) ? parsed.missing.map(x => String(x).slice(0, 160)).slice(0, 12) : [],
-      notes: String(parsed.notes || '').slice(0, 240),
+      rows: allRows,
+      missing: allMissing.slice(0, 20),
+      notes: `Measured ${plan.sheets.length} sheet(s)` + (plan.refs.length ? ` with ${plan.refs.length} reference sheet(s) read first` : ''),
       issues: [],
     };
     S.saved.push(S.takeoff); persist();
     S.sheetOpen = true;
-    const marked = rows.filter(r => r.marks.length).length;
-    log(`Agent 2 done — ${rows.length} rows, ${marked} with page marks.`, 'ok');
+    log(`Agent 2 done — ${allRows.length} rows from ${plan.sheets.length} sheet(s).`, 'ok');
   } catch (e) {
     log('Agent 2 failed: ' + (e.message || e), 'err');
   } finally {
@@ -379,9 +495,12 @@ async function agentVerify() {
   S.verifying = true; render();
   log('Agent 3 · Checker — re-reading the sheets against the numbers…');
   try {
-    const sel = pagesForPreset(t.preset);
+    const plan = extractionPlan(t.preset);
     const imgs = [];
-    for (const s of sel.slice(0, 12)) imgs.push((await renderPageImage(s.p, FULL_W, 0.8)).toDataURL('image/jpeg', 0.8));
+    for (const s of plan.sheets.slice(0, 4)) {
+      const tiles = await tileImagesFor(s.p, 2);
+      for (const ti of tiles) imgs.push(ti.url);
+    }
     const sheetTxt = t.rows.map(r => `${r.cat} | ${r.level} | ${r.space} | ${r.material} | ${r.dims}${r.height ? ' × ' + r.height : ''} = ${fmtNum(rowTotal(r))} ${r.unit}`).join('\n');
     const prompt = `You are a senior estimator CHECKING a colleague's take-off against the attached plan pages. Be adversarial but practical.
 
@@ -555,7 +674,7 @@ function buildSheet() {
     <div style="margin-top:12px;max-height:44vh;overflow:auto;border:1px solid var(--border)">
       <table class="sheet"><thead><tr>${['Cat', 'Level', 'Space', 'Material', 'Dims', 'Ht (ft)', 'Unit', 'Total', ''].map(h => `<th>${h}</th>`).join('')}</tr></thead>
       <tbody>${t.rows.map((r, idx) => `<tr>
-        <td style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">${esc(r.cat)}</td>
+        <td title="${esc(r.src ? 'Measured on ' + r.src : '')}" style="font-family:var(--mono);font-size:9.5px;color:var(--text3);cursor:${r.src ? 'help' : 'default'}">${esc(r.cat)}</td>
         <td>${inp(idx, 'level', r.level, '76px')}</td>
         <td>${inp(idx, 'space', r.space, '128px')}</td>
         <td><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${matColor(r.material)};margin-right:4px"></span>${inp(idx, 'material', r.material, '82px')}</td>
@@ -607,12 +726,13 @@ function render() {
           </label>
           <div ondrop="event.preventDefault();handleFiles(event.dataTransfer.files)" ondragover="event.preventDefault()" style="margin-top:8px;border:1px dashed var(--rule);border-radius:var(--r2);padding:10px;text-align:center;font-family:var(--mono);font-size:9.5px;color:var(--text3)">…or drop the PDF here</div>
           ${S.pages.length ? `<button class="btn btn-sm" style="width:100%;justify-content:center;margin-top:8px" ${S.classifying ? 'disabled' : ''} onclick="agentClassify()">${S.classifying ? '<span class="spin"></span> Classifying…' : '✦ Agent 1 · Classify sheets'}</button>` : ''}
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;max-height:52vh;overflow-y:auto">
-            ${S.pages.map((p, idx) => `<div onclick="openViewer(${idx})" style="cursor:pointer;border:1px solid ${marks[idx] ? matColor((marks[idx][0] || {}).material) : 'var(--border)'};border-radius:var(--r);overflow:hidden;background:#fff;position:relative">
-              <img src="${p.thumb}" style="width:100%;display:block">
+          ${S.pages.length ? `<div style="font-family:var(--mono);font-size:8.5px;color:var(--text3);margin-top:8px">☑ = include in the take-off (none ticked → auto by classification)</div>` : ''}
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;max-height:52vh;overflow-y:auto">
+            ${S.pages.map((p, idx) => `<div style="border:1px solid ${marks[idx] ? matColor((marks[idx][0] || {}).material) : (p.use === true ? 'var(--amber)' : 'var(--border)')};border-radius:var(--r);overflow:hidden;background:#fff;position:relative">
+              <img src="${p.thumb}" onclick="openViewer(${idx})" style="width:100%;display:block;cursor:pointer">
               ${marks[idx] ? `<span style="position:absolute;top:3px;right:3px;background:var(--amber);color:#fff;font-family:var(--mono);font-size:8px;padding:1px 5px;border-radius:7px">${marks[idx].length} ✎</span>` : ''}
               <div style="padding:3px 5px;display:flex;justify-content:space-between;align-items:center;gap:3px">
-                <span style="font-family:var(--mono);font-size:8px;color:var(--text3)">p.${p.num}</span>${clsChip(p.cls)}
+                <span style="font-family:var(--mono);font-size:8px;color:var(--text3)"><input type="checkbox" ${p.use === true ? 'checked' : ''} onchange="S.pages[${idx}].use=this.checked?true:undefined;render()" style="vertical-align:-2px;accent-color:var(--amber)"> p.${p.num}</span>${clsChip(p.cls)}
               </div>
             </div>`).join('')}
           </div>
@@ -631,9 +751,11 @@ function render() {
           </div>
           <div style="display:flex;gap:8px;margin-top:10px;align-items:flex-start;flex-wrap:wrap">
             <textarea id="to-guidance" rows="2" class="minp" placeholder="Guidance (optional) — e.g. only levels 2-3, plaster walls only, heights per RCP…" style="flex:1;min-width:260px;resize:vertical">${esc(S.guidance)}</textarea>
-            <button class="btn btn-amber" ${S.extracting || !S.pages.length ? 'disabled' : ''} onclick="agentExtract()" title="${S.pages.length ? '' : 'Upload the plan set first'}">${S.extracting ? '<span class="spin"></span> Measuring…' : '✦ Agent 2 · Run take-off'}</button>
+            <button class="btn btn-amber" ${S.extracting || !S.pages.length ? 'disabled' : ''} onclick="agentExtract()" title="${S.pages.length ? '' : 'Upload the plan set first'}">${S.extracting ? '<span class="spin"></span> Measuring sheet by sheet…' : '✦ Agent 2 · Run take-off'}</button>
+            ${(S.extracting || S.classifying) ? `<button class="btn btn-red" onclick="S.cancel=true">■ Stop</button>` : ''}
           </div>
-          ${S.pages.length && !S.pages.some(p => p.cls) ? '<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:6px">Tip: run Agent 1 first — the extractor then reads ONLY the relevant sheets (better accuracy, fewer tokens).</div>' : ''}
+          ${S.pages.length && !S.pages.some(p => p.cls) ? '<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:6px">Tip: run Agent 1 first — the extractor then measures ONLY the relevant sheets, one at a time, in high-res tiles (this is what makes the numbers real).</div>' : ''}
+          ${S.pages.length ? `<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:4px">Each sheet is sent as a zoomed 3×3 mosaic — a full run takes a few minutes. You can ■ Stop anytime and keep what's measured.</div>` : ''}
         </div>
 
         ${S.sheetOpen && S.takeoff ? buildSheet() : ''}
