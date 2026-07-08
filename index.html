@@ -4179,7 +4179,8 @@ let ST = {
 
   // Notifications
   notifOpen: false,
-  notifReadTs: null,
+  notifReadTs: null,  // legacy — read state now lives in notifRead (stable keys)
+  notifRead: [],      // keys the user marked read — persisted, so read stays read across logins
 
   // Undo + toast
   lastDelete: null,
@@ -4501,6 +4502,8 @@ const DEFAULT_SETTINGS = {
   brand: { wordmark: 'NOVANTU', subtitle: '', logoData: '', accentColor: '' },
   print: { companyName: '', companyAddress: '', companyPhone: '', companyLicense: '', headerText: '', footerText: '', notes: '', coverPage: false, showGridLines: false, logoOffsetX: 0, logoOffsetY: 0, showLogo: true, logoSize: 'md', logoAlign: 'left', infoAlign: 'left', infoDisplay: 'lines', headerStyle: 'split', rightCorner: 'price', projectNamePrefix: '', layoutStyle: 'standard', fontFamily: 'sans', accentInPdf: true, headerBg: '#000000', pageOrientation: 'portrait' },
   notifs: { newBids: true, pendingCOs: true, dueDateAlerts: true, threadReplies: true },
+  notifReadBy: {},   // { userId: [notification keys marked read] } — settings IS synced, so read stays read across logins
+  language: 'en',    // UI language — master-set (like currency), applied via applyI18n
   kbNavEnabled: true
 };
 function getCostTypes() {
@@ -4510,7 +4513,75 @@ function getCostTypes() {
 function getSettings() { return ST.settings || DEFAULT_SETTINGS; }
 function currencySymbol() {
   const s = getSettings();
-  return ({USD:'$', MXN:'$', EUR:'€', GBP:'£', CAD:'$'})[s.currency] || '$';
+  return ({USD:'$', MXN:'$', COP:'$', EUR:'€', GBP:'£', CAD:'$'})[s.currency] || '$';
+}
+
+// ============================================================
+// I18N — post-render dictionary translation (0 tokens, no AI).
+// The app renders in English; applyI18n() walks the fresh DOM after every
+// render() and swaps any text node / placeholder / title that matches the
+// dictionary EXACTLY (trimmed). Coverage grows by adding entries — dynamic
+// strings that embed data (names, totals) keep their English frame until an
+// entry exists for them. Language is a master-set workspace setting.
+// ============================================================
+const I18N = {
+  es: {
+    // Sidebar / nav
+    'Today': 'Hoy', 'AI Assistant': 'Asistente IA', 'Projects': 'Proyectos',
+    'Subcontractors': 'Subcontratistas', 'Suppliers': 'Proveedores',
+    'Estimator': 'Estimador', 'Schedule': 'Cronograma', 'Daily Log': 'Bitácora',
+    'Files': 'Archivos', 'Overview': 'Resumen', 'Builder': 'Builder',
+    'Insights': 'Indicadores', 'Team': 'Equipo', 'Settings': 'Configuración',
+    'NAVIGATE': 'NAVEGAR', 'OTHERS': 'OTROS',
+    'Manage users': 'Administrar usuarios', 'Change password': 'Cambiar contraseña',
+    'Sign out': 'Cerrar sesión', 'BIDDING MANAGER': 'GESTOR DE OFERTAS',
+    // Topbar crumbs
+    'PROJECTS': 'PROYECTOS', 'SUBCONTRACTORS': 'SUBCONTRATISTAS', 'FILES': 'ARCHIVOS',
+    'OVERVIEW': 'RESUMEN', 'BUILDER': 'BUILDER', 'SETTINGS': 'CONFIGURACIÓN',
+    'INSIGHTS': 'INDICADORES', 'ESTIMATOR': 'ESTIMADOR', 'PLAN SETS': 'PLANOS',
+    'SETUP': 'DATOS', 'CODE': 'CÓDIGO', 'TAKE-OFF': 'TAKE-OFF',
+    // Notifications
+    'Notifications': 'Notificaciones', 'mark all read': 'marcar todo leído', 'Nothing new.': 'Nada nuevo.',
+    // Settings tab
+    'Preferences': 'Preferencias', '[ SETTINGS ]': '[ CONFIGURACIÓN ]',
+    '↻ Reset defaults': '↻ Restaurar valores', 'Display · Theme': 'Pantalla · Tema',
+    'Theme': 'Tema', 'Currency': 'Moneda', 'Language': 'Idioma',
+    'Number/date format': 'Formato de números/fechas', 'Brand': 'Marca',
+    'Set by NOVANTU for your workspace — contact support to change.': 'Definido por NOVANTU para tu espacio — contacta soporte para cambiarlo.',
+    // Common buttons / verbs
+    'Save': 'Guardar', 'Cancel': 'Cancelar', 'Delete': 'Eliminar', 'Close': 'Cerrar',
+    'Send': 'Enviar', 'Add': 'Agregar', 'Edit': 'Editar', 'Search': 'Buscar',
+    'Back': 'Volver', 'Next': 'Siguiente', 'Done': 'Listo', 'Loading…': 'Cargando…',
+    'Discard': 'Descartar', 'Sending…': 'Enviando…', 'Saved': 'Guardado', 'Saving…': 'Guardando…',
+    'Add project': 'Agregar proyecto', 'New project': 'Nuevo proyecto',
+    'Add row': 'Agregar fila', '+ Add row': '+ Agregar fila',
+    'Upload PDF(s)': 'Subir PDF(s)', 'Download': 'Descargar',
+    // Assistant tab example cards
+    'Ask for an estimate': 'Pide un estimado', 'Ask for a take-off': 'Pide un take-off',
+    'Ask to send a follow-up': 'Pide enviar un follow-up', 'Ask for a schedule (Gantt)': 'Pide un cronograma (Gantt)',
+    'Ask for design advice': 'Pide asesoría de diseño', 'Ask for project status — 0 AI': 'Pide el estado del proyecto — 0 IA',
+    'Ask to break down plans → RFPs': 'Pide desglosar planos → RFPs', 'Ask for award & regret letters': 'Pide cartas de adjudicación',
+    'Ask to send RFP follow-ups': 'Pide follow-ups de RFP', 'Ask for a budget estimate': 'Pide un estimado de presupuesto',
+  },
+};
+function applyI18n() {
+  const lang = getSettings().language || 'en';
+  const dict = I18N[lang];
+  if (!dict) return; // English (or unknown) → nothing to do
+  const root = document.getElementById('app');
+  if (!root) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const raw = node.nodeValue;
+    const s = raw.trim();
+    if (!s || !dict[s]) continue;
+    node.nodeValue = raw.replace(s, dict[s]);
+  }
+  root.querySelectorAll('[placeholder],[title]').forEach(el => {
+    const p = el.getAttribute('placeholder'); if (p && dict[p]) el.setAttribute('placeholder', dict[p]);
+    const ti = el.getAttribute('title'); if (ti && dict[ti]) el.setAttribute('title', dict[ti]);
+  });
 }
 
 const DEFAULT_TEMPLATES = {
@@ -6041,6 +6112,7 @@ function render() {
     }
   }
   applyThemeAndBrand();
+  applyI18n(); // dictionary translation of the fresh DOM (no-op in English)
 
   // ── Restore scroll positions synchronously (before the browser paints) ─────
   const seen2 = {};
@@ -8796,9 +8868,14 @@ async function subPortalSubmit() {
 function buildSettingsTab() {
   const s = getSettings();
   const COST_TYPES = getCostTypes();
-  const CURRENCIES = [['USD','US Dollar ($)'],['MXN','Mexican Peso ($)'],['EUR','Euro (€)'],['CAD','Canadian Dollar ($)'],['GBP','British Pound (£)']];
-  const LOCALES = [['en-US','English (US)'],['es-MX','Español (México)'],['es-ES','Español (España)'],['en-GB','English (UK)']];
+  const CURRENCIES = [['USD','US Dollar ($)'],['COP','Colombian Peso ($)'],['MXN','Mexican Peso ($)'],['EUR','Euro (€)'],['CAD','Canadian Dollar ($)'],['GBP','British Pound (£)']];
+  const LOCALES = [['en-US','English (US)'],['es-CO','Español (Colombia)'],['es-MX','Español (México)'],['es-ES','Español (España)'],['en-GB','English (UK)']];
   const THEMES = [['bone','Bone (default)'],['dark','Dark'],['sepia','Sepia'],['hc','High contrast']];
+  const LANGS = [['en','English'],['es','Español']];
+  // Currency & language are workspace identity — the MASTER sets them at
+  // onboarding so clients aren't re-changing them every few days.
+  const canLocale = !!AUTH.isMaster;
+  const lockNote = canLocale ? '' : `<div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:3px">Set by NOVANTU for your workspace — contact support to change.</div>`;
 
   return `<div class="overview-panel nv-settings">
     <div style="display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:1px solid var(--rule);margin-bottom:6px;gap:24px">
@@ -8807,9 +8884,10 @@ function buildSettingsTab() {
     </div>
 
     <div style="margin-bottom:24px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px">Display · Theme</div>
-      <div style="border:1px solid var(--border);background:var(--bg);padding:18px 22px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px">
+      <div style="border:1px solid var(--border);background:var(--bg);padding:18px 22px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:18px">
         <div><div class="modal-label">Theme</div><select class="msel" onchange="settingsSet('theme', this.value)">${THEMES.map(([c,l]) => `<option value="${c}"${s.theme===c?' selected':''}>${l}</option>`).join('')}</select></div>
-        <div><div class="modal-label">Currency</div><select class="msel" onchange="settingsSet('currency', this.value)">${CURRENCIES.map(([c,l]) => `<option value="${c}"${s.currency===c?' selected':''}>${l}</option>`).join('')}</select></div>
+        <div><div class="modal-label">Currency</div><select class="msel" ${canLocale ? '' : 'disabled style="opacity:.6"'} onchange="settingsSet('currency', this.value)">${CURRENCIES.map(([c,l]) => `<option value="${c}"${s.currency===c?' selected':''}>${l}</option>`).join('')}</select>${lockNote}</div>
+        <div><div class="modal-label">Language</div><select class="msel" ${canLocale ? '' : 'disabled style="opacity:.6"'} onchange="settingsSet('language', this.value)">${LANGS.map(([c,l]) => `<option value="${c}"${(s.language||'en')===c?' selected':''}>${l}</option>`).join('')}</select>${lockNote}</div>
         <div><div class="modal-label">Number/date format</div><select class="msel" onchange="settingsSet('dateFormat', this.value)">${LOCALES.map(([c,l]) => `<option value="${c}"${s.dateFormat===c?' selected':''}>${l}</option>`).join('')}</select></div>
       </div>
     </div>
@@ -8975,7 +9053,12 @@ async function storageCleanOrphans() {
   if (typeof showToast === 'function') showToast(`Cleaned ${removed} orphan PDF${removed!==1?'s':''}`, 'success');
   populateStorageTelemetry();
 }
-function settingsSet(key, value) { if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); ST.settings[key] = value; saveSt(); render(); }
+function settingsSet(key, value) {
+  // Currency & language are workspace identity — master-only (the selects are
+  // disabled for everyone else; this guard is the backstop).
+  if ((key === 'currency' || key === 'language') && !AUTH.isMaster) { showToast('Currency & language are set by NOVANTU for your workspace — contact support to change them.', 'warn'); render(); return; }
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); ST.settings[key] = value; saveSt(); render();
+}
 function settingsSetMarkup(ct, val) { if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); if (!ST.settings.defaultMarkup) ST.settings.defaultMarkup = {}; ST.settings.defaultMarkup[ct] = val; saveSt(); render(); }
 function settingsResetDefaults() { if (!confirm('Reset all settings? Data not affected.')) return; ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); saveSt(); render(); }
 function settingsExportJson() {
@@ -9307,17 +9390,20 @@ function notifGenerate() {
   const now = Date.now();
   const week = 7*24*60*60*1000;
   const prefs = getSettings().notifs || { newBids:true, pendingCOs:true, dueDateAlerts:true, threadReplies:true };
+  // Every item carries a STABLE key — read state is tracked per key, so a
+  // notification marked read STAYS read (the old timestamp scheme regenerated
+  // due-date alerts with ts=now each render → the badge never went down).
   if (prefs.newBids) for (const a of (ST.activityLog||[]).slice(0, 100)) {
     if (a.type === 'price') {
       const proj = allProjects().find(p => p.name === a.proj);
-      out.push({ ts: a.ts, icon: '$', label: `New bid received — ${a.sub}`, sub: `${a.proj}${a.cat?' · '+a.cat:''} · ${fmt$(a.price||0)}`, navigate: () => { if (proj) { ST.selProj = proj.id; setTab('projects'); } } });
+      out.push({ key: `bid|${a.ts||''}|${a.sub||''}`, ts: a.ts, icon: '$', label: `New bid received — ${a.sub}`, sub: `${a.proj}${a.cat?' · '+a.cat:''} · ${fmt$(a.price||0)}`, navigate: () => { if (proj) { ST.selProj = proj.id; setTab('projects'); } } });
     }
   }
   if (prefs.pendingCOs) for (const pid of Object.keys(ST.changeOrders||{})) {
     const list = ST.changeOrders[pid] || [];
     for (const co of list) {
       if (co.status === 'pending') {
-        out.push({ ts: co.ts, icon: '◆', label: `Change order pending — ${co.title||'(untitled)'}`, sub: (allProjects().find(p => p.id === pid)?.name || 'Project') + ' · awaiting approval', navigate: () => { ST.selProj = pid; setTab('projects'); ST.coEdit = { pid, coId: co.id }; render(); } });
+        out.push({ key: `co|${co.id}`, ts: co.ts, icon: '◆', label: `Change order pending — ${co.title||'(untitled)'}`, sub: (allProjects().find(p => p.id === pid)?.name || 'Project') + ' · awaiting approval', navigate: () => { ST.selProj = pid; setTab('projects'); ST.coEdit = { pid, coId: co.id }; render(); } });
       }
     }
   }
@@ -9328,19 +9414,27 @@ function notifGenerate() {
     const diff = d.getTime() - now;
     if (diff >= 0 && diff < week) {
       const days = Math.ceil(diff / (24*60*60*1000));
-      out.push({ ts: new Date(now).toISOString(), icon: '!', label: `Due in ${days} day${days!==1?'s':''}`, sub: p.name + ' · ' + dl, navigate: () => { ST.selProj = p.id; setTab('projects'); } });
+      out.push({ key: `due|${p.id}|${dl}`, ts: new Date(now).toISOString(), icon: '!', label: `Due in ${days} day${days!==1?'s':''}`, sub: p.name + ' · ' + dl, navigate: () => { ST.selProj = p.id; setTab('projects'); } });
     } else if (diff < 0 && diff > -week) {
-      out.push({ ts: new Date(now).toISOString(), icon: '!', label: `Overdue — ${p.name}`, sub: 'Was due ' + dl, navigate: () => { ST.selProj = p.id; setTab('projects'); } });
+      // separate key: when a deadline flips to overdue it lights up ONCE more
+      out.push({ key: `over|${p.id}|${dl}`, ts: new Date(now).toISOString(), icon: '!', label: `Overdue — ${p.name}`, sub: 'Was due ' + dl, navigate: () => { ST.selProj = p.id; setTab('projects'); } });
     }
   }
   out.sort((a,b) => new Date(b.ts) - new Date(a.ts));
-  return out.slice(0, 30);
+  return out.slice(0, 10); // the panel keeps the latest 10 — older ones rotate out
+}
+// Read keys live in settings.notifReadBy[uid] — settings is in the sync
+// whitelist (bare ST fields like the old notifReadTs were NEVER persisted,
+// which is why read state reset on every login). Per-user, so teammates'
+// bells stay independent.
+function notifReadSet() {
+  const uid = AUTH.user?.id || 'anon';
+  const by = getSettings().notifReadBy || {};
+  return new Set([...(by[uid] || []), ...(ST.notifRead || [])]);
 }
 function notifUnreadCount() {
-  const items = notifGenerate();
-  if (!ST.notifReadTs) return items.length;
-  const r = new Date(ST.notifReadTs).getTime();
-  return items.filter(i => new Date(i.ts).getTime() > r).length;
+  const read = notifReadSet();
+  return notifGenerate().filter(i => !read.has(i.key)).length;
 }
 function buildNotifBell() {
   const count = notifUnreadCount();
@@ -9352,13 +9446,24 @@ function buildNotifBell() {
     </button>
     ${ST.notifOpen ? `<div onclick="event.stopPropagation()" style="position:absolute;top:calc(100% + 6px);right:0;width:380px;max-height:480px;background:var(--bg);border:1px solid var(--border);box-shadow:0 12px 32px rgba(20,18,15,.18);z-index:200;display:flex;flex-direction:column">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--bg1)"><div style="font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-900)">Notifications · ${items.length}</div><button onclick="notifMarkRead()" style="background:transparent;border:none;color:var(--text3);cursor:pointer;font-family:var(--mono);font-size:10px">mark all read</button></div>
-      <div style="flex:1;overflow-y:auto">${items.length === 0 ? `<div style="padding:32px 20px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--text3)">Nothing new.</div>` : items.map((it,i) => { const isNew = !ST.notifReadTs || (new Date(it.ts).getTime() > new Date(ST.notifReadTs).getTime()); return `<div onclick="notifClick(${i})" style="cursor:pointer;padding:9px 14px;display:flex;gap:10px;align-items:flex-start;border-bottom:1px solid var(--border)"><span style="font-family:var(--mono);font-size:14px;color:${isNew?'var(--plano-500)':'var(--text3)'};width:14px;text-align:center;flex-shrink:0">${it.icon}</span><div style="flex:1;min-width:0"><div style="font-size:12px;color:var(--ink-900);font-weight:${isNew?500:400};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.label)}</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.sub||'')}</div></div><span style="font-family:var(--mono);font-size:9px;color:var(--text3);flex-shrink:0">${fmtDateRel(it.ts)}</span></div>`; }).join('')}</div>
+      <div style="flex:1;overflow-y:auto">${items.length === 0 ? `<div style="padding:32px 20px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--text3)">Nothing new.</div>` : (() => { const _read = notifReadSet(); return items.map((it,i) => { const isNew = !_read.has(it.key); return `<div onclick="notifClick(${i})" style="cursor:pointer;padding:9px 14px;display:flex;gap:10px;align-items:flex-start;border-bottom:1px solid var(--border)"><span style="font-family:var(--mono);font-size:14px;color:${isNew?'var(--plano-500)':'var(--text3)'};width:14px;text-align:center;flex-shrink:0">${it.icon}</span><div style="flex:1;min-width:0"><div style="font-size:12px;color:var(--ink-900);font-weight:${isNew?500:400};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.label)}</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.sub||'')}</div></div><span style="font-family:var(--mono);font-size:9px;color:var(--text3);flex-shrink:0">${fmtDateRel(it.ts)}</span></div>`; }).join(''); })()}</div>
     </div>` : ''}
   </div>`;
 }
 function notifToggle() { ST.notifOpen = !ST.notifOpen; render(); }
 function notifClick(i) { const items = notifGenerate(); const it = items[i]; if (!it) return; ST.notifOpen = false; if (it.navigate) it.navigate(); render(); }
-function notifMarkRead() { ST.notifReadTs = new Date().toISOString(); saveSt(); render(); }
+function notifMarkRead() {
+  // Union of everything currently visible + what was already read, capped so
+  // the stored list never grows unbounded (old keys rotate out with their items).
+  const uid = AUTH.user?.id || 'anon';
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  if (!ST.settings.notifReadBy) ST.settings.notifReadBy = {};
+  const keys = notifGenerate().map(i => i.key);
+  const merged = [...new Set([...(ST.settings.notifReadBy[uid] || []), ...keys])].slice(-200);
+  ST.settings.notifReadBy[uid] = merged;
+  ST.notifRead = merged; // in-session mirror
+  saveSt(); render();
+}
 
 // ============================================================
 // INSIGHTS TAB
