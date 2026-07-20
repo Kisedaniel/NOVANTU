@@ -8355,6 +8355,22 @@ async function workerPortalLoad(token) {
   render();
 }
 
+// Universal crew link: the worker picks which job they were on.
+function workerPickProject(pid, name) {
+  if (!ST.workerPortalView) return;
+  ST.workerPortalView.pickedPid = pid;
+  ST.workerPortalView.pickedName = name;
+  ST.workerPortalView.step = 'form';
+  render();
+}
+function workerChangeProject() {
+  if (!ST.workerPortalView) return;
+  ST.workerPortalView.pickedPid = null;
+  ST.workerPortalView.pickedName = null;
+  ST.workerPortalView.step = 'pick';
+  render();
+}
+
 // Voice → text via the browser's SpeechRecognition (Chrome/Edge/Android).
 // Nothing is recorded or uploaded — the transcript lands in the textarea.
 let _workerRec = null;
@@ -8441,6 +8457,7 @@ async function workerSubmit() {
         logDate: new Date().toISOString().slice(0, 10),
         text: d.text,
         photos: (d.photos || []).map((b64, i) => ({ base64: b64, name: 'photo_' + (i + 1) + '.jpg' })),
+        pid: v.pickedPid || undefined,   // universal crew link → the job the worker picked
       }),
     });
     const data = await res.json();
@@ -8473,11 +8490,32 @@ function buildWorkerPortal() {
     </div>`);
   }
 
-  const projName = pd.project?.name || '';
+  const isWorkspace = pd.mode === 'workspace';
+  const projList = isWorkspace ? (pd.projects || []) : [];
+  const projName = isWorkspace ? (v.pickedName || '') : (pd.project?.name || '');
   const d = ST.workerDraft || { photos: [] };
   const today = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
   const reported = pd.today || [];
   const hasSR = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+
+  // Universal crew link → first pick the job. Counts today's reports per job so
+  // the crew sees which sites already checked in.
+  if (isWorkspace && (v.step === 'pick' || !v.pickedPid)) {
+    const countByPid = {};
+    for (const r of reported) countByPid[r.pid] = (countByPid[r.pid] || 0) + 1;
+    return shell(`
+      ${kicker}
+      <h1 class="sp-h1">Which job today?</h1>
+      <div class="sp-meta"><b>${esc(pd.workspace?.name || '')}</b><span class="sep">·</span>${esc(today)}</div>
+      ${projList.length ? `<div class="sp-card"><div class="sp-card-body" style="display:flex;flex-direction:column;gap:8px">
+        ${projList.map(pr => `<button onclick="workerPickProject('${esc(pr.pid)}', ${JSON.stringify(pr.name).replace(/"/g, '&quot;')})" style="display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:left;border:1px solid var(--line2,#c7bda4);border-radius:10px;padding:14px 16px;background:#fff;cursor:pointer;font-family:var(--sans);font-size:15px;font-weight:600;color:#181613">
+          <span>${esc(pr.name)}</span>
+          <span style="display:flex;align-items:center;gap:8px">${countByPid[pr.pid] ? `<span style="font-family:var(--mono);font-size:9.5px;color:#3d6e4a">✓ ${countByPid[pr.pid]} today</span>` : ''}<span style="color:#c44a2c;font-size:18px">→</span></span>
+        </button>`).join('')}
+      </div></div>` : `<div class="sp-card"><div class="sp-card-body"><p style="font-family:var(--mono);font-size:12px;color:#8a857a">No active jobs on this link yet — ask the office.</p></div></div>`}
+      <div class="after" style="text-align:center">One link · every job · NOVANTU</div>
+    `);
+  }
 
   if (v.step === 'done') {
     return shell(`<div class="sp-result">${kicker}
@@ -8492,9 +8530,9 @@ function buildWorkerPortal() {
   return shell(`
     ${kicker}
     <h1 class="sp-h1">Today on the job</h1>
-    <div class="sp-meta"><b>${esc(projName)}</b><span class="sep">·</span>${esc(today)}</div>
+    <div class="sp-meta"><b>${esc(projName)}</b><span class="sep">·</span>${esc(today)}${isWorkspace ? `<span class="sep">·</span><button onclick="workerChangeProject()" style="background:none;border:none;color:#c44a2c;font-family:var(--mono);font-size:11px;cursor:pointer;padding:0;text-decoration:underline">change job</button>` : ''}</div>
 
-    ${reported.length ? `<div style="font-family:var(--mono);font-size:10px;color:#8a857a;margin:-6px 0 14px">Already reported today: ${reported.map(r => esc(r.worker_name || '')).filter(Boolean).join(', ')}</div>` : ''}
+    ${(() => { const names = reported.filter(r => !isWorkspace || r.pid === v.pickedPid).map(r => esc(r.worker_name || '')).filter(Boolean); return names.length ? `<div style="font-family:var(--mono);font-size:10px;color:#8a857a;margin:-6px 0 14px">Already reported today: ${names.join(', ')}</div>` : ''; })()}
 
     <div class="sp-card">
       <div class="sp-card-head"><span class="modal-label">Your report</span><span class="modal-label" style="color:var(--fg-4)">2 MINUTES · NO ACCOUNT</span></div>
@@ -8551,6 +8589,43 @@ async function workerPortalLink(pid) {
   const link = window.location.origin + window.location.pathname + '#worker/' + token;
   try { await navigator.clipboard.writeText(link); showToast('Worker link copied — share it with the crew (WhatsApp works great).', 'success'); }
   catch (_e) { prompt('Copy the worker link:', link); }
+}
+
+// ── ONE universal crew link for the whole company ────────────────────────────
+// The office shares a SINGLE workspace-level link; the worker opens it, picks
+// the job from a list, and reports. Entries carry the chosen pid, so every
+// per-project inbox keeps working. The pickable-project snapshot is refreshed
+// on the token row each time this runs, so new jobs appear automatically.
+function crewProjectSnapshot() {
+  return allProjects()
+    .filter(p => !(ST.overrides[p.id]?._archived))
+    .map(p => ({ pid: p.id, name: (p.name || p.id).slice(0, 90) }));
+}
+async function crewPortalLink() {
+  if (!sb || !AUTH.session || !ST.activeWorkspace) { showToast('Sign in first.', 'warn'); return; }
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  const wsName = (ST.workspaces?.[ST.activeWorkspace]?.name) || (getSettings().brand?.wordmark) || 'Crew';
+  const projects = crewProjectSnapshot();
+  if (!projects.length) { showToast('Create a project first, then share the crew link.', 'warn'); return; }
+  let token = ST.settings._crewToken;
+  try {
+    if (!token) {
+      token = 'c_' + Math.random().toString(36).slice(2, 12);
+      const { error } = await sb.from('worker_log_tokens').insert({ token, workspace_id: ST.activeWorkspace, pid: null, kind: 'workspace', project_name: wsName, projects });
+      if (error) throw error;
+      ST.settings._crewToken = token; saveSt();
+    } else {
+      // Refresh the pickable-project snapshot so new/renamed jobs show up.
+      const { error } = await sb.from('worker_log_tokens').update({ projects, project_name: wsName }).eq('token', token);
+      if (error) throw error;
+    }
+  } catch (e) {
+    showToast('Could not create the crew link — deploy the worker-portal backend update first (see activation steps). ' + (e.message || ''), 'error');
+    return;
+  }
+  const link = window.location.origin + window.location.pathname + '#worker/' + token;
+  try { await navigator.clipboard.writeText(link); showToast(`Crew link copied — one link for all ${projects.length} job${projects.length===1?'':'s'}. Share it once (WhatsApp/QR); the crew picks the job each day.`, 'success'); }
+  catch (_e) { prompt('Copy the crew link (one for all jobs):', link); }
 }
 
 async function workerInboxLoad(pid, force) {
@@ -17597,6 +17672,7 @@ function dlogSaveEntry() {
   const work = document.getElementById('dlog-work')?.value.trim() || '';
   const issues = document.getElementById('dlog-issues')?.value.trim() || '';
   const notes = document.getElementById('dlog-notes')?.value.trim() || '';
+  const clientVisible = document.getElementById('dlog-visible') ? document.getElementById('dlog-visible').checked : true;
 
   if (!date) { showToast('Date is required.', 'warn'); return; }
   if (!work && !notes && !issues) { showToast('Add at least some work, issues, or notes.', 'warn'); return; }
@@ -17605,9 +17681,9 @@ function dlogSaveEntry() {
 
   if (m.logId) {
     const entry = logs.find(l => l.id === m.logId);
-    if (entry) Object.assign(entry, { date, weather, tempF, crew, hours, work, issues, notes, photos });
+    if (entry) Object.assign(entry, { date, weather, tempF, crew, hours, work, issues, notes, photos, clientVisible });
   } else {
-    logs.push({ id: dlogGenId(), date, weather, tempF, crew, hours, work, issues, notes, photos });
+    logs.push({ id: dlogGenId(), date, weather, tempF, crew, hours, work, issues, notes, photos, clientVisible });
   }
   saveSt();
   ST.dailyLogModal = null;
@@ -17643,19 +17719,21 @@ function buildDailyLogTab() {
       </div>
       <div style="flex:1"></div>
       <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">${logs.length} ${logs.length===1?'entry':'entries'}</span>
-      <button class="btn btn-ghost btn-sm" onclick="workerPortalLink('${p.id}')" title="Create/copy the link where your crew reports the day — photos, voice-to-text or typing. No account needed.">👷 Worker portal</button>
+      <button class="btn btn-ghost btn-sm" onclick="crewPortalLink()" title="ONE link for your whole crew, across every job. They open it, pick today's project, and report — photos, voice-to-text or typing. No account needed. Share it once (WhatsApp / QR on the truck).">👷 Crew portal · one link</button>
       <button class="btn btn-ghost btn-sm" onclick="clientUpdateOpen('${p.id}')" title="AI drafts a client-friendly progress update from this week's logs + schedule">▤ Client update</button>
       <button class="btn btn-amber btn-sm" onclick="dlogOpenModal('${p.id}',null)">+ New entry</button>
     </div>
 
     ${(() => {
-      // Worker reports inbox — auto-pull once when this project has a crew link.
-      if (ST.overrides[p.id]?._workerToken && !(ST.workerInbox && ST.workerInbox[p.id])) {
+      // Worker reports inbox — reads by pid, so it works for BOTH the universal
+      // crew link and any legacy per-project link. Auto-pull once if the crew
+      // link exists or this project ever had its own link.
+      const hasCrew = !!(getSettings()._crewToken) || !!ST.overrides[p.id]?._workerToken;
+      if (hasCrew && !(ST.workerInbox && ST.workerInbox[p.id])) {
         setTimeout(() => workerInboxLoad(p.id), 60);
       }
       const wi = ST.workerInbox && ST.workerInbox[p.id];
       const n = wi && wi.entries ? wi.entries.length : 0;
-      if (!ST.overrides[p.id]?._workerToken && !n) return '';
       if (!n) return '';
       const names = [...new Set(wi.entries.map(e => e.worker_name).filter(Boolean))].slice(0, 6).join(', ');
       return `<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r2);padding:10px 14px;margin-bottom:14px">
@@ -17689,7 +17767,8 @@ function dlogRenderCard(pid, l) {
           ${l.hours ? `<span class="dlog-tag">${l.hours} hrs</span>` : ''}
         </div>
       </div>
-      <div style="display:flex;gap:6px;flex-shrink:0">
+      <div style="display:flex;gap:6px;flex-shrink:0;align-items:center">
+        ${(() => { const vis = l.clientVisible !== false; return `<button class="dlog-icon-btn" onclick="dlogToggleVisible('${pid}','${l.id}')" title="${vis ? 'Visible to the client — click to keep internal-only' : 'Internal only — click to show the client'}" style="width:auto;padding:0 8px;font-family:var(--mono);font-size:9px;letter-spacing:.04em;color:${vis ? 'var(--green)' : 'var(--text3)'};border-color:${vis ? 'var(--green)' : 'var(--border)'}">${vis ? '◉ client' : '○ internal'}</button>`; })()}
         <button class="dlog-icon-btn" onclick="dlogOpenModal('${pid}','${l.id}')" title="Edit">✎</button>
         <button class="dlog-icon-btn" onclick="dlogDeleteEntry('${pid}','${l.id}')" title="Delete">✕</button>
       </div>
@@ -17699,6 +17778,15 @@ function dlogRenderCard(pid, l) {
     ${l.notes ? `<div class="dlog-section"><div class="dlog-section-label">Notes</div><div class="dlog-section-body">${esc(l.notes)}</div></div>` : ''}
     ${photos.length ? `<div class="dlog-photos">${photos.map((src,i) => `<img src="${src}" class="dlog-photo" onclick="dlogViewPhoto('${pid}','${l.id}',${i})" alt="site photo">`).join('')}</div>` : ''}
   </div>`;
+}
+
+// Quick inline flip of a log's client visibility (no modal).
+function dlogToggleVisible(pid, logId) {
+  const entry = dlogGet(pid).find(l => l.id === logId);
+  if (!entry) return;
+  entry.clientVisible = (entry.clientVisible === false);  // undefined/true → false; false → true
+  saveSt(); render();
+  showToast(entry.clientVisible ? 'This day is now visible in the client portal.' : 'This day is now internal-only.', 'info');
 }
 
 // Lightbox view (reuses a simple overlay)
@@ -17780,6 +17868,14 @@ function buildDailyLogModal() {
           </label>` : ''}
       </div>
       <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin:6px 0 14px">Photos are compressed and stored with the entry. Max ${DLOG_MAX_PHOTOS}.</div>
+
+      <label style="display:flex;gap:10px;align-items:flex-start;background:var(--bg1);border:1px solid var(--border);border-radius:var(--r2);padding:11px 13px;margin-bottom:14px;cursor:pointer">
+        <input type="checkbox" id="dlog-visible" ${(l.clientVisible !== false) ? 'checked' : ''} style="margin-top:2px;accent-color:var(--amber)">
+        <span>
+          <span style="font-size:12.5px;color:var(--ink-900);font-weight:600">Show this day in the client portal</span>
+          <span style="display:block;font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:2px">The client sees the date, weather, crew and <b>Work performed + photos</b>. Delays/issues and internal notes are <b>never</b> shown to the client.</span>
+        </span>
+      </label>
 
       <div style="display:flex;gap:8px">
         ${editing ? `<button class="btn btn-ghost btn-sm" style="margin-right:auto;color:var(--red)" onclick="dlogCloseModal();dlogDeleteEntry('${m.pid}','${m.logId}')">Delete</button>` : ''}
@@ -18785,6 +18881,37 @@ function schedScopeItems(pid) {
   return out;
 }
 
+// Learn this shop's typical phase durations from its OWN past schedules —
+// deterministic, 0 AI tokens, no new stored state. Completed tasks (progress
+// 100 = real finished work) win over merely-planned ones. As jobs accumulate,
+// these averages become specific to how THIS shop actually builds.
+function schedHistoryStats(excludePid) {
+  const byPhase = {};
+  const sch = ST.schedule || {};
+  for (const pid of Object.keys(sch)) {
+    if (pid === excludePid) continue;                 // don't feed a project its own tasks
+    const s = sch[pid]; if (!s || !Array.isArray(s.tasks)) continue;
+    const pn = {}; (s.phases || []).forEach(ph => { pn[ph.id] = ph.name; });
+    for (const t of s.tasks) {
+      const a = schedParseDate(t.start), b = schedParseDate(t.end);
+      if (!a || !b) continue;
+      const days = schedDaysBetween(a, b) + 1;         // inclusive
+      if (!(days >= 1 && days <= 400)) continue;
+      const label = (pn[t.phaseId] || 'General').trim() || 'General';
+      const key = label.toLowerCase();
+      if (!byPhase[key]) byPhase[key] = { label, all: [], done: [] };
+      byPhase[key].all.push(days);
+      if (Number(t.progress) >= 100) byPhase[key].done.push(days);
+    }
+  }
+  const avg = arr => arr.length ? Math.round(arr.reduce((x, y) => x + y, 0) / arr.length) : 0;
+  return Object.values(byPhase)
+    .map(v => ({ phase: v.label, nAll: v.all.length, avgAll: avg(v.all), nDone: v.done.length, avgDone: avg(v.done) }))
+    .filter(v => v.nAll >= 2 || v.nDone >= 1)          // enough signal to be worth citing
+    .sort((x, y) => (y.nDone - x.nDone) || (y.nAll - x.nAll))
+    .slice(0, 14);
+}
+
 async function schedProposeAI(pid, extraNotes) {
   if (ST.schedAILoading) return;
   if (typeof trialGuardAI === 'function' && !trialGuardAI()) return;
@@ -18794,20 +18921,31 @@ async function schedProposeAI(pid, extraNotes) {
   const projectType = (ST.estimator && ST.estimator[pid] && ST.estimator[pid].setup && ST.estimator[pid].setup.projectType) || '';
   const scopeText = scope.map(s => `- ${s.group}${s.items.length ? ': ' + s.items.join(', ') : ''}`).join('\n');
 
+  const hist = schedHistoryStats(pid);
+  const histText = hist.length ? `
+YOUR HISTORICAL DURATIONS — how long these phases have run on this shop's past jobs. CALIBRATE the matching phases toward these figures (they beat generic rules of thumb); use your own realistic estimate only where there's no match:
+${hist.map(h => {
+    const useDone = h.nDone >= 2;
+    const d = useDone ? h.avgDone : h.avgAll;
+    const n = useDone ? h.nDone : h.nAll;
+    return `- ${h.phase}: ~${d} day(s) typical (${n} ${useDone ? 'completed' : 'scheduled'} task${n === 1 ? '' : 's'} on record)`;
+  }).join('\n')}
+` : '';
+
   const prompt = `You are a senior construction scheduler. Build a realistic construction schedule (for a Gantt chart) for this project, in CORRECT construction sequence.
 
 PROJECT: ${p.name}
 PROJECT TYPE: ${projectType || '(infer it from the scope)'}
 SCOPE — cost codes / line items in this estimate:
 ${scopeText}
-${extraNotes ? `
+${histText}${extraNotes ? `
 USER GUIDANCE — respect this when sequencing and sizing the schedule:
 ${String(extraNotes).slice(0, 600)}
 ` : ''}
 Rules:
 - Order tasks in REAL construction sequence. If any demolition scope exists, Demolition is the FIRST phase. Typical order: Mobilization/Permits → Demolition → Site/Earthwork → Foundation/Concrete → Structure/Framing → Roofing/Envelope/Waterproofing → Rough MEP (plumbing, HVAC, electrical) → Insulation → Drywall → Finishes (paint, tile, flooring, cabinets, doors) → Fixtures/Trim → Punch list & Final inspection.
 - Only include phases/tasks the scope actually needs — but you MAY add obvious prerequisites (permits, mobilization) and a final inspection/punch list.
-- Each task: a realistic duration in WORKING days and a list of the tasks it depends on (by EXACT task name).
+- Each task: a realistic duration in WORKING days and a list of the tasks it depends on (by EXACT task name).${hist.length ? `\n- Where a phase matches YOUR HISTORICAL DURATIONS above, size its tasks so the phase total lands near that figure.` : ''}
 - Identify the project type.
 
 Return STRICT JSON ONLY (no prose, no code fences):
@@ -18833,7 +18971,7 @@ Return STRICT JSON ONLY (no prose, no code fences):
       if (tasks.length) phases.push({ name: String(ph.name).slice(0, 60), tasks });
     }
     if (!phases.length) throw new Error('The AI did not return usable phases.');
-    ST.schedAIProposal = { pid, projectType: (parsed.projectType || projectType || '').toString(), notes: (parsed.notes || '').toString(), phases, startDate: schedFmtISO(schedToday()) };
+    ST.schedAIProposal = { pid, projectType: (parsed.projectType || projectType || '').toString(), notes: (parsed.notes || '').toString(), phases, startDate: schedFmtISO(schedToday()), calibratedPhases: hist.length };
   } catch (err) {
     showToast('AI schedule failed: ' + (err.message || err), 'error');
   } finally {
@@ -18895,6 +19033,7 @@ function buildSchedAIReviewModal() {
     <div class="modal modal-wide" style="max-width:640px" onclick="event.stopPropagation()">
       <div class="modal-title">✦ AI construction schedule</div>
       <div class="modal-sub">${esc(p.name)}${d.projectType?` · ${esc(d.projectType)}`:''} · ${d.phases.length} phase${d.phases.length===1?'':'s'} · ${totalTasks} task${totalTasks===1?'':'s'}</div>
+      ${d.calibratedPhases ? `<div style="display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10px;color:var(--green);background:var(--green-bg,#e2eddf);border:1px solid var(--green);border-radius:20px;padding:3px 11px;margin-top:8px">◉ Calibrated on your past jobs — ${d.calibratedPhases} phase${d.calibratedPhases===1?'':'s'} matched</div>` : ''}
       ${d.notes ? `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;margin:12px 0;line-height:1.5">${esc(d.notes)}</div>` : ''}
 
       <div style="display:flex;align-items:center;gap:10px;margin:8px 0 12px">
@@ -21706,7 +21845,7 @@ function ownerTokenDefaults() {
   return {
     viewCount: 0,
     viewHistory: [],
-    privacy: { showPricing: true, showFiles: true, showCOs: true },
+    privacy: { showPricing: true, showFiles: true, showCOs: true, showProgress: true },
     ownerNotes: [],
     revoked: false,
   };
@@ -21752,12 +21891,29 @@ function ownerPortalStatus(pid) {
   return { token: tok.token, viewCount: tok.viewCount || 0, lastSeen, ago, createdTs: tok.createdTs };
 }
 
+// Lightweight full-screen photo zoom for the client portal (its own overlay,
+// so it doesn't depend on the office render loop).
+function ownerPhotoZoom(img) {
+  if (!img || !img.src) return;
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(20,18,15,.92);display:flex;align-items:center;justify-content:center;padding:24px;cursor:zoom-out';
+  const big = document.createElement('img');
+  big.src = img.src;
+  big.style.cssText = 'max-width:100%;max-height:100%;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5)';
+  ov.appendChild(big);
+  ov.addEventListener('click', () => ov.remove());
+  document.body.appendChild(ov);
+}
+
 function ownerTogglePrivacy(pid, key) {
   const tok = ownerGetToken(pid);
   if (!tok) return;
   const t = ST.ownerPortalTokens[tok.token];
   ownerEnsureTokenShape(tok.token);
-  t.privacy[key] = !t.privacy[key];
+  // showProgress defaults to ON when absent, so flip its EFFECTIVE value (a bare
+  // !undefined would make the first click a no-op).
+  const cur = (key === 'showProgress') ? (t.privacy[key] !== false) : !!t.privacy[key];
+  t.privacy[key] = !cur;
   saveSt(); render();
 }
 
@@ -21814,7 +21970,7 @@ function buildClientShareSectionV2(p) {
   }
 
   const tok = ST.ownerPortalTokens[status.token];
-  const priv = tok.privacy || { showPricing: true, showFiles: true, showCOs: true };
+  const priv = tok.privacy || { showPricing: true, showFiles: true, showCOs: true, showProgress: true };
   const noteCount = (tok.ownerNotes || []).length;
 
   return `<div style="padding:14px 20px 0">
@@ -21857,6 +22013,10 @@ function buildClientShareSectionV2(p) {
           <label class="owner-priv-tog">
             <input type="checkbox" ${priv.showFiles?'checked':''} onchange="ownerTogglePrivacy('${p.id}','showFiles')">
             <span>Documents</span>
+          </label>
+          <label class="owner-priv-tog">
+            <input type="checkbox" ${priv.showProgress!==false?'checked':''} onchange="ownerTogglePrivacy('${p.id}','showProgress')">
+            <span>Progress updates</span>
           </label>
         </div>
       </div>
@@ -21906,7 +22066,7 @@ function buildOwnerPortalV2() {
   const proj = allProjects().find(p => p.id === tok.pid);
   if (!proj) return ownerPortalErrorPage('Project not found.');
 
-  const priv = tok.privacy || { showPricing: true, showFiles: true, showCOs: true };
+  const priv = tok.privacy || { showPricing: true, showFiles: true, showCOs: true, showProgress: true };
   const brand = getSettings().brand || {};
   const pi = getSettings().print || {};
   const dueDate = ST.overrides[proj.id]?._dueDate || proj.dl || '';
@@ -22048,6 +22208,37 @@ function buildOwnerPortalV2() {
           `).join('')}
         </section>
       ` : ''}
+
+      ${(() => {
+        // Progress — the client-visible daily logs. ONLY date/weather/crew +
+        // Work performed + photos ever cross to the client; issues & internal
+        // notes are excluded structurally (not just hidden by CSS).
+        if (priv.showProgress === false) return '';
+        const vlogs = (typeof dlogGet === 'function' ? dlogGet(proj.id) : [])
+          .filter(l => l.clientVisible !== false && ((l.work && l.work.trim()) || (l.photos && l.photos.length)))
+          .slice().sort((a,b) => (b.date||'').localeCompare(a.date||''))
+          .slice(0, 12);
+        if (!vlogs.length) return '';
+        return `<section class="owner-section owner-progress">
+          <div class="owner-section-head">
+            <div class="owner-section-title">Progress</div>
+            <div class="owner-section-count">${vlogs.length} update${vlogs.length===1?'':'s'}</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:14px">
+            ${vlogs.map(l => `<div style="border:1px solid var(--owner-line,#e4ddcf);border-radius:10px;padding:13px 15px;background:var(--owner-card,#fff)">
+              <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">
+                <div style="font-weight:700;font-size:14px;color:var(--owner-ink,#26231c)">${esc(dlogFmtDate(l.date))}</div>
+                <div style="font-family:var(--mono);font-size:10px;color:var(--owner-ink3,#8a8574);display:flex;gap:8px;flex-wrap:wrap">
+                  ${l.weather ? `<span>${esc(l.weather)}${l.tempF?` · ${esc(l.tempF)}°F`:''}</span>` : ''}
+                  ${l.crew ? `<span>${l.crew} crew</span>` : ''}
+                </div>
+              </div>
+              ${l.work ? `<div style="font-size:13.5px;line-height:1.55;color:var(--owner-ink2,#4a453a);margin-top:7px">${esc(l.work)}</div>` : ''}
+              ${(l.photos&&l.photos.length) ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:11px">${l.photos.map(src => `<img src="${src}" alt="site photo" style="width:92px;height:92px;object-fit:cover;border-radius:8px;border:1px solid var(--owner-line,#e4ddcf);cursor:zoom-in" onclick="ownerPhotoZoom(this)">`).join('')}</div>` : ''}
+            </div>`).join('')}
+          </div>
+        </section>`;
+      })()}
 
       <!-- Owner note input -->
       <section class="owner-section owner-notes">
