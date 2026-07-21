@@ -4318,6 +4318,16 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // Storage bucket for bid PDFs — change here if your bucket has a different name
 const BID_PDF_BUCKET = 'bid-pdfs';
 
+// Headers for calls to the AI edge function (ask-ai). It now REQUIRES a real
+// user session server-side (so a leaked anon key can't burn the Anthropic bill),
+// so we send the logged-in user's access token as Authorization while keeping
+// the anon key as `apikey` for the Supabase gateway. Falls back to anon when
+// there's no session (those calls are rejected server-side by design).
+function aiEdgeHeaders() {
+  const tok = (typeof AUTH !== 'undefined' && AUTH.session && AUTH.session.access_token) ? AUTH.session.access_token : SUPABASE_ANON_KEY;
+  return { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${tok}` };
+}
+
 // ============================================================
 // SUBSCRIPTION CONFIG  — EDIT HERE WHEN YOU HAVE YOUR PAYMENT LINK
 // ============================================================
@@ -12589,7 +12599,7 @@ async function runBidLeveling(pid, projName, cat) {
 
     const res = await fetch(`${SUPABASE_URL}/functions/v1/level-bids`, {
       method: 'POST',
-      headers: { 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON_KEY}` },
+      headers: aiEdgeHeaders(),
       body: JSON.stringify({ category: cat, projectName: projName, bids: payloadBids }),
     });
     const data = await res.json();
@@ -13689,10 +13699,7 @@ async function estSendMessage(pid) {
   try {
     const res = await fetch(EDGE_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-      },
+      headers: aiEdgeHeaders(),
       body: JSON.stringify({
         projectContext: estBuildContext(pid),
         messages,
@@ -13786,7 +13793,7 @@ async function aiCompleteText(pid, userPrompt, planImages, opts) {
   if (Array.isArray(planImages) && planImages.length) body.planImages = planImages;
   const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+    headers: aiEdgeHeaders(),
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -16248,7 +16255,7 @@ async function toFinalizePolygon(pid) {
     const e = getEstProj(pid);
     const res = await fetch(`${SUPABASE_URL}/functions/v1/analyze-plan`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+      headers: aiEdgeHeaders(),
       body: JSON.stringify({
         mode: 'identify',
         imageBase64,
@@ -16647,7 +16654,7 @@ async function toRunAITakeoff(pid) {
 
     const res = await fetch(`${SUPABASE_URL}/functions/v1/analyze-plan`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+      headers: aiEdgeHeaders(),
       body: JSON.stringify({
         mode: 'extract-markups',
         takeoffType: typeId,
@@ -17941,7 +17948,7 @@ async function runClientUpdate(pid, days) {
   try {
     const res = await fetch(`${SUPABASE_URL}/functions/v1/client-update`, {
       method:'POST',
-      headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON_KEY}` },
+      headers: aiEdgeHeaders(),
       body: JSON.stringify({
         projectName: projName,
         companyName: wsName,
@@ -18471,7 +18478,7 @@ function rfiRenderRow(r) {
 async function aiComplete(messages, projectContext) {
   const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+    headers: aiEdgeHeaders(),
     body: JSON.stringify({ projectContext: projectContext || {}, messages }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -21633,10 +21640,7 @@ Keep the body under 200 words. Be specific about WHAT needs clarification and WH
   try {
     const res = await fetch(EDGE_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-      },
+      headers: aiEdgeHeaders(),
       body: JSON.stringify({
         // Lean context — the RFI prompt above already carries the item, note and
         // setup; the price list / review list would be dead tokens here.
@@ -23419,7 +23423,7 @@ async function readPlansForProject(pid, opts = {}) {
 
     const res = await fetch(`${SUPABASE_URL}/functions/v1/analyze-plan`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` },
+      headers: aiEdgeHeaders(),
       body: JSON.stringify({
         mode: 'read-plans',
         images,
@@ -23564,7 +23568,7 @@ async function runPlanDiff(pid) {
 
     const res = await fetch(`${SUPABASE_URL}/functions/v1/diff-plans`, {
       method:'POST',
-      headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${SUPABASE_ANON_KEY}` },
+      headers: aiEdgeHeaders(),
       body: JSON.stringify({
         oldPlan: { name: oldPlan.name, discipline: oldPlan.discipline, pdfBase64: oldB64 },
         newPlan: { name: newPlan.name, discipline: newPlan.discipline, pdfBase64: newB64 },
