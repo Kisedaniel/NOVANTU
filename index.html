@@ -3418,6 +3418,23 @@ a:hover{opacity:.7}
 .sp-planset .tx b{font-size:14px;font-weight:600;color:var(--ink-900);letter-spacing:-0.01em}
 .sp-planset .tx span{font-family:var(--font-mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-3)}
 .sp-planset .go{font-family:var(--font-mono);font-size:18px;color:var(--accent);flex:0 0 auto}
+/* ── crew portal: job picker + optional jobsite fields ─────────────────────── */
+.sp-job{display:flex;align-items:center;gap:14px;width:100%;text-align:left;border:1px solid var(--rule);background:var(--bone-50);padding:14px 16px;cursor:pointer;font-family:var(--font-sans);transition:background var(--dur) var(--ease),border-color var(--dur) var(--ease)}
+.sp-job+.sp-job{margin-top:8px}
+.sp-job:hover{background:var(--bone-100);border-color:var(--accent)}
+.sp-job .ic{width:30px;height:30px;flex:0 0 30px;background:var(--ink-900);color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:12px;font-weight:700}
+.sp-job:hover .ic{background:var(--accent)}
+.sp-job .tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.sp-job .tx b{font-size:15px;font-weight:600;color:var(--ink-900);letter-spacing:-0.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sp-job .tx span{font-family:var(--font-mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-3)}
+.sp-job .tx span.on{color:var(--ok,#3d6e4a)}
+.sp-job .go{font-family:var(--font-mono);font-size:18px;color:var(--accent);flex:0 0 auto}
+.wk-optgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+@media(max-width:420px){.wk-optgrid{grid-template-columns:repeat(2,1fr)}}
+.wk-chips{display:flex;flex-wrap:wrap;gap:6px}
+.wk-chip{font-family:var(--font-mono);font-size:11px;letter-spacing:.04em;padding:7px 12px;border:1px solid var(--rule);background:var(--bone-50);color:var(--fg-2);cursor:pointer;transition:all var(--dur) var(--ease)}
+.wk-chip:hover{border-color:var(--accent)}
+.wk-chip.on{background:var(--ink-900);border-color:var(--ink-900);color:#fff}
 /* inputs (scoped) */
 .sp-page .minp,.sp-page .msel{width:100%;border:1px solid var(--rule);border-radius:var(--r-0);padding:9px 12px;font-size:13px;font-family:var(--font-sans);background:var(--bone-50);color:var(--ink-900);outline:none;transition:border-color var(--dur) var(--ease)}
 .sp-page .msel{cursor:pointer;font-family:var(--font-mono);font-size:12px;letter-spacing:.01em}
@@ -8448,6 +8465,13 @@ function workerRemovePhoto(i) {
   d.photos.splice(i, 1); render();
 }
 
+// Weather chips are a toggle — tapping the active one clears it (all optional).
+function workerSetWeather(w) {
+  ST.workerDraft = ST.workerDraft || { photos: [] };
+  ST.workerDraft.weather = (ST.workerDraft.weather === w) ? '' : w;
+  render();
+}
+
 async function workerSubmit() {
   const v = ST.workerPortalView; if (!v || ST.workerSubmitting) return;
   const d = ST.workerDraft = ST.workerDraft || { photos: [] };
@@ -8468,11 +8492,22 @@ async function workerSubmit() {
         text: d.text,
         photos: (d.photos || []).map((b64, i) => ({ base64: b64, name: 'photo_' + (i + 1) + '.jpg' })),
         pid: v.pickedPid || undefined,   // universal crew link → the job the worker picked
+        // Optional jobsite conditions — sent only when the crew filled them in.
+        weather: d.weather || '', tempF: d.tempF || '', hours: d.hours || '', crewSize: d.crewSize || '',
       }),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || 'failed');
-    ST.workerDraft = { name: d.name, text: '', photos: [], lang: d.lang }; // keep the name for tomorrow
+    // The server uploads photos best-effort. If it saved fewer than we sent,
+    // tell the worker instead of pretending everything went through.
+    const sent = (d.photos || []).length;
+    const saved = Number(data.photosSaved || 0);
+    if (sent && saved < sent) {
+      showToast(`Your report was saved, but ${sent - saved} of ${sent} photo${sent === 1 ? '' : 's'} didn't upload. Tell the office.`, 'warn');
+    }
+    // Keep the name, language and today's conditions (weather/temp don't change
+    // between reports); clear what IS per-report.
+    ST.workerDraft = { name: d.name, text: '', photos: [], lang: d.lang, weather: d.weather, tempF: d.tempF };
     v.step = 'done';
     workerPortalLoad(v.token); // refresh "reported today"
   } catch (e) {
@@ -8517,12 +8552,18 @@ function buildWorkerPortal() {
       ${kicker}
       <h1 class="sp-h1">Which job today?</h1>
       <div class="sp-meta"><b>${esc(pd.workspace?.name || '')}</b><span class="sep">·</span>${esc(today)}</div>
-      ${projList.length ? `<div class="sp-card"><div class="sp-card-body" style="display:flex;flex-direction:column;gap:8px">
-        ${projList.map(pr => `<button onclick="workerPickProject('${esc(pr.pid)}', ${JSON.stringify(pr.name).replace(/"/g, '&quot;')})" style="display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:left;border:1px solid var(--line2,#c7bda4);border-radius:10px;padding:14px 16px;background:#fff;cursor:pointer;font-family:var(--sans);font-size:15px;font-weight:600;color:#181613">
-          <span>${esc(pr.name)}</span>
-          <span style="display:flex;align-items:center;gap:8px">${countByPid[pr.pid] ? `<span style="font-family:var(--mono);font-size:9.5px;color:#3d6e4a">✓ ${countByPid[pr.pid]} today</span>` : ''}<span style="color:#c44a2c;font-size:18px">→</span></span>
+      ${projList.length ? `<div class="sp-card">
+        <div class="sp-card-head"><span class="modal-label">Pick your job</span><span class="modal-label" style="color:var(--fg-4)">${projList.length} ACTIVE</span></div>
+        <div class="sp-card-body">
+        ${projList.map((pr, i) => `<button class="sp-job" onclick="workerPickProject('${esc(pr.pid)}', ${JSON.stringify(pr.name).replace(/"/g, '&quot;')})">
+          <span class="ic">${String(i + 1).padStart(2, '0')}</span>
+          <span class="tx">
+            <b>${esc(pr.name)}</b>
+            <span class="${countByPid[pr.pid] ? 'on' : ''}">${countByPid[pr.pid] ? `✓ ${countByPid[pr.pid]} reported today` : 'No reports yet today'}</span>
+          </span>
+          <span class="go">→</span>
         </button>`).join('')}
-      </div></div>` : `<div class="sp-card"><div class="sp-card-body"><p style="font-family:var(--mono);font-size:12px;color:#8a857a">No active jobs on this link yet — ask the office.</p></div></div>`}
+        </div></div>` : `<div class="sp-card"><div class="sp-card-body"><p style="font-family:var(--font-mono);font-size:12px;color:var(--fg-3)">No active jobs on this link yet — ask the office.</p></div></div>`}
       <div class="after" style="text-align:center">One link · every job · NOVANTU</div>
     `);
   }
@@ -8563,6 +8604,20 @@ function buildWorkerPortal() {
             </span>
             ${d.listening ? '<span style="font-family:var(--mono);font-size:10px;color:#c44a2c">● listening — talk normally, it types for you</span>' : ''}
           </div>` : ''}
+        </div>
+        <div>
+          <div class="modal-label" style="margin-bottom:5px">Conditions <span style="color:var(--fg-4)">· optional, fill what you want</span></div>
+          <div class="wk-chips" style="margin-bottom:9px">
+            ${['Sunny', 'Cloudy', 'Rain', 'Wind', 'Hot', 'Cold'].map(w => `<button type="button" class="wk-chip${d.weather === w ? ' on' : ''}" onclick="workerSetWeather('${w}')">${w}</button>`).join('')}
+          </div>
+          <div class="wk-optgrid">
+            <input id="wk-temp" class="minp" type="text" inputmode="numeric" value="${esc(d.tempF || '')}" placeholder="Temp °F"
+              oninput="ST.workerDraft=ST.workerDraft||{photos:[]};ST.workerDraft.tempF=this.value">
+            <input id="wk-hours" class="minp" type="text" inputmode="decimal" value="${esc(d.hours || '')}" placeholder="Hours worked"
+              oninput="ST.workerDraft=ST.workerDraft||{photos:[]};ST.workerDraft.hours=this.value">
+            <input id="wk-crew" class="minp" type="text" inputmode="numeric" value="${esc(d.crewSize || '')}" placeholder="# on site"
+              oninput="ST.workerDraft=ST.workerDraft||{photos:[]};ST.workerDraft.crewSize=this.value">
+          </div>
         </div>
         <div>
           <div class="modal-label" style="margin-bottom:5px">Photos · ${(d.photos || []).length}/3</div>
@@ -8658,6 +8713,33 @@ async function workerInboxLoad(pid, force) {
   }
 }
 
+// The office language the log should read in (master-set, see Settings).
+function dlogOfficeLang() { return (getSettings().language || 'en') === 'es' ? 'Spanish' : 'English'; }
+// Cheap, deterministic "is this the office language?" check — accents and
+// common Spanish function words. Only decides whether a TRANSLATION is needed,
+// so a false positive costs one AI action, never a wrong log.
+function dlogNeedsTranslation(text) {
+  const t = String(text || '').toLowerCase();
+  if (!t.trim()) return false;
+  const spanish = /[áéíóúñ¿¡]|\b(el|la|los|las|del|para|con|pero|hoy|mañana|ayer|terminamos|faltan|obra|trabajo|instal|hicimos|estamos|falta|piso|techo|pared|tubo|ducto)\b/;
+  const looksSpanish = spanish.test(t);
+  return (getSettings().language || 'en') === 'es' ? !looksSpanish : looksSpanish;
+}
+// Roll up the optional jobsite fields the crew filled in: first non-empty
+// weather/temp wins, hours are summed, crew size = max reported (or headcount).
+function dlogRollupConditions(dayEntries) {
+  const firstOf = (k) => (dayEntries.find(e => e[k] && String(e[k]).trim()) || {})[k] || '';
+  const hours = dayEntries.reduce((s, e) => s + (parseFloat(e.hours) || 0), 0);
+  const sizes = dayEntries.map(e => parseInt(e.crew_size)).filter(n => !isNaN(n) && n > 0);
+  const crewN = sizes.length ? Math.max(...sizes) : dayEntries.length;
+  return {
+    weather: firstOf('weather'),
+    tempF: String(firstOf('temp_f') || '').replace(/[^\d.-]/g, ''),
+    hours: hours > 0 ? String(Math.round(hours * 100) / 100) : '',
+    crewCount: crewN,
+  };
+}
+
 // Merge the day's worker reports into ONE reviewable daily-log entry. The core
 // rule: several workers describing the SAME work → it appears once.
 async function dlogCompileAI(pid) {
@@ -8668,9 +8750,12 @@ async function dlogCompileAI(pid) {
   const dates = [...new Set(entries.map(e => e.log_date))].sort();
   const date = dates[dates.length - 1];
   const dayEntries = entries.filter(e => e.log_date === date);
-  // Fast path — ONE report needs no merging: map it straight into the review
-  // modal without spending an AI action.
-  if (dayEntries.length === 1) {
+  const cond = dlogRollupConditions(dayEntries);
+  // The crew's own words, always preserved verbatim alongside the office version.
+  const original = dayEntries.map(e => `${e.worker_name || 'Worker'}: ${e.text || '(photo only)'}`).join('\n');
+  // Fast path — ONE report, already in the office language: map it straight into
+  // the review modal without spending an AI action.
+  if (dayEntries.length === 1 && !dlogNeedsTranslation(dayEntries[0].text)) {
     const e0 = dayEntries[0];
     ST.dlogCompile = {
       pid, date,
@@ -8679,6 +8764,7 @@ async function dlogCompileAI(pid) {
       entryIds: [e0.id],
       photoPaths: (e0.photos || []).map(ph => ph && ph.path).filter(Boolean).slice(0, DLOG_MAX_PHOTOS),
       workerCount: 1,
+      original, translated: false, ...cond,
     };
     render();
     return;
@@ -8687,6 +8773,7 @@ async function dlogCompileAI(pid) {
   ST.dlogCompileLoading = pid; render();
   try {
     const reports = dayEntries.map(e => `— ${e.worker_name || 'Worker'}: ${(e.text || '(photo only)').replace(/\n/g, ' ')}`).join('\n');
+    const lang = dlogOfficeLang();
     const prompt = `You are consolidating field-worker reports into ONE daily construction log entry.
 
 DATE: ${date}
@@ -8694,13 +8781,14 @@ WORKER REPORTS (${dayEntries.length}):
 ${reports}
 
 Rules:
+- WRITE THE ENTIRE OUTPUT IN ${lang.toUpperCase()}. The crew may report in another language — translate their meaning into natural ${lang} jobsite English/Spanish as appropriate. Never mix languages in the output.
 - MERGE duplicates: when several workers describe the SAME work, say it ONCE — never repeat it per worker.
-- Keep every unique fact. Plain jobsite language, no fluff.
+- Keep every unique fact. Plain jobsite language, no fluff. Do NOT invent details that aren't in the reports.
 - Anything that sounds like a problem, delay or safety issue goes in "issues".
-- "crew" = the names of the workers who reported, comma-separated.
+- "crew" = the names of the workers who reported, comma-separated (keep names as written).
 
 Return STRICT JSON ONLY — no prose, no code fences:
-{"work":"what was done today (merged)","issues":"problems/delays, or empty string","notes":"anything else worth recording, or empty string","crew":"names"}`;
+{"work":"what was done today (merged, in ${lang})","issues":"problems/delays in ${lang}, or empty string","notes":"anything else worth recording in ${lang}, or empty string","crew":"names"}`;
     const text = await aiCompleteText(pid, prompt, null, { lean: true });
     const parsed = parseAIJson(text);
     if (!parsed || !parsed.work) throw new Error('Could not read the compiled log. Try again.');
@@ -8711,6 +8799,7 @@ Return STRICT JSON ONLY — no prose, no code fences:
       work: String(parsed.work || ''), issues: String(parsed.issues || ''), notes: String(parsed.notes || ''),
       crew: String(parsed.crew || dayEntries.map(e => e.worker_name).filter(Boolean).join(', ')),
       entryIds: dayEntries.map(e => e.id), photoPaths, workerCount: dayEntries.length,
+      original, translated: true, ...cond,
     };
   } catch (err) {
     showToast('Compile failed: ' + (err.message || err), 'error');
@@ -8725,16 +8814,22 @@ async function dlogCompileApply(pid) {
   c.issues = document.getElementById('dlc-issues')?.value ?? c.issues;
   c.notes = document.getElementById('dlc-notes')?.value ?? c.notes;
   c.crew = document.getElementById('dlc-crew')?.value ?? c.crew;
+  c.weather = document.getElementById('dlc-weather')?.value ?? c.weather;
+  c.tempF = document.getElementById('dlc-temp')?.value ?? c.tempF;
+  c.hours = document.getElementById('dlc-hours')?.value ?? c.hours;
+  const _cn = document.getElementById('dlc-crewn')?.value;
+  if (_cn !== undefined) c.crewCount = parseInt(_cn) || 0;
   ST.dlogCompileSaving = true; render();
   // Pull up to 3 worker photos from Storage → compressed base64 (the Daily Log
   // stores photos inline). Best-effort: a failed photo never blocks the entry.
   const photos = [];
+  const photoErrors = [];
   for (const path of (c.photoPaths || []).slice(0, DLOG_MAX_PHOTOS)) {
     try {
       const { data, error } = await sb.storage.from(PLAN_PDF_BUCKET).createSignedUrl(path, 600);
-      if (error) throw error;
+      if (error) throw new Error('storage link: ' + (error.message || error));
       const resp = await fetch(data.signedUrl);
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      if (!resp.ok) throw new Error('download HTTP ' + resp.status);
       const blob = await resp.blob();
       const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
       const small = await new Promise((res) => {
@@ -8749,15 +8844,29 @@ async function dlogCompileApply(pid) {
         img.onerror = () => res(null);
         img.src = b64;
       });
-      if (small) photos.push(small);
-    } catch (_e) { /* skip photo */ }
+      if (!small) throw new Error('image could not be decoded');
+      photos.push(small);
+    } catch (e) {
+      // NEVER swallow this silently — a vanishing photo used to look like a bug
+      // in the worker portal. Surface it with the real reason.
+      photoErrors.push(`${path.split('/').pop()}: ${e.message || e}`);
+      console.warn('Daily log photo failed:', path, e);
+    }
   }
   const list = dlogGet(pid);
   list.push({
-    id: dlogGenId(), date: c.date, weather: '', tempF: '', crew: c.crew, hours: '',
+    id: dlogGenId(), date: c.date,
+    // Conditions the crew filled in on the portal (all optional).
+    weather: c.weather || '', tempF: c.tempF || '', hours: c.hours || '',
+    // `crew` is the COUNT (same shape the manual log uses, so the card renders
+    // "3 crew"); the reporters' names live in crewNames.
+    crew: c.crewCount || 0,
+    crewNames: c.crew || '',
     work: c.work, issues: c.issues,
-    notes: (c.notes || '') + (c.workerCount ? `${c.notes ? '\n' : ''}(Compiled from ${c.workerCount} worker report${c.workerCount === 1 ? '' : 's'})` : ''),
+    notes: (c.notes || '') + (c.workerCount ? `${c.notes ? '\n' : ''}(Compiled from ${c.workerCount} worker report${c.workerCount === 1 ? '' : 's'}${c.translated ? ', translated' : ''})` : ''),
     photos,
+    // The crew's own words, verbatim — never overwritten by the office version.
+    workerOriginal: c.original || '',
   });
   try { await sb.from('worker_log_entries').update({ used: true }).in('id', c.entryIds); } catch (_e) { console.warn('could not mark worker entries used'); }
   if (ST.workerInbox && ST.workerInbox[pid]) ST.workerInbox[pid].entries = (ST.workerInbox[pid].entries || []).filter(e => !c.entryIds.includes(e.id));
@@ -8765,7 +8874,11 @@ async function dlogCompileApply(pid) {
   ST.dlogCompileSaving = false;
   ST.dailyLogSelProj = pid;
   saveSt(); render();
-  showToast('Daily log entry created from the worker reports.', 'success');
+  if (photoErrors.length) {
+    showToast(`Log created, but ${photoErrors.length} photo${photoErrors.length === 1 ? '' : 's'} could not be attached — ${photoErrors[0]}. Check that the 'bid-pdfs' bucket allows image/jpeg.`, 'warn');
+  } else {
+    showToast(`Daily log entry created from the worker reports${photos.length ? ` · ${photos.length} photo${photos.length === 1 ? '' : 's'}` : ''}.`, 'success');
+  }
 }
 
 function buildDlogCompileModal() {
@@ -8781,8 +8894,22 @@ function buildDlogCompileModal() {
       <textarea id="dlc-issues" rows="2" class="minp" style="width:100%;box-sizing:border-box;font-size:12.5px;line-height:1.5;resize:vertical">${esc(c.issues)}</textarea>
       <div class="modal-label">Notes</div>
       <textarea id="dlc-notes" rows="2" class="minp" style="width:100%;box-sizing:border-box;font-size:12.5px;line-height:1.5;resize:vertical">${esc(c.notes)}</textarea>
-      <div class="modal-label">Crew</div>
+      <div class="modal-label">Crew — who reported</div>
       <input id="dlc-crew" type="text" class="modal-input" value="${esc(c.crew)}">
+
+      <div class="modal-label" style="margin-top:12px">Conditions <span style="color:var(--text3)">· from the crew's report, editable</span></div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+        <input id="dlc-weather" type="text" class="modal-input" style="margin:0" value="${esc(c.weather || '')}" placeholder="Weather">
+        <input id="dlc-temp" type="text" class="modal-input" style="margin:0" value="${esc(c.tempF || '')}" placeholder="Temp °F">
+        <input id="dlc-hours" type="text" class="modal-input" style="margin:0" value="${esc(c.hours || '')}" placeholder="Hours">
+        <input id="dlc-crewn" type="text" class="modal-input" style="margin:0" value="${esc(String(c.crewCount || ''))}" placeholder="# crew">
+      </div>
+
+      ${c.original ? `<details style="margin-top:12px">
+        <summary style="cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3)">${c.translated ? 'Translated for the office — see the crew\'s original words' : "The crew's original words"}</summary>
+        <div style="margin-top:7px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;font-size:12px;line-height:1.55;color:var(--text2);white-space:pre-wrap">${esc(c.original)}</div>
+      </details>` : ''}
+
       <div class="modal-btns" style="margin-top:14px">
         <button class="btn btn-ghost" onclick="ST.dlogCompile=null;render()">Discard</button>
         <button class="btn btn-amber" ${ST.dlogCompileSaving ? 'disabled' : ''} onclick="dlogCompileApply('${c.pid}')">${ST.dlogCompileSaving ? 'Saving…' : '✓ Add to Daily Log'}</button>
@@ -17772,6 +17899,7 @@ function dlogRenderCard(pid, l) {
           ${l.weather ? `<span class="dlog-tag">${esc(l.weather)}${l.tempF?` · ${esc(l.tempF)}°F`:''}</span>` : ''}
           ${l.crew ? `<span class="dlog-tag">${l.crew} crew</span>` : ''}
           ${l.hours ? `<span class="dlog-tag">${l.hours} hrs</span>` : ''}
+          ${l.crewNames ? `<span class="dlog-tag" title="Who reported">${esc(l.crewNames)}</span>` : ''}
         </div>
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;align-items:center">
@@ -17783,6 +17911,7 @@ function dlogRenderCard(pid, l) {
     ${l.work ? `<div class="dlog-section"><div class="dlog-section-label">Work performed</div><div class="dlog-section-body">${esc(l.work)}</div></div>` : ''}
     ${l.issues ? `<div class="dlog-section"><div class="dlog-section-label" style="color:var(--red)">Delays / issues</div><div class="dlog-section-body">${esc(l.issues)}</div></div>` : ''}
     ${l.notes ? `<div class="dlog-section"><div class="dlog-section-label">Notes</div><div class="dlog-section-body">${esc(l.notes)}</div></div>` : ''}
+    ${l.workerOriginal ? `<details class="dlog-section"><summary style="cursor:pointer;font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3)">Crew's original words</summary><div class="dlog-section-body" style="white-space:pre-wrap;margin-top:5px">${esc(l.workerOriginal)}</div></details>` : ''}
     ${photos.length ? `<div class="dlog-photos">${photos.map((src,i) => `<img src="${src}" class="dlog-photo" onclick="dlogViewPhoto('${pid}','${l.id}',${i})" alt="site photo">`).join('')}</div>` : ''}
   </div>`;
 }
