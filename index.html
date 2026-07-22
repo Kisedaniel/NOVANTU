@@ -1,6 +1,28 @@
 <!DOCTYPE html>
+<!--
+  ══════════════════════════════════════════════════════════════════════════════
+  NOVANTU® — Construction bidding, take-off & estimating platform
+  Copyright © 2026 NOVANTU. All rights reserved.
+
+  PROPRIETARY AND CONFIDENTIAL. This software and its interface, workflows,
+  data models and accompanying materials are the exclusive property of NOVANTU
+  and are protected by copyright and trade-secret law.
+
+  You are licensed to USE this application as a subscriber. You are NOT
+  licensed to copy, reproduce, republish, distribute, sell, sublicense, host,
+  reverse-engineer, decompile, or create derivative works from any part of it,
+  in whole or in part, by any means, including automated scraping or AI
+  ingestion. Unauthorized use will be pursued.
+
+  Licensing & permissions: kisedaniel@gmail.com · https://www.novantu.app
+  Build ref: NVT-9F4C21A-2026  (provenance marker — do not remove)
+  ══════════════════════════════════════════════════════════════════════════════
+-->
 <html lang="en"><head>
 <meta charset="UTF-8">
+<meta name="robots" content="noarchive, noimageindex">
+<meta name="copyright" content="© 2026 NOVANTU — proprietary, all rights reserved">
+<meta name="author" content="NOVANTU">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -13917,6 +13939,10 @@ async function aiCompleteText(pid, userPrompt, planImages, opts) {
   const ctx = estBuildContext(pid);
   if (opts && opts.lean) { ctx.priceList = []; ctx.reviewItems = []; ctx.derivedCodes = []; ctx.openRfis = []; }
   const body = { projectContext: ctx, messages: [{ role: 'user', content: userPrompt }] };
+  // opts.task → the real instruction is composed SERVER-SIDE from NOVANTU's
+  // prompt library, so the methodology never ships to the browser. `userPrompt`
+  // stays as a short placeholder for logs/fallback.
+  if (opts && opts.task) { body.task = opts.task; body.taskData = opts.taskData || {}; }
   if (Array.isArray(planImages) && planImages.length) body.planImages = planImages;
   const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
     method: 'POST',
@@ -14070,26 +14096,20 @@ async function dbeGenerate(pid) {
 
   try {
     const plj = priceList.map(r => `${r.code} | ${r.name} | ${r.unit} | ${r.perUnit}`).join('\n');
-    const prompt = `You are a senior HVAC estimator AND design-build advisor helping a subcontractor quote a job fast. Read what's on the plans/sketches; where the scope is design-build (not fully drawn), DESIGN it yourself per code and state your assumptions.
-
-PROJECT: ${p.name}
-PROJECT TYPE: ${setup.projectType || '(infer it)'}
-JURISDICTION: ${setup.jurisdiction || '(infer / general California)'} · GROSS SF: ${setup.sqft || '?'} · STORIES: ${setup.stories || '?'}
-THE SUB'S OWN PRICE LIST — the ONLY products & prices you may estimate with (CODE | name | unit | $/unit):
-${plj}
-THE SUB'S DESIGN IDEA (their own words): ${narration || '(none — infer from the plans/sketches)'}
-${planImages.length ? `[${planImages.length} plan/sketch page(s) attached as images]` : '[no plans/sketches attached — work from the description]'}
-
-Do ALL of this:
-1) SCOPE & QUANTITIES: list the HVAC scope with key quantities (systems & tonnage, equipment, duct LF, supply/return count, line sets, diffusers, etc.). If sizing isn't given (design-build), SIZE IT with rules of thumb (e.g. ~400–600 sf/ton residential as a STARTING point) and state your assumptions plainly.
-2) CODES: applicable requirements for this jurisdiction (Title-24, Manual J/D/S, ASHRAE 62.2 ventilation, permits). ADVISE — never claim compliance.
-3) DRAFT ESTIMATE: line items using ONLY codes from the price list above, grouped by cost code, with quantities from step 1. If the plans call for a material or product NOT in the price list, SUBSTITUTE the closest item FROM the list and record the substitution in "recommendations" as a note the sub can pass to their client (e.g. "Plans show aluminum duct — your catalog carries R-8 flex, priced that instead; confirm with the GC").
-4) MISSING / FLAGS: anything the scope needs that is NOT in the price list (so the sub adds it), plus open questions / RFIs / risks.
-
-Return STRICT JSON ONLY — no prose, no code fences:
-{"projectType":"...","scope":["..."],"codeNotes":"...","recommendations":["design/build element recommendations"],"groups":[{"code":"23 81.13","title":"Air Handlers","items":[{"code":"hv-ahu-35","qty":2}]}],"missing":["..."],"notes":"..."}`;
-
-    const text = await aiCompleteText(pid, prompt, planImages, { lean: true }); // price list already in the prompt — don't send it twice
+    // The design-build advisor methodology lives server-side (TASK_PROMPTS.dbe).
+    const text = await aiCompleteText(pid, `Design-build estimate · ${p.name}`, planImages, {
+      lean: true, task: 'dbe',
+      taskData: {
+        projectName: p.name,
+        tradeLabel: (typeof getActiveTradePack === 'function' && getActiveTradePack()?.label) || 'HVAC',
+        projectType: setup.projectType || '',
+        jurisdiction: setup.jurisdiction || '',
+        sqft: setup.sqft || '',
+        stories: setup.stories || '',
+        priceList: plj,
+        narration,
+      },
+    });
     const parsed = parseAIJson(text);
     if (!parsed) throw new Error('Could not read the AI result. Try again.');
     const byCode = {}; priceList.forEach(r => { byCode[r.code] = r; });
@@ -14264,20 +14284,11 @@ async function gcPlanBreakdown(pid) {
   if (!trialGuardAI()) { ST.gcBreakdownLoading = null; render(); return; }
   try {
     const cats = CATS.slice();
-    const prompt = `You are a senior estimator working for a general contractor. Read the attached plan pages and break the project's scope down into this GC's bid categories.
-
-PROJECT: ${p.name}
-THE GC'S BID CATEGORIES (use these EXACT names, nothing else):
-${cats.map(c => '- ' + c).join('\n')}
-
-Do ALL of this:
-1) For every category that has scope on these plans, list the concrete items you can see (with quantities and units where readable — don't invent numbers).
-2) Scope that fits NONE of the categories goes in "uncategorized".
-3) Flag unclear or missing information an estimator would raise as an RFI.
-
-Return STRICT JSON ONLY — no prose, no code fences:
-{"categories":[{"category":"<EXACT name from the list>","items":[{"name":"...","qty":0,"unit":""}]}],"uncategorized":["..."],"missing":["..."],"notes":"one short line"}`;
-    const text = await aiCompleteText(pid, prompt, planImages, { lean: true });
+    // Breakdown methodology lives server-side (TASK_PROMPTS.breakdown).
+    const text = await aiCompleteText(pid, `Plan breakdown · ${p.name}`, planImages, {
+      lean: true, task: 'breakdown',
+      taskData: { projectName: p.name, cats },
+    });
     const parsed = parseAIJson(text);
     if (!parsed || !Array.isArray(parsed.categories)) throw new Error('Could not read a breakdown from the AI. Try again.');
     const catSet = new Set(cats);
@@ -14401,38 +14412,25 @@ function buildGcBreakdownModal() {
 // ONE vision AI call per generation — everything after is deterministic.
 // ============================================================
 
+// UI labels only. The measurement instructions for each type live SERVER-SIDE
+// in ask-ai (TASK_PROMPTS.takeoff / TAKEOFF_TYPE_PROMPTS) so the methodology
+// isn't readable in the browser — the client just sends the type key.
 const TAKEOFF_PRESETS = {
   walls: {
     label: 'Interior walls + ceilings',
     sub: 'Plaster / stucco / gyp — SF per room = length × level ceiling height; ceilings per room.',
-    prompt: `TAKE-OFF TYPE: INTERIOR WALL FINISHES + CEILINGS.
-For every level and room: take off interior wall finish areas (plaster/stucco, gypsum board, or whatever the typical-assembly note says) and ceiling areas.
-- Read the ASSEMBLY DIAGRAM legend colors and the "TYPICAL ASSEMBLIES" notes ("ALL INTERIOR WALLS TO BE ... UNLESS OTHERWISE NOTED") — untagged walls ARE the typical assembly.
-- Read each level's ceiling height from the RCP sheets (they differ per level — READ them, never assume).
-- WALLS rows: cat "WALLS", material = assembly/finish tag or name, dims = wall segment length in FT (sum segments within the same room+material), height = that level's ceiling height in FT, unit "SF" (total computes dims × height).
-- CEILING rows: cat "CEILING", material = ceiling assembly tag, dims = room ceiling area in SF (no height), unit "SF".`,
   },
   tiles: {
     label: 'Tile, countertops & floors',
     sub: 'TL-x wall tile (length × height), CT-x countertops SF, FF-x floor areas — reads the finish spec table.',
-    prompt: `TAKE-OFF TYPE: TILE, COUNTERTOPS & FLOOR FINISHES.
-Use the FINISH SPECIFICATIONS sheet (tag tables: TL-x tile, CT-x countertops, FF-x floors, ST-x stone — note printed $/SF when shown) plus the FINISH FLOOR PLANS and INTERIOR ELEVATIONS.
-- Tiled/stone WALLS rows: cat "WALLS", material = the tag (e.g. TL-2), dims = wall length in FT, height = tiled height in FT, unit "SF" (total computes dims × height).
-- COUNTERTOP rows: cat "COUNTERTOP", material = CT tag, dims = countertop area in SF (from casework elevations/plans), no height, unit "SF".
-- FLOOR rows: cat "FLOOR", material = FF tag, dims = room floor area in SF, no height, unit "SF".
-- Every row carries the room/space name+number when shown (e.g. "BATH 106", "WELLNESS").`,
   },
   plumbing: {
     label: 'Plumbing fixtures',
     sub: 'WC, lavs, sinks, tubs, showers, drains… counted per level & room (EA).',
-    prompt: `TAKE-OFF TYPE: PLUMBING FIXTURE COUNT.
-Count plumbing fixtures per level and room: water closets, lavatories, kitchen/bar/laundry sinks, tubs, showers (rain heads and hand showers separately), steam/sauna gear, washer boxes, hose bibbs, floor drains, pool/spa equipment when shown.
-- Rows: cat "FIXTURE", material = fixture type (e.g. "WC", "LAV", "RAIN SHOWER HEAD"), dims = the count, unit "EA", no height.`,
   },
   custom: {
     label: 'Custom take-off',
     sub: 'Describe it: "doors & windows", "LF of baseboard", "light fixtures by type"…',
-    prompt: `TAKE-OFF TYPE: CUSTOM — quantify exactly what the user asks for below. Choose the right cat per row (WALLS / CEILING / FLOOR / COUNTERTOP / FIXTURE / OTHER) and unit (SF, LF or EA).`,
   },
 };
 
@@ -14449,7 +14447,7 @@ async function takeoffGenerate(pid) {
   if (ST.toAILoading) return;
   const m = ST.toAI; if (!m || m.pid !== pid) return;
   m.extra = document.getElementById('toai-extra')?.value ?? m.extra;
-  const preset = TAKEOFF_PRESETS[m.type] || TAKEOFF_PRESETS.custom;
+  if (!TAKEOFF_PRESETS[m.type]) m.type = 'custom';
   if (m.type === 'custom' && !(m.extra || '').trim()) { showToast('Describe what you want quantified first.', 'warn'); return; }
   const e = getEstProj(pid);
   const plansWithBin = (e.plans || []).filter(pl => hasPlanBinary(pl));
@@ -14470,26 +14468,11 @@ async function takeoffGenerate(pid) {
   if (!trialGuardAI()) { ST.toAILoading = null; render(); return; }
   try {
     const p = allProjects().find(x => x.id === pid) || { name: pid };
-    const prompt = `You are a professional construction estimator doing a QUANTITY TAKE-OFF from the attached plan pages.
-
-PROJECT: ${p.name}
-
-${preset.prompt}
-${(m.extra || '').trim() ? `
-USER GUIDANCE — respect this:
-${String(m.extra).slice(0, 500)}` : ''}
-
-HOW TO MEASURE (follow the sheets, not assumptions):
-- Read legends, tag tables and "TYPICAL / UNLESS OTHERWISE NOTED" notes FIRST — they define what untagged elements are.
-- Prefer PRINTED dimensions, areas and schedules. When you must estimate from the drawing scale (e.g. 1/4" = 1'-0"), be conservative and set "est": true on that row.
-- One row per room × material. "level" exactly as the sheets name it (e.g. "LEVEL 0"). "space" = room name + number when shown (e.g. "BATH 106").
-- Deductions (openings, casework within a tiled wall, pools within a floor area): add a row with NEGATIVE dims and note what it deducts — do not silently net areas.
-- Do NOT invent rooms, tags or fixtures that are not on the sheets. If pages are unreadable or a sheet type is missing (RCP, finish plan…), say so in "missing" instead of guessing.
-
-Return STRICT JSON ONLY — no prose, no code fences:
-{"rows":[{"cat":"WALLS","level":"LEVEL 0","space":"BATH 106","material":"TL-2","dims":16.81,"height":8,"unit":"SF","est":false,"note":""}],"missing":["..."],"notes":"one short line"}
-Row rules: cat is one of WALLS|CEILING|FLOOR|COUNTERTOP|FIXTURE|OTHER. unit SF WITH height → total computes dims×height; unit SF WITHOUT height → dims IS the SF; unit EA → dims is the count; unit LF → dims is linear feet.`;
-    const text = await aiCompleteText(pid, prompt, planImages, { lean: true });
+    // The measurement methodology lives server-side (TASK_PROMPTS.takeoff).
+    const text = await aiCompleteText(pid, `Take-off · ${m.type}`, planImages, {
+      lean: true, task: 'takeoff',
+      taskData: { projectName: p.name, type: m.type, extra: m.extra || '' },
+    });
     const parsed = parseAIJson(text);
     if (!parsed || !Array.isArray(parsed.rows) || !parsed.rows.length) throw new Error('Could not read take-off rows from the AI. Try again.');
     const CATS_OK = ['WALLS', 'CEILING', 'FLOOR', 'COUNTERTOP', 'FIXTURE', 'OTHER'];
@@ -19058,38 +19041,21 @@ async function schedProposeAI(pid, extraNotes) {
   const scopeText = scope.map(s => `- ${s.group}${s.items.length ? ': ' + s.items.join(', ') : ''}`).join('\n');
 
   const hist = schedHistoryStats(pid);
-  const histText = hist.length ? `
-YOUR HISTORICAL DURATIONS — how long these phases have run on this shop's past jobs. CALIBRATE the matching phases toward these figures (they beat generic rules of thumb); use your own realistic estimate only where there's no match:
-${hist.map(h => {
+  // Only the DATA (this shop's own measured durations) is computed here; the
+  // sequencing rules themselves live server-side in TASK_PROMPTS.schedule.
+  const histText = hist.length ? hist.map(h => {
     const useDone = h.nDone >= 2;
     const d = useDone ? h.avgDone : h.avgAll;
     const n = useDone ? h.nDone : h.nAll;
     return `- ${h.phase}: ~${d} day(s) typical (${n} ${useDone ? 'completed' : 'scheduled'} task${n === 1 ? '' : 's'} on record)`;
-  }).join('\n')}
-` : '';
-
-  const prompt = `You are a senior construction scheduler. Build a realistic construction schedule (for a Gantt chart) for this project, in CORRECT construction sequence.
-
-PROJECT: ${p.name}
-PROJECT TYPE: ${projectType || '(infer it from the scope)'}
-SCOPE — cost codes / line items in this estimate:
-${scopeText}
-${histText}${extraNotes ? `
-USER GUIDANCE — respect this when sequencing and sizing the schedule:
-${String(extraNotes).slice(0, 600)}
-` : ''}
-Rules:
-- Order tasks in REAL construction sequence. If any demolition scope exists, Demolition is the FIRST phase. Typical order: Mobilization/Permits → Demolition → Site/Earthwork → Foundation/Concrete → Structure/Framing → Roofing/Envelope/Waterproofing → Rough MEP (plumbing, HVAC, electrical) → Insulation → Drywall → Finishes (paint, tile, flooring, cabinets, doors) → Fixtures/Trim → Punch list & Final inspection.
-- Only include phases/tasks the scope actually needs — but you MAY add obvious prerequisites (permits, mobilization) and a final inspection/punch list.
-- Each task: a realistic duration in WORKING days and a list of the tasks it depends on (by EXACT task name).${hist.length ? `\n- Where a phase matches YOUR HISTORICAL DURATIONS above, size its tasks so the phase total lands near that figure.` : ''}
-- Identify the project type.
-
-Return STRICT JSON ONLY (no prose, no code fences):
-{"projectType":"...","phases":[{"name":"Demolition","tasks":[{"name":"Demo & haul-off","durationDays":3,"dependsOn":[]}]}],"notes":"one short line of assumptions"}`;
+  }).join('\n') : '';
 
   ST.schedAILoading = pid; render();
   try {
-    const text = await aiCompleteText(pid, prompt, null, { lean: true }); // scope is already in the prompt
+    const text = await aiCompleteText(pid, `Construction schedule · ${p.name}`, null, {
+      lean: true, task: 'schedule',
+      taskData: { projectName: p.name, projectType, scopeText, histText, extraNotes: extraNotes || '' },
+    });
     const parsed = parseAIJson(text);
     if (!parsed || !Array.isArray(parsed.phases)) throw new Error('Could not read a schedule from the AI. Try again.');
     const phases = [];
