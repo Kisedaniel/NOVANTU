@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<!--
+  NOVANTU® — Pricing page. Copyright © 2026 NOVANTU. All rights reserved.
+  PROPRIETARY AND CONFIDENTIAL — licensed for use, not for copying,
+  reproduction, reverse-engineering, scraping or AI ingestion.
+  Build ref: NVT-9F4C21A-2026 (provenance marker — do not remove)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NOVANTU® — Pricing</title>
+<meta name="description" content="One flat price for your whole company — never per user. Plans for subcontractors and general contractors.">
+<meta name="copyright" content="© 2026 NOVANTU — proprietary, all rights reserved">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:ital,wght@1,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="novantu.css">
+</head>
+<body>
+<nav><div class="wrap nav-in">
+  <a href="novantu-landing.html" class="brand" aria-label="Novantu home"><span class="lt b">N</span><span class="lt b">O</span><span class="lt b">V</span><span class="lt b">A</span><span class="lt f">N</span><span class="lt f">T</span><span class="lt f">U</span><sup>®</sup></a>
+  <div class="nav-links">
+    <a href="product.html">Product</a>
+    <a href="customize.html">Customize</a>
+    <a href="pricing.html" class="on">Pricing</a>
+    <a href="pricing.html" class="nav-cta">Start free trial</a>
+  </div>
+</div></nav>
+
+<header class="page-hero">
+  <span class="corner" style="top:26px;left:0;color:var(--line2)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M12 0v24M0 12h24"/></svg></span>
+  <div class="wrap">
+    <div class="sec-label reveal">PRICING</div>
+    <h1 class="reveal d1">One flat price. <span class="f">No surprises.</span></h1>
+    <p class="ph-sub reveal d2">One price for your whole company — never per user. No per-project fees, no per-bid charges, no percentage of contract value. Pick a plan, pick monthly or yearly, and that's the whole bill.</p>
+  </div>
+</header>
+
+<section>
+  <span class="corner" style="top:20px;right:0;color:var(--line2)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M12 0v24M0 12h24"/></svg></span>
+  <div class="wrap">
+    <div class="pr-toggles">
+      <div class="pr-seg">
+        <button class="pr-pill on" id="seg-sub" onclick="setAcct('sub')">Subcontractor</button>
+        <button class="pr-pill" id="seg-gc" onclick="setAcct('gc')">General contractor</button>
+      </div>
+      <div class="pr-seg">
+        <button class="pr-pill on" id="seg-m" onclick="setCycle('m')">Monthly</button>
+        <button class="pr-pill" id="seg-y" onclick="setCycle('y')">Yearly · save ~15%</button>
+      </div>
+    </div>
+
+    <div class="price-grid">
+      <div class="tier">
+        <div class="tname">Standard</div>
+        <div class="price" id="price-starter">$200<span>/mo</span></div>
+        <div class="tsub" id="sub-starter">or $2,100/yr billed yearly</div>
+        <div class="tdesc">Get organized — every project, sub and bid in one place.</div>
+        <ul>
+          <li><span class="ck">✓</span>Projects, dashboard &amp; activity</li>
+          <li><span class="ck">✓</span>Sub directory, RFPs &amp; bid portals</li>
+          <li><span class="ck">✓</span>Bid leveling &amp; comparison</li>
+          <li class="off"><span class="ck">✓</span>Estimator, take-offs &amp; AI</li>
+          <li class="off"><span class="ck">✓</span>Schedule, daily log &amp; crew portal</li>
+        </ul>
+        <button class="btn btn-ghost" onclick="openCheckout('starter')">Get started</button>
+      </div>
+      <div class="tier pop">
+        <div class="pop-flag">Most popular</div>
+        <div class="tname">Pro</div>
+        <div class="price" id="price-pro">$250<span>/mo</span></div>
+        <div class="tsub" id="sub-pro">or $2,800/yr billed yearly</div>
+        <div class="tdesc">The full workflow — price the job, then run it.</div>
+        <ul>
+          <li><span class="ck">✓</span>Everything in Standard</li>
+          <li><span class="ck">✓</span>Estimator, take-off calculators &amp; AI assist</li>
+          <li><span class="ck">✓</span>Ask Novantu — cited answers on your plans</li>
+          <li><span class="ck">✓</span>Schedule (Gantt) &amp; daily logs</li>
+          <li><span class="ck">✓</span>Crew portal &amp; RFIs</li>
+        </ul>
+        <button class="btn btn-primary" onclick="openCheckout('pro')">Get started</button>
+      </div>
+      <div class="tier">
+        <div class="tname">Enterprise</div>
+        <div class="price" id="price-enterprise">$350<span>/mo</span></div>
+        <div class="tsub" id="sub-enterprise">or $4,000/yr billed yearly</div>
+        <div class="tdesc">For teams that send at scale under their own brand.</div>
+        <ul>
+          <li><span class="ck">✓</span>Everything in Pro</li>
+          <li><span class="ck">✓</span>Full white-label — your brand, not ours</li>
+          <li><span class="ck">✓</span>Send Center &amp; email automation</li>
+          <li><span class="ck">✓</span>Multiple users per workspace</li>
+          <li><span class="ck">✓</span>Priority onboarding &amp; support</li>
+        </ul>
+        <button class="btn btn-ghost" onclick="openCheckout('enterprise')">Get started</button>
+      </div>
+    </div>
+    <p class="pr-why">General contractors run more line items per bid and more subs per project, so GC pricing on Pro and Enterprise reflects that extra volume — Standard costs the same either way.</p>
+    <p class="pr-foot">First-time accounts include a one-time <strong>personalized set-up</strong> — we configure your brand, trades and unit prices so the workspace is ready to quote on day one. It's charged once, as your first payment. <a href="#terms">See terms →</a></p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-label">EVERY PLAN INCLUDES</div>
+    <h2>The core workflow, always on.</h2>
+    <div class="all-band" style="margin-top:36px">
+      <div class="all-cols">
+        <div>
+          <div class="all-h">Bidding &amp; outreach</div>
+          <div class="all-li"><span class="tk">·</span><span><b>Sub directory</b> organized by trade and division.</span></div>
+          <div class="all-li"><span class="tk">·</span><span><b>One-click invitations</b> to your whole list — sent from your own email, so they land in the inbox, not spam.</span></div>
+          <div class="all-li"><span class="tk">·</span><span><b>Private bid portals</b> — every sub you invite participates free, no account needed.</span></div>
+        </div>
+        <div>
+          <div class="all-h">Comparing &amp; deciding</div>
+          <div class="all-li"><span class="tk">·</span><span><b>Bid leveling</b> to compare every quote line by line.</span></div>
+          <div class="all-li"><span class="tk">·</span><span><b>Follow-ups drafted</b> from your own template — you review and send.</span></div>
+          <div class="all-li"><span class="tk">·</span><span><b>Award &amp; regret letters</b> ready the moment you pick a winner.</span></div>
+        </div>
+        <div>
+          <div class="all-h">Sending &amp; support</div>
+          <div class="all-li"><span class="tk">·</span><span><b>Branded PDF proposals</b> under your company, not ours.</span></div>
+          <div class="all-li"><span class="tk">·</span><span><b>English &amp; Spanish</b> — the office and the crew.</span></div>
+          <div class="all-li"><span class="tk">·</span><span><b>A human answers</b> — the people who built it.</span></div>
+        </div>
+      </div>
+      <div class="all-punch">No add-ons. No per-user fees. No "AI premium" tier. <b>What you see is what you get.</b></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-label">WHAT IT REPLACES</div>
+    <h2>Stop paying for four different tools.</h2>
+    <p class="sec-intro">Most firms already pay for some mix of these — each with its own bill, each priced per seat.</p>
+    <div class="vs-wrap">
+      <div class="vs-row"><span>Take-off software with AI<small>Sold per estimator, AI usually a paid add-on</small></span><span class="p"><s>$2,100 – $3,600 /yr · per user</s></span></div>
+      <div class="vs-row"><span>Bid management / sending RFPs<small>Quote-only annual contracts, plus implementation fees</small></span><span class="p"><s>$1,500 – $5,000 /yr</s></span></div>
+      <div class="vs-row"><span>Estimating &amp; branded proposals<small>Another subscription, another login</small></span><span class="p"><s>$1,200 – $3,600 /yr</s></span></div>
+      <div class="vs-row"><span>A bid portal under your own brand<small>The white-label plan room, sold separately</small></span><span class="p"><s>~$4,500 /yr</s></span></div>
+      <div class="vs-total"><span>Novantu — all of it, whole company</span><span class="big">from $200<em>/mo flat</em></span></div>
+    </div>
+    <p class="vs-fine">Ranges based on published 2025–2026 pricing of leading take-off, bid-management and estimating tools (per-seat plans, AI add-ons and implementation fees billed separately). Your numbers will vary.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-label">NO RISK</div>
+    <h2>Try it properly before you commit.</h2>
+    <div class="gua-grid">
+      <div class="gua"><b>Your price is locked.</b><p>The price you sign is the price you keep. No surprise renewal hikes — ever.</p></div>
+      <div class="gua"><b>Month to month.</b><p>Cancel anytime, effective that month. No annual handcuffs, no exit fees.</p></div>
+      <div class="gua"><b>30-day money-back.</b><p>Try it on your own project. Not for you? Your first month comes back.</p></div>
+      <div class="gua"><b>Your data is yours.</b><p>Full export anytime — before, during and after. We never hold your files hostage.</p></div>
+      <div class="gua"><b>A human answers.</b><p>Set-up done for you, and support from the people who built it — not a ticket queue.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="terms">
+  <span class="corner" style="bottom:20px;left:0;color:var(--line2)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M12 0v24M0 12h24"/></svg></span>
+  <div class="wrap">
+    <div class="sec-label">TERMS, IN PLAIN LANGUAGE</div>
+    <h2>The short version.</h2>
+    <div class="terms-card">
+      <h3>Billing &amp; set-up</h3>
+      <p>First-time accounts start with a one-time <strong>personalized set-up</strong> — we configure your brand, trade categories and unit prices before you log in. Checkout takes you to that payment first; your plan billing starts once your workspace is activated (usually within 1 business day). After that you're billed monthly or yearly depending on what you chose. Yearly plans are paid upfront at the discounted rate.</p>
+
+      <h3>Cancellation</h3>
+      <p>Month to month, cancel anytime — email us and it takes effect that month, with no exit fee. You keep access through the period you already paid for. If Novantu isn't for you, tell us within your first 30 days and we'll refund that first month.</p>
+
+      <h3>Your data</h3>
+      <ul>
+        <li>You own everything you upload and the estimates, bids and reports Novantu generates from it.</li>
+        <li>Export bids, estimates and reports as PDF or CSV at any time — before, during or after your subscription.</li>
+        <li>Your workspace is isolated. We don't sell your data or share it between workspaces.</li>
+        <li>Cancelling does not delete your historical exports, and you can request full deletion whenever you want.</li>
+      </ul>
+
+      <h3>What stays ours</h3>
+      <ul>
+        <li>Your <strong>data</strong> is yours (above). The <strong>software</strong> is ours: Novantu's application, interface, workflows, cost-code structures, templates and underlying methods are proprietary and protected by copyright and trade-secret law.</li>
+        <li>Your subscription is a <strong>licence to use</strong> Novantu — it does not transfer ownership of any part of it.</li>
+        <li>You agree not to copy, reproduce, republish, resell, sublicense, host, reverse-engineer or decompile the platform, or create derivative works from it — including by automated scraping or ingestion into another product or AI system.</li>
+        <li>White-label branding puts <em>your</em> name on the workspace your clients see. The underlying platform remains Novantu's property.</li>
+      </ul>
+
+      <h3>Support</h3>
+      <p>Every plan includes email support answered by a person, same business day. Enterprise adds priority onboarding.</p>
+
+      <h3>Who you're contracting with</h3>
+      <div class="terms-note">Novantu is <strong>currently being formalized as a registered business</strong> — that process is underway and not yet complete. Once it's finalized, this agreement and your subscription carry over to the registered entity automatically, with no change to your price. In the meantime, payments are processed securely via Payoneer and your receipts are issued directly to you. This is a plain-language summary, not the full legal agreement or tax advice.</div>
+      <div class="terms-meta">Questions before you subscribe? <a href="mailto:novantuinfo@novantu.app" style="color:var(--plano)">novantuinfo@novantu.app</a> · Last updated · July 2026</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="book-card">
+      <div>
+        <div class="sec-label" style="color:var(--plano-dim)">NOT READY TO SELF-SERVE?</div>
+        <h2>Book a 20-minute demo.</h2>
+        <p class="bk-intro">We'll walk through a real plan set from your trade, live, and answer whatever pricing or setup questions you have.</p>
+        <div class="bk-confirm">
+          <span class="bk-chosen" id="chosen">Pick a day and time →</span>
+          <button class="btn btn-primary" onclick="requestSlot()">Confirm this time</button>
+        </div>
+        <div class="bk-note">We'll reply by email to confirm — usually within a few hours.</div>
+      </div>
+      <div>
+        <div class="slots-head">AVAILABLE THIS WEEK · PACIFIC TIME</div>
+        <div id="slots"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="final">
+      <h2>Start with a free trial.</h2>
+      <p>One project, full workflow, no card required — we set it up with your trades and prices.</p>
+      <div class="hero-cta" style="justify-content:center">
+        <a href="mailto:novantuinfo@novantu.app?subject=Novantu%20free%20trial" class="btn btn-light">Start free trial →</a>
+        <a href="#book" class="btn btn-ghost" style="border-color:rgba(255,255,255,.6);color:#fff" onclick="document.querySelector('.book-card').scrollIntoView({behavior:'smooth'});return false;">Talk to us</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap foot-in">
+  <span>© 2026 NOVANTU® · Bid software for subs &amp; GCs</span>
+  <div style="display:flex;gap:20px">
+    <a href="product.html">Product</a>
+    <a href="customize.html">Customize</a>
+    <a href="pricing.html">Pricing</a>
+    <a href="mailto:novantuinfo@novantu.app">Contact</a>
+  </div>
+</div></footer>
+
+<div class="co-backdrop" id="coBackdrop">
+  <div class="co-modal">
+    <button class="co-x" onclick="closeCheckout()" aria-label="Close">×</button>
+    <div class="co-kicker">Subscribe</div>
+    <div class="co-title" id="coTitle">Pro · Subcontractor</div>
+    <div class="co-price" id="coPrice">$250<span>/mo</span></div>
+    <div class="co-cycnote" id="coCyc">Billed monthly · cancel anytime</div>
+    <div class="co-setup"><div class="co-setupnote"><strong>Step 1 · One-time personalized set-up.</strong> Every new account starts with the one-time set-up payment — we configure your brand, trade categories and unit prices so you can quote on day one. The button below takes you to that payment first. Your <span id="coPlanEcho">Pro</span> subscription is billed once your workspace is activated.</div></div>
+    <button class="btn btn-primary co-go" onclick="goCheckout(event)">Pay the one-time set-up first → (Payoneer)</button>
+    <div class="co-fine">Payments are processed securely via Payoneer. Once your set-up payment clears we activate your workspace within 1 business day and send the payment request for the plan you picked.<br>By continuing you agree to Novantu's <a href="pricing.html#terms">Terms</a>. Month to month — cancel anytime.</div>
+  </div>
+</div>
+<script src="novantu.js"></script>
+</body>
+</html>

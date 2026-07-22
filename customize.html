@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<!--
+  NOVANTU® — Customize page. Copyright © 2026 NOVANTU. All rights reserved.
+  PROPRIETARY AND CONFIDENTIAL — licensed for use, not for copying,
+  reproduction, reverse-engineering, scraping or AI ingestion.
+  Build ref: NVT-9F4C21A-2026 (provenance marker — do not remove)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NOVANTU® — Customize</title>
+<meta name="description" content="White-label your workspace: your logo, colors, typeface and trade templates — on every screen, email and PDF your clients see.">
+<meta name="copyright" content="© 2026 NOVANTU — proprietary, all rights reserved">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:ital,wght@1,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="novantu.css">
+</head>
+<body>
+<nav><div class="wrap nav-in">
+  <a href="novantu-landing.html" class="brand" aria-label="Novantu home"><span class="lt b">N</span><span class="lt b">O</span><span class="lt b">V</span><span class="lt b">A</span><span class="lt f">N</span><span class="lt f">T</span><span class="lt f">U</span><sup>®</sup></a>
+  <div class="nav-links">
+    <a href="product.html">Product</a>
+    <a href="customize.html" class="on">Customize</a>
+    <a href="pricing.html">Pricing</a>
+    <a href="pricing.html" class="nav-cta">Start free trial</a>
+  </div>
+</div></nav>
+
+<header class="page-hero">
+  <span class="corner" style="top:26px;left:0;color:var(--line2)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M12 0v24M0 12h24"/></svg></span>
+  <div class="wrap">
+    <div class="sec-label reveal">CUSTOMIZE</div>
+    <h1 class="reveal d1">Wear your own <span class="f">brand.</span></h1>
+    <p class="ph-sub reveal d2">Novantu isn't a generic tool with your logo pasted on top. Pick your colors, choose a typeface, and start from a template close to your trade — the whole app updates live, everywhere your subs and clients see it.</p>
+  </div>
+</header>
+
+<section>
+  <span class="corner" style="top:20px;right:0;color:var(--line2)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M12 0v24M0 12h24"/></svg></span>
+  <div class="wrap">
+    <div class="sec-label">LIVE PLAYGROUND</div>
+    <h2>Try it. This is really how it updates.</h2>
+    <p class="sec-intro">Change the name, the accent color, the typeface, or the trade template — the mock dashboard reacts immediately, and shuffle picks a combination for you.</p>
+    <div class="pg">
+      <div class="pg-controls">
+        <div class="pg-ctl">
+          <label>Company name</label>
+          <input class="pg-input" id="pgName" maxlength="28">
+        </div>
+        <div class="pg-ctl">
+          <label>Accent color</label>
+          <div class="pg-swatches" id="pgSwatches"></div>
+        </div>
+        <div class="pg-ctl">
+          <label>Typeface</label>
+          <div class="pg-fonts" id="pgFonts"></div>
+        </div>
+        <div class="pg-ctl">
+          <label>Trade template</label>
+          <div class="pg-presets" id="pgPresets"></div>
+        </div>
+        <button class="btn btn-ghost pg-random" id="pgRandom">🎲 Shuffle a theme</button>
+        <div class="pg-hint">Every combination shown here ships in the real product — this isn't a mockup of a mockup.</div>
+      </div>
+      <div class="demo-app" id="demoApp">
+        <div class="demo-bar"><div class="d"></div><div class="d"></div><div class="d"></div><span class="demo-url">app.<b>novantu.app</b></span></div>
+        <div class="demo-body">
+          <div class="demo-side">
+            <div class="demo-brand"><div class="demo-chip" id="demoChip">N</div><div><div class="demo-co demo-name">Your Company</div><div class="demo-co-sub">Bidding manager</div></div></div>
+            <div class="demo-nav on"><span class="nd"></span>Dashboard</div>
+            <div class="demo-nav"><span class="nd"></span>Bids</div>
+            <div class="demo-nav"><span class="nd"></span>Subcontractors</div>
+            <div class="demo-nav"><span class="nd"></span>Reports</div>
+          </div>
+          <div class="demo-main">
+            <div class="demo-crumb" id="demoCrumb">Projects · Vista Del Mar</div>
+            <div class="demo-title" id="demoTrade">HVAC · Estimate</div>
+            <div class="demo-card">
+              <div class="demo-card-h">Line items<span class="badge" id="demoBadge">HVAC</span></div>
+              <div id="demoRows"></div>
+              <div class="demo-foot"><span>Total estimate</span><b id="demoTotal">$148,400</b></div>
+            </div>
+            <div class="demo-actions">
+              <button class="demo-btn" onclick="showToast('This is a live demo — sign up to send real bids.')">Send bid</button>
+              <button class="demo-btn ghost" onclick="showToast('This is a live demo — sign up to export real PDFs.')">Export PDF</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="wl-band">
+      <div class="wl-grid">
+        <div>
+          <div class="sec-label">WHITE-LABEL, NOT JUST A LOGO SWAP</div>
+          <h2>Your subs never see the word "Novantu."</h2>
+          <p>Every bid invitation, PDF export and portal your subcontractors and clients touch carries your company's name, colors and mark — not ours.</p>
+          <div class="wl-points">
+            <div class="wl-point"><span class="dot"></span><span><b>Custom logo &amp; colors</b> across every screen, export, and email.</span></div>
+            <div class="wl-point"><span class="dot"></span><span><b>Email sent from your own address</b> — your subs get it from you, so it lands in the inbox, not spam.</span></div>
+            <div class="wl-point"><span class="dot"></span><span><b>Branded PDF exports</b> for estimates, bid packages, and owner reports.</span></div>
+            <div class="wl-point"><span class="dot"></span><span><b>Trade-specific templates</b> so the starting point already looks right for your work.</span></div>
+          </div>
+        </div>
+        <div class="wl-mock">
+          <div class="mock-top"><div class="logo-chip">A</div><div><div class="nh-name">Anderson Mechanical</div><div class="nh-sub">HVAC · Estimate #1042</div></div></div>
+          <div class="mock-rows"><div class="mrow a"></div><div class="mrow b"></div><div class="mrow c"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="final">
+      <h2>Your brand, your prices, your workflow.</h2>
+      <p>Start with a free trial — and we set it up with your trades, prices and branding before you log in.</p>
+      <div class="hero-cta" style="justify-content:center">
+        <a href="pricing.html" class="btn btn-light">Start free trial →</a>
+        <a href="product.html" class="btn btn-ghost" style="border-color:rgba(255,255,255,.6);color:#fff">See the full product</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap foot-in">
+  <span>© 2026 NOVANTU® · Bid software for subs &amp; GCs</span>
+  <div style="display:flex;gap:20px">
+    <a href="product.html">Product</a>
+    <a href="customize.html">Customize</a>
+    <a href="pricing.html">Pricing</a>
+    <a href="mailto:novantuinfo@novantu.app">Contact</a>
+  </div>
+</div></footer>
+<script src="novantu.js"></script>
+</body>
+</html>
