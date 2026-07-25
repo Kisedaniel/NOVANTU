@@ -62,6 +62,33 @@ section::before{
 }
 .sec-ornament{position:absolute;pointer-events:none;opacity:.5;z-index:0}
 .sec-ornament svg{display:block}
+
+/* ── drafting ornaments for the big open areas ─────────────────────────────
+   The same language as the page-hero: a faint compass ring, a patch of grid,
+   and survey plus-marks. All are decorative only — pointer-events:none and
+   z-index:0, so they sit behind .wrap (z-index:1) and never catch a click.
+   section{overflow:hidden} clips whatever bleeds past the edge.            */
+.sec-ring{
+  position:absolute;border:1px solid var(--line2);border-radius:50%;
+  opacity:.4;pointer-events:none;z-index:0;
+}
+.sec-ring.thin{opacity:.26}
+.sec-ring.accent{border-color:var(--plano-dim);opacity:.3}
+.sec-grid{
+  position:absolute;pointer-events:none;z-index:0;opacity:.07;
+  background-image:
+    repeating-linear-gradient(0deg, var(--line2) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(90deg, var(--line2) 0 1px, transparent 1px 64px);
+  -webkit-mask-image:radial-gradient(ellipse at center, #000 22%, transparent 72%);
+  mask-image:radial-gradient(ellipse at center, #000 22%, transparent 72%);
+}
+.orn-plus{position:absolute;width:13px;height:13px;pointer-events:none;z-index:0;opacity:.45}
+.orn-plus::before,.orn-plus::after{content:"";position:absolute;background:var(--line2)}
+.orn-plus::before{left:50%;top:0;width:1px;height:100%;transform:translateX(-50%)}
+.orn-plus::after{top:50%;left:0;height:1px;width:100%;transform:translateY(-50%)}
+.orn-dot{position:absolute;width:5px;height:5px;border-radius:50%;background:var(--plano-dim);opacity:.5;pointer-events:none;z-index:0}
+/* Narrow screens have no spare margin — the ornaments would crowd the copy. */
+@media(max-width:900px){.sec-ring,.sec-grid,.orn-plus,.orn-dot{display:none}}
 .sec-label{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--plano);margin-bottom:14px;display:flex;align-items:center;gap:8px}
 .sec-label::before{content:"[";color:var(--line2)} .sec-label::after{content:"]";color:var(--line2)}
 h2{font-family:var(--sans);font-weight:700;font-size:clamp(30px,4.5vw,46px);letter-spacing:-.03em;line-height:1.05;max-width:760px}
