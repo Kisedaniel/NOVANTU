@@ -13930,12 +13930,80 @@ function parseAIJson(text) {
   return null;
 }
 
+// ── AI telemetry ─────────────────────────────────────────────────────────────
+// `ai_usage` counts calls (a billing guard). This records what each task cost,
+// whether it parsed, whether it got cut off — and `accepted`, the only number
+// that says whether the AI is actually any good: did the user keep the draft?
+// Everything here is fire-and-forget. Telemetry must NEVER break a real task.
+let AI_LAST = null;   // usage record of the most recent ask-ai call
+
+async function aiLogEvent(task, info) {
+  try {
+    if (!(typeof AUTH !== 'undefined' && AUTH.session && AUTH.session.access_token)) return null;
+    const u = AI_LAST || {};
+    const i = info || {};
+    const row = {
+      task: String(task || 'chat').slice(0, 32),
+      model: String(u.model || '').slice(0, 40) || null,
+      input_tokens: Number(u.input_tokens) || 0,
+      output_tokens: Number(u.output_tokens) || 0,
+      cache_read_tokens: Number(u.cache_read_input_tokens) || 0,
+      cache_write_tokens: Number(u.cache_creation_input_tokens) || 0,
+      images: Number(i.images) || 0,
+      ms: Number(u.ms) || 0,
+      parse_ok: !!i.ok,
+      stop_reason: u.stop_reason ? String(u.stop_reason).slice(0, 24) : null,
+      err: i.err ? String(i.err).slice(0, 160) : null,
+    };
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/ai_events`, {
+      method: 'POST',
+      headers: { ...aiEdgeHeaders(), 'Prefer': 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    if (!r.ok) return null;
+    const out = await r.json();
+    return (Array.isArray(out) && out[0] && out[0].id) ? out[0].id : null;
+  } catch (_e) { return null; }
+}
+
+// Stamp a logged run as kept (true) or thrown away (false). This single call at
+// every Apply / Discard button is what turns the table into a quality metric.
+function aiEventOutcome(id, accepted) {
+  if (!id) return;
+  try {
+    fetch(`${SUPABASE_URL}/rest/v1/ai_events?id=eq.${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { ...aiEdgeHeaders(), 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ accepted: !!accepted }),
+    }).catch(() => {});
+  } catch (_e) {}
+}
+
+// Stamp a draft's verdict exactly once. A draft can be applied AND then closed,
+// or closed after an RFP already went out — without this, the same run would be
+// counted twice and the accept rate would be fiction.
+function aiOutcomeOnce(holder, accepted) {
+  if (!holder || holder._stamped) return;
+  holder._stamped = true;
+  aiEventOutcome(holder.evt, accepted);
+}
+
+// Discard handlers — they exist so the Discard button can record the verdict
+// before wiping state. "Thrown away" is the most valuable signal we collect.
+function estDraftDiscard() { aiOutcomeOnce(ST.estimatorDraft, false); ST.estimatorDraft = null; render(); }
+function dbeDiscard() { aiOutcomeOnce(ST.dbeResult, false); ST.dbeResult = null; render(); }
+function schedProposalDiscard() { aiOutcomeOnce(ST.schedAIProposal, false); ST.schedAIProposal = null; render(); }
+function gcBreakdownClose() { aiOutcomeOnce(ST.gcBreakdown, false); ST.gcBreakdown = null; render(); }
+
 // Call ask-ai and return the full completion text (no streaming UI).
 // Optional planImages = [{discipline,name,pageNum,base64}] gives the AI vision.
 // opts.lean strips the price list / plan-review noise from the context —
 // one-shot prompts embed exactly what they need, so re-sending the whole
 // catalog on every letter/schedule/log call was pure token waste.
+// Side effect: leaves the call's cost + stop_reason in AI_LAST for aiLogEvent().
 async function aiCompleteText(pid, userPrompt, planImages, opts) {
+  const t0 = Date.now();
+  AI_LAST = null;
   const ctx = estBuildContext(pid);
   if (opts && opts.lean) { ctx.priceList = []; ctx.reviewItems = []; ctx.derivedCodes = []; ctx.openRfis = []; }
   const body = { projectContext: ctx, messages: [{ role: 'user', content: userPrompt }] };
@@ -13963,8 +14031,15 @@ async function aiCompleteText(pid, userPrompt, planImages, opts) {
       if (!line.startsWith('data: ')) continue;
       let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
       if (evt.type === 'delta') full += evt.text;
+      else if (evt.type === 'usage') AI_LAST = { ...(evt.usage || {}), ms: Date.now() - t0 };
       else if (evt.type === 'error') throw new Error(evt.message || 'AI error');
     }
+  }
+  if (!AI_LAST) AI_LAST = { ms: Date.now() - t0 };
+  // A truncated answer is the one failure the schema can't prevent — name it,
+  // instead of letting it surface as an unexplained parse error.
+  if (AI_LAST.stop_reason === 'max_tokens') {
+    console.warn('ask-ai: response hit max_tokens — output was cut off', AI_LAST);
   }
   return full;
 }
@@ -14009,7 +14084,9 @@ Return EXACTLY this shape and nothing else:
     }
     if (!groups.length) throw new Error('The AI did not return usable items from your price list.');
     ST.estimatorDraft = { pid, groups, notes: (parsed.notes || '').toString(), ts: Date.now() };
+    aiLogEvent('draft', { ok: true }).then(id => { if (ST.estimatorDraft) ST.estimatorDraft.evt = id; });
   } catch (err) {
+    aiLogEvent('draft', { ok: false, err: err && err.message });
     showToast('Draft failed: ' + (err.message || err), 'error');
   } finally {
     ST.estimatorDraftLoading = null;
@@ -14033,6 +14110,7 @@ function draftDropItem(gi, ii) {
 
 function estApplyDraft(pid, mode) {
   const d = ST.estimatorDraft; if (!d || d.pid !== pid) return;
+  aiOutcomeOnce(d, true);
   builderEnsure(pid);
   const mk = (typeof getSettings === 'function' && getSettings().defaultMarkup) ? getSettings().defaultMarkup : {};
   const baseMarkup = Number(mk.Materials) || 0;
@@ -14135,7 +14213,9 @@ async function dbeGenerate(pid) {
       notes: (parsed.notes || '').toString(),
     };
     ST.dbeModal = null;
+    aiLogEvent('dbe', { ok: true, images: planImages.length }).then(id => { if (ST.dbeResult) ST.dbeResult.evt = id; });
   } catch (err) {
+    aiLogEvent('dbe', { ok: false, err: err && err.message, images: planImages.length });
     showToast('Design-build estimate failed: ' + (err.message || err), 'error');
   } finally {
     ST.dbeLoading = null; render();
@@ -14154,6 +14234,7 @@ function dbeDropItem(gi, ii) {
 }
 function dbeApply(pid, mode) {
   const d = ST.dbeResult; if (!d || d.pid !== pid) return;
+  aiOutcomeOnce(d, true);
   builderEnsure(pid);
   const mk = (getSettings().defaultMarkup) || {};
   const baseMarkup = Number(mk.Materials) || 0;
@@ -14225,7 +14306,7 @@ function buildDbeResultModal() {
   }).join('');
   const list = (title, arr, color) => (arr && arr.length) ? `<div style="margin-top:12px"><div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${color||'var(--text3)'};margin-bottom:5px">${title}</div><ul style="margin:0;padding-left:16px;display:flex;flex-direction:column;gap:3px">${arr.map(s=>`<li style="font-size:12px;color:var(--text2);line-height:1.45">${esc(s)}</li>`).join('')}</ul></div>` : '';
 
-  return `<div class="backdrop" onclick="if(event.target===this){ST.dbeResult=null;render()}">
+  return `<div class="backdrop" onclick="if(event.target===this){dbeDiscard()}">
     <div class="modal modal-wide" style="max-width:680px" onclick="event.stopPropagation()">
       <div class="modal-title">✦ Design-build estimate</div>
       <div class="modal-sub">${esc(p.name)}${d.projectType?` · ${esc(d.projectType)}`:''} · AI proposal — review before adding</div>
@@ -14247,8 +14328,8 @@ function buildDbeResultModal() {
         <span style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--ink-900)">${fmt$(grand)}</span>
       </div>
       <div class="modal-btns" style="margin-top:14px">
-        <button class="btn btn-ghost" onclick="ST.dbeResult=null;render()">Discard</button>
-        <button class="btn btn-ghost" onclick="ST.dbeResult=null;ST.dbeModal='${d.pid}';render()">← Edit / re-run</button>
+        <button class="btn btn-ghost" onclick="dbeDiscard()">Discard</button>
+        <button class="btn btn-ghost" onclick="dbeDiscard();ST.dbeModal='${d.pid}';render()">← Edit / re-run</button>
         ${(d.groups||[]).length ? `<button class="btn btn-ghost" onclick="dbeApply('${d.pid}','replace')">Replace estimate</button><button class="btn btn-ghost" onclick="dbeApply('${d.pid}','append')">Add to Builder</button><button class="btn btn-amber" onclick="dbeApply('${d.pid}','append');ST.estEmailReview='${d.pid}';render()" title="Insert into the Builder, then review & send the estimate email to your GC/client">Add &amp; email →</button>` : ''}
       </div>
     </div>
@@ -14301,6 +14382,7 @@ async function gcPlanBreakdown(pid) {
         name: String((it && it.name) || '').slice(0, 90),
         qty: Number(it && it.qty) || 0,
         unit: String((it && it.unit) || '').slice(0, 8),
+        sheetRef: String((it && it.sheetRef) || '').slice(0, 40),
       })).filter(it => it.name);
       if (!catSet.has(name)) { items.forEach(it => uncategorized.push(it.name)); continue; }
       if (items.length) categories.push({ category: name, items, subCount: getSubsForCategory(name).length });
@@ -14320,7 +14402,9 @@ async function gcPlanBreakdown(pid) {
       uncategorized: ST.gcBreakdown.uncategorized, missing: ST.gcBreakdown.missing, notes: ST.gcBreakdown.notes,
     };
     saveSt();
+    aiLogEvent('breakdown', { ok: true, images: planImages.length }).then(id => { if (ST.gcBreakdown) ST.gcBreakdown.evt = id; });
   } catch (err) {
+    aiLogEvent('breakdown', { ok: false, err: err && err.message, images: planImages.length });
     showToast('Plan breakdown failed: ' + (err.message || err), 'error');
   } finally {
     ST.gcBreakdownLoading = null; render();
@@ -14329,6 +14413,7 @@ async function gcPlanBreakdown(pid) {
 
 function gcBreakdownActivate(pid) {
   const d = ST.gcBreakdown; if (!d || d.pid !== pid) return;
+  aiOutcomeOnce(d, true);   // they acted on it → the breakdown was useful
   if (!ST.overrides[pid]) ST.overrides[pid] = {};
   let n = 0;
   for (const c of d.categories) {
@@ -14371,7 +14456,7 @@ function buildGcBreakdownModal() {
   const p = allProjects().find(x => x.id === d.pid) || { name: d.pid };
   const totalItems = d.categories.reduce((s, c) => s + c.items.length, 0);
   const flagList = (title, arr, color) => (arr && arr.length) ? `<div style="margin-top:12px"><div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${color};margin-bottom:5px">${title}</div><ul style="margin:0;padding-left:16px;display:flex;flex-direction:column;gap:3px">${arr.map(s => `<li style="font-size:12px;color:var(--text2);line-height:1.45">${esc(s)}</li>`).join('')}</ul></div>` : '';
-  return `<div class="backdrop" onclick="if(event.target===this){ST.gcBreakdown=null;render()}">
+  return `<div class="backdrop" onclick="if(event.target===this){gcBreakdownClose()}">
     <div class="modal modal-wide" style="max-width:700px" onclick="event.stopPropagation()">
       <div class="modal-title">✦ Plan breakdown → RFPs</div>
       <div class="modal-sub">${esc(p.name)} · ${d.categories.length} categor${d.categories.length === 1 ? 'y' : 'ies'} · ${totalItems} item${totalItems === 1 ? '' : 's'} — review, then RFP the subs per category</div>
@@ -14387,7 +14472,7 @@ function buildGcBreakdownModal() {
               <button class="btn ${d.rfpd && d.rfpd[c.category] ? 'btn-ghost' : 'btn-amber'} btn-sm" style="margin-left:auto" onclick="gcBreakdownSendRFP('${d.pid}','${esc(c.category)}')" title="Open the RFP send dialog for this category — pick subs & template, then send">✉ RFP subs →</button>
             </div>
             <div style="padding:6px 12px">
-              ${c.items.map(it => `<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--text2);padding:3px 0;border-bottom:1px solid var(--border)"><span>${esc(it.name)}</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3);white-space:nowrap">${it.qty ? it.qty + ' ' + esc(it.unit || '') : ''}</span></div>`).join('')}
+              ${c.items.map(it => `<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--text2);padding:3px 0;border-bottom:1px solid var(--border)"><span>${esc(it.name)}${it.sheetRef ? `<span style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-left:7px" title="Seen on this sheet">${esc(it.sheetRef)}</span>` : ''}</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3);white-space:nowrap">${it.qty ? it.qty + ' ' + esc(it.unit || '') : ''}</span></div>`).join('')}
             </div>
           </div>`).join('')}
         ${flagList('Uncategorized scope — add a category or assign manually', d.uncategorized, 'var(--amber)')}
@@ -14395,7 +14480,7 @@ function buildGcBreakdownModal() {
       </div>
 
       <div class="modal-btns" style="margin-top:14px">
-        <button class="btn btn-ghost" onclick="ST.gcBreakdown=null;render()">Close</button>
+        <button class="btn btn-ghost" onclick="gcBreakdownClose()">Close</button>
         <button class="btn btn-amber" onclick="gcBreakdownActivate('${d.pid}')" title="Mark every detected category active on the project board">✓ Activate categories on board</button>
       </div>
     </div>
@@ -14486,6 +14571,10 @@ async function takeoffGenerate(pid) {
       height: (r && r.height != null && r.height !== '' && Number(r.height) > 0) ? Number(r.height) : null,
       unit: ['SF', 'LF', 'EA'].includes(String((r && r.unit) || '').toUpperCase()) ? String(r.unit).toUpperCase() : 'SF',
       est: !!(r && r.est),
+      // Which sheet the number came from. Turns review from "re-measure
+      // everything" into "spot-check this row against A-2.1 p3". Blank means
+      // the AI could not tie it to a sheet — check those first.
+      sheetRef: String((r && r.sheetRef) || '').slice(0, 40),
       note: String((r && r.note) || '').slice(0, 120),
     })).filter(r => r.dims !== 0 || r.note);
     if (!rows.length) throw new Error('The AI returned no usable rows.');
@@ -14493,7 +14582,7 @@ async function takeoffGenerate(pid) {
       id: 'to_' + Date.now(),
       ts: new Date().toISOString(),
       type: m.type,
-      label: preset.label + ' · ' + new Date().toLocaleDateString(),
+      label: (TAKEOFF_PRESETS[m.type]?.label || 'Take-off') + ' · ' + new Date().toLocaleDateString(),
       rows,
       missing: Array.isArray(parsed.missing) ? parsed.missing.map(x => String(x).slice(0, 160)).slice(0, 12) : [],
       notes: String(parsed.notes || '').slice(0, 240),
@@ -14504,7 +14593,9 @@ async function takeoffGenerate(pid) {
     saveSt();
     ST.toAI = null;
     ST.toSheet = { pid, tid: t.id };
+    aiLogEvent('takeoff', { ok: true, images: planImages.length }).then(id => { t.evt = id; saveSt(); });
   } catch (err) {
+    aiLogEvent('takeoff', { ok: false, err: err && err.message, images: planImages.length });
     showToast('Take-off failed: ' + (err.message || err), 'error');
   } finally {
     ST.toAILoading = null; render();
@@ -14532,7 +14623,7 @@ function takeoffSetCell(pid, tid, idx, field, value) {
 function takeoffAddRow(pid, tid) {
   const t = takeoffFind(pid, tid); if (!t) return;
   const last = t.rows[t.rows.length - 1] || {};
-  t.rows.push({ cat: last.cat || 'WALLS', level: last.level || '', space: '', material: last.material || '', dims: 0, height: (last.height != null ? last.height : null), unit: last.unit || 'SF', est: false, note: '' });
+  t.rows.push({ cat: last.cat || 'WALLS', level: last.level || '', space: '', material: last.material || '', dims: 0, height: (last.height != null ? last.height : null), unit: last.unit || 'SF', est: false, sheetRef: '', note: '' });
   saveSt(); render();
 }
 function takeoffDelRow(pid, tid, idx) {
@@ -14542,6 +14633,7 @@ function takeoffDelRow(pid, tid, idx) {
 function takeoffDelete(pid, tid) {
   if (!confirm('Delete this take-off? The Excel/CSV you exported stays on your computer.')) return;
   const ov = ST.overrides[pid]; if (!ov || !Array.isArray(ov._takeoffs)) return;
+  aiOutcomeOnce(takeoffFind(pid, tid), false);   // deleted without using it
   ov._takeoffs = ov._takeoffs.filter(t => t.id !== tid);
   ST.toSheet = null; saveSt(); render();
 }
@@ -14568,9 +14660,10 @@ function buildTakeoffTotalsHtml(t) {
 
 function takeoffCSV(pid, tid) {
   const t = takeoffFind(pid, tid); if (!t) return;
+  aiOutcomeOnce(t, true);   // exported to Excel → kept
   const proj = allProjects().find(x => x.id === pid);
-  const rows = [['Category', 'Level', 'Space', 'Material', 'Dims', 'Height', 'Unit', 'Total', 'AI estimate', 'Note']];
-  for (const r of t.rows) rows.push([r.cat, r.level, r.space, r.material, r.dims, r.height ?? '', r.unit, takeoffRowTotal(r).toFixed(2), r.est ? 'YES' : '', r.note]);
+  const rows = [['Category', 'Level', 'Space', 'Material', 'Dims', 'Height', 'Unit', 'Total', 'AI estimate', 'Source sheet', 'Note']];
+  for (const r of t.rows) rows.push([r.cat, r.level, r.space, r.material, r.dims, r.height ?? '', r.unit, takeoffRowTotal(r).toFixed(2), r.est ? 'YES' : '', r.sheetRef || 'UNSOURCED', r.note]);
   const { byMat, byLevel } = takeoffTotals(t);
   rows.push([]); rows.push(['TOTALS BY MATERIAL']);
   for (const [k, v] of Object.entries(byMat)) { const [mat, unit] = k.split('|'); rows.push(['', '', '', mat, '', '', unit, v.toFixed(2)]); }
@@ -14587,6 +14680,7 @@ function takeoffCSV(pid, tid) {
 // One Builder line per material total — quantities land ready to price.
 function takeoffPushToBuilder(pid, tid) {
   const t = takeoffFind(pid, tid); if (!t) return;
+  aiOutcomeOnce(t, true);   // pushed into the estimate → the take-off was kept
   const { byMat } = takeoffTotals(t);
   builderEnsure(pid);
   const mk = (typeof getSettings === 'function' && getSettings().defaultMarkup) ? getSettings().defaultMarkup : {};
@@ -14641,13 +14735,16 @@ function buildTakeoffSheetModal() {
   if (!t) { ST.toSheet = null; return ''; }
   const p = allProjects().find(x => x.id === s.pid) || { name: s.pid };
   const estCount = t.rows.filter(r => r.est).length;
+  // Rows the AI couldn't tie to a sheet. Surfacing the count turns the review
+  // into a short worklist instead of a full re-measure.
+  const unsourced = t.rows.filter(r => !r.sheetRef).length;
   const inp = (idx, field, val, w, align) => `<input class="minp" value="${esc(val == null ? '' : String(val))}" oninput="takeoffSetCell('${s.pid}','${s.tid}',${idx},'${field}',this.value)" style="width:${w};font-family:var(--mono);font-size:11px;padding:4px 6px;${align ? 'text-align:right;' : ''}box-sizing:border-box">`;
   return `<div class="backdrop" onclick="if(event.target===this){ST.toSheet=null;render()}">
     <div class="modal modal-wide" style="max-width:980px" onclick="event.stopPropagation()">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
         <div>
           <div class="modal-title">▦ ${esc(t.label)}</div>
-          <div class="modal-sub">${esc(p.name)} · ${t.rows.length} rows${estCount ? ` · <span style="color:var(--amber)">${estCount} marked ~ were estimated from scale — verify those dims</span>` : ''} — every cell is editable; totals update live</div>
+          <div class="modal-sub">${esc(p.name)} · ${t.rows.length} rows${estCount ? ` · <span style="color:var(--amber)">${estCount} marked ~ were estimated from scale — verify those dims</span>` : ''}${unsourced ? ` · <span style="color:var(--amber)">${unsourced} unsourced — check those first</span>` : ''} — every cell is editable; each row cites the sheet it came from</div>
         </div>
         <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="takeoffDelete('${s.pid}','${s.tid}')">Delete</button>
       </div>
@@ -14655,7 +14752,7 @@ function buildTakeoffSheetModal() {
       <div style="margin-top:12px;max-height:46vh;overflow:auto;border:1px solid var(--border)">
         <table style="width:100%;border-collapse:collapse;font-size:11.5px">
           <thead><tr style="position:sticky;top:0;background:var(--bg1);z-index:1">
-            ${['Cat', 'Level', 'Space', 'Material', 'Dims', 'Ht (ft)', 'Unit', 'Total', ''].map(h => `<th style="text-align:left;font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:7px 8px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
+            ${['Cat', 'Level', 'Space', 'Material', 'Dims', 'Ht (ft)', 'Unit', 'Total', 'Source', ''].map(h => `<th style="text-align:left;font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:7px 8px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
           </tr></thead>
           <tbody>
             ${t.rows.map((r, idx) => `<tr style="border-bottom:1px solid var(--border)">
@@ -14667,6 +14764,9 @@ function buildTakeoffSheetModal() {
               <td style="padding:3px 6px">${r.unit === 'SF' ? inp(idx, 'height', r.height, '58px', true) : ''}</td>
               <td style="padding:3px 6px;font-family:var(--mono);font-size:10px;color:var(--text3)">${esc(r.unit)}</td>
               <td style="padding:3px 8px;text-align:right;font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--ink-900)">${r.est ? '<span title="Estimated from drawing scale — verify" style="color:var(--amber)">~</span> ' : ''}<span id="to-total-${idx}">${toFmtNum(takeoffRowTotal(r))}</span></td>
+              <td style="padding:3px 6px;font-family:var(--mono);font-size:9.5px;white-space:nowrap">${r.sheetRef
+                ? `<span title="Read from this sheet — open it to verify" style="color:var(--text3)">${esc(r.sheetRef)}</span>`
+                : '<span title="The AI could not tie this row to a specific sheet — verify this one first" style="color:var(--amber)">unsourced</span>'}</td>
               <td style="padding:3px 6px"><button class="edit-btn" style="color:var(--red);border-color:var(--red-border);padding:2px 6px" onclick="takeoffDelRow('${s.pid}','${s.tid}',${idx})">✕</button></td>
             </tr>`).join('')}
           </tbody>
@@ -15346,7 +15446,7 @@ function buildDraftReviewModal() {
       ${rows}
     </div>`;
   }).join('');
-  return `<div class="backdrop" onclick="if(event.target===this){ST.estimatorDraft=null;render()}">
+  return `<div class="backdrop" onclick="if(event.target===this){estDraftDiscard()}">
     <div class="modal modal-wide" style="max-width:680px" onclick="event.stopPropagation()">
       <div class="modal-title">✨ AI draft estimate</div>
       <div class="modal-sub">${esc(proj?.name || '')} · built from your take-off prices · review before adding</div>
@@ -15358,7 +15458,7 @@ function buildDraftReviewModal() {
       </div>
       <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:6px">Markup is applied per item in the Builder after you add it.</div>
       <div class="modal-btns" style="margin-top:14px">
-        <button class="btn btn-ghost" onclick="ST.estimatorDraft=null;render()">Discard</button>
+        <button class="btn btn-ghost" onclick="estDraftDiscard()">Discard</button>
         <button class="btn btn-ghost" onclick="estApplyDraft('${d.pid}','replace')" title="Replace the current estimate with this draft">Replace estimate</button>
         <button class="btn btn-ghost" onclick="estApplyDraft('${d.pid}','append')">Add to Builder</button>
         <button class="btn btn-amber" onclick="estApplyDraft('${d.pid}','append');ST.estEmailReview='${d.pid}';render()" title="Insert into the Builder, then review & send the estimate email to your GC/client">Add &amp; email →</button>
@@ -19074,7 +19174,9 @@ async function schedProposeAI(pid, extraNotes) {
     }
     if (!phases.length) throw new Error('The AI did not return usable phases.');
     ST.schedAIProposal = { pid, projectType: (parsed.projectType || projectType || '').toString(), notes: (parsed.notes || '').toString(), phases, startDate: schedFmtISO(schedToday()), calibratedPhases: hist.length };
+    aiLogEvent('schedule', { ok: true }).then(id => { if (ST.schedAIProposal) ST.schedAIProposal.evt = id; });
   } catch (err) {
+    aiLogEvent('schedule', { ok: false, err: err && err.message });
     showToast('AI schedule failed: ' + (err.message || err), 'error');
   } finally {
     ST.schedAILoading = null; render();
@@ -19086,6 +19188,7 @@ async function schedProposeAI(pid, extraNotes) {
 // another task, in which case they start the day after it finishes.
 function schedApplyAIProposal(pid, mode) {
   const d = ST.schedAIProposal; if (!d || d.pid !== pid) return;
+  aiOutcomeOnce(d, true);
   const sched = schedGet(pid);
   const start0 = schedParseDate(d.startDate) || schedToday();
   const existingPhaseCount = sched.phases.length;
@@ -19131,7 +19234,7 @@ function buildSchedAIReviewModal() {
   const d = ST.schedAIProposal; if (!d) return '';
   const p = allProjects().find(x => x.id === d.pid) || { name: d.pid };
   const totalTasks = d.phases.reduce((s, ph) => s + ph.tasks.length, 0);
-  return `<div class="backdrop" onclick="if(event.target===this){ST.schedAIProposal=null;render()}">
+  return `<div class="backdrop" onclick="if(event.target===this){schedProposalDiscard()}">
     <div class="modal modal-wide" style="max-width:640px" onclick="event.stopPropagation()">
       <div class="modal-title">✦ AI construction schedule</div>
       <div class="modal-sub">${esc(p.name)}${d.projectType?` · ${esc(d.projectType)}`:''} · ${d.phases.length} phase${d.phases.length===1?'':'s'} · ${totalTasks} task${totalTasks===1?'':'s'}</div>
@@ -19160,7 +19263,7 @@ function buildSchedAIReviewModal() {
       </div>
 
       <div class="modal-btns" style="margin-top:14px">
-        <button class="btn btn-ghost" onclick="ST.schedAIProposal=null;render()">Discard</button>
+        <button class="btn btn-ghost" onclick="schedProposalDiscard()">Discard</button>
         <button class="btn btn-ghost" onclick="schedApplyAIProposal('${d.pid}','replace')" title="Replace the current schedule with this one">Replace schedule</button>
         <button class="btn btn-amber" onclick="schedApplyAIProposal('${d.pid}','append')">Add to Gantt →</button>
       </div>
