@@ -4549,7 +4549,10 @@ const DEFAULT_SETTINGS = {
   defaultMarkup: { None: 0, Materials: 10, Labor: 25, Subcontractor: 15, Equipment: 12, Other: 10 },
   costTypes: [...DEFAULT_COST_TYPES],
   brand: { wordmark: 'NOVANTU', subtitle: '', logoData: '', accentColor: '' },
-  print: { companyName: '', companyAddress: '', companyPhone: '', companyLicense: '', headerText: '', footerText: '', notes: '', coverPage: false, showGridLines: false, logoOffsetX: 0, logoOffsetY: 0, showLogo: true, logoSize: 'md', logoAlign: 'left', infoAlign: 'left', infoDisplay: 'lines', headerStyle: 'split', rightCorner: 'price', projectNamePrefix: '', layoutStyle: 'standard', fontFamily: 'sans', accentInPdf: true, headerBg: '#000000', pageOrientation: 'portrait' },
+  print: { companyName: '', companyAddress: '', companyPhone: '', companyLicense: '', headerText: '', footerText: '', notes: '', coverPage: false, showGridLines: false, logoOffsetX: 0, logoOffsetY: 0, showLogo: true, logoSize: 'md', logoAlign: 'left', infoAlign: 'left', infoDisplay: 'lines', headerStyle: 'split', rightCorner: 'price', projectNamePrefix: '', layoutStyle: 'standard', fontFamily: 'sans', accentInPdf: true, headerBg: '#000000', pageOrientation: 'portrait',
+    // Proposal layout only — the client-facing bid document.
+    companyEmail: '', contactName: '', preparedFor: '', proposalPrefix: '', sinceYear: '',
+    validDays: 30, taxRate: 0, taxBase: 'materials', clarifications: '', terms: '' },
   notifs: { newBids: true, pendingCOs: true, dueDateAlerts: true, threadReplies: true },
   notifReadBy: {},   // { userId: [notification keys marked read] } — settings IS synced, so read stays read across logins
   language: 'en',    // UI language — master-set (like currency), applied via applyI18n
@@ -7458,6 +7461,249 @@ function buildBuilderGroupModal() {
     </div>
   </div>`;
 }
+// ============================================================
+// PROPOSAL LAYOUT — the client-facing bid document.
+// ------------------------------------------------------------
+// The standard/compact layouts are an INTERNAL sheet: they show builder cost,
+// markup % and client price side by side. You never send that to a GC.
+// This layout is the document a trade contractor actually submits, modelled on
+// a real submitted commercial bid: cover with its metadata grid, project
+// summary, inclusions vs exclusions, scope by trade division, a pricing summary
+// that shows OWNER PRICE ONLY, commercial terms, signature blocks, and a
+// material order list. Same data, completely different audience.
+// ============================================================
+
+// "INCLUDED:\n…\n\nEXCLUDED:\n…" is exactly what scopeTplApply() writes into the
+// proposal notes, so a saved scope template flows straight onto the page.
+function proposalSplitScope(notes) {
+  const t = String(notes || '');
+  const iM = t.match(/INCLUDED:\s*([\s\S]*?)(?=\n\s*EXCLUDED:|$)/i);
+  const eM = t.match(/EXCLUDED:\s*([\s\S]*)$/i);
+  const lines = (s) => String(s || '').split('\n').map(x => x.replace(/^[-•·*]\s*/, '').trim()).filter(Boolean);
+  // No markers at all → treat the whole note as inclusions rather than dropping it.
+  if (!iM && !eM) return { inc: lines(t), exc: [] };
+  return { inc: lines(iM && iM[1]), exc: lines(eM && eM[1]) };
+}
+
+// "Label: value" per line → the two-column commercial-terms table.
+function proposalParseTerms(raw) {
+  return String(raw || '').split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+    const i = l.indexOf(':');
+    return i > 0 ? { k: l.slice(0, i).trim(), v: l.slice(i + 1).trim() } : { k: '', v: l };
+  });
+}
+
+// Every money figure on this document is the OWNER price. Cost and markup never
+// appear — that is the whole point of the layout.
+function proposalNumbers(pid, est, totals, pi) {
+  const taxRate = Number(pi.taxRate) || 0;
+  const taxBase = pi.taxBase || 'materials';
+  let laborAmt = 0, otherAmt = 0, taxableBase = 0;
+  for (const g of (est.groups || [])) {
+    for (const it of (g.items || [])) {
+      const line = Number(it.qty || 0) * Number(it.unitCost || 0) * (1 + Number(it.markup || 0) / 100);
+      if (String(it.costType || '') === 'Labor') laborAmt += line; else otherAmt += line;
+      const taxable = taxBase === 'flagged'
+        ? !!it.taxable
+        : ['Materials', 'Equipment'].includes(String(it.costType || ''));
+      if (taxable) taxableBase += line;
+    }
+  }
+  const taxAmt = taxableBase * taxRate / 100;
+  return { laborAmt, otherAmt, taxAmt, taxRate, base: Number(totals.client) || 0, grand: (Number(totals.client) || 0) + taxAmt };
+}
+
+function buildProposalPages(o) {
+  const { pid, proj, est, totals, pi, brand, accent, fontStack, showLogo, logoH, dateStr } = o;
+  const setup = (ST.estimator && ST.estimator[pid] && ST.estimator[pid].setup) || {};
+  const ai = (ST.overrides[pid] || {})._aiDetails || null;
+  const n = proposalNumbers(pid, est, totals, pi);
+  const scope = proposalSplitScope(pi.notes);
+  const terms = proposalParseTerms(pi.terms);
+  const clarifications = String(pi.clarifications || '').split('\n').map(x => x.replace(/^[-•·*]\s*/, '').trim()).filter(Boolean);
+
+  const company = (pi.companyName || brand.wordmark || '').toString();
+  const initials = company.split(/\s+/).filter(Boolean).map(w => w[0]).join('').toUpperCase().slice(0, 4);
+  const projAbbr = (proj.name || '').replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase();
+  const rev = String(setup.revision || '0');
+  const propNo = `${pi.proposalPrefix || initials || 'BID'}-${projAbbr || 'PRJ'}-R${rev}`;
+  const validDays = Number(pi.validDays) || 30;
+  const validThrough = new Date(Date.now() + validDays * 86400000)
+    .toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const addressLines = (pi.companyAddress || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const preparedFor = pi.preparedFor || proj.builder || '';
+
+  // ── shared chrome ──────────────────────────────────────────────────────────
+  const runHead = `<div style="display:flex;justify-content:flex-end;font-family:var(--mono);font-size:8.5px;letter-spacing:.06em;color:${accent};font-weight:600;margin-bottom:14px">${esc(company)} &nbsp;|&nbsp; ${esc(propNo)} &nbsp;|&nbsp; Revision (${esc(rev)})</div>`;
+  const runFoot = `<div style="margin-top:26px;padding-top:10px;border-top:1px solid #ddd;font-family:var(--mono);font-size:8.5px;color:#777;text-align:center;line-height:1.7">
+      ${esc(company)}${pi.companyLicense ? ` &nbsp;|&nbsp; CA Contractor License No. ${esc(pi.companyLicense)}` : ''}${pi.sinceYear ? ` &nbsp;|&nbsp; Since ${esc(pi.sinceYear)}` : ''}<br>
+      ${[pi.companyPhone, pi.companyEmail, addressLines.join(', ')].filter(Boolean).map(esc).join(' &nbsp; ')}
+    </div>`;
+  const page = (inner, extra) => `<div class="print-page" style="background:#fff;color:#000;padding:44px 52px;max-width:1100px;margin:0 auto 26px;font-family:${fontStack};page-break-after:always;${extra || ''}">${runHead}${inner}${runFoot}</div>`;
+  const h2 = (t) => `<div style="font-size:20px;font-weight:700;color:${accent};margin:0 0 10px;letter-spacing:-0.01em">${esc(t)}</div>`;
+  const cell = (label, val) => `<td style="padding:8px 10px;border:1px solid #d9e6ef;vertical-align:top">
+      <div style="font-family:var(--mono);font-size:7.5px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:3px">${esc(label)}</div>
+      <div style="font-size:11px;color:#111;line-height:1.4">${esc(val || '—')}</div></td>`;
+  const bullets = (arr, color) => arr.length
+    ? `<ul style="margin:0;padding-left:16px">${arr.map(x => `<li style="font-size:10.5px;color:#222;line-height:1.55;margin-bottom:5px">${esc(x)}</li>`).join('')}</ul>`
+    : `<div style="font-family:var(--mono);font-size:10px;color:#999;font-style:italic">Nothing recorded — add it in the template's Scope field.</div>`;
+
+  // ── PAGE 1 · Cover ─────────────────────────────────────────────────────────
+  const cover = page(`
+    <div style="background:#0d0d0d;padding:34px 30px;text-align:center;margin-bottom:0">
+      ${showLogo && brand.logoData ? `<img src="${brand.logoData}" style="max-height:${Math.max(150, logoH * 2)}px;max-width:58%;margin:0 auto 22px;display:block">` : `<div style="font-family:var(--mono);font-size:26px;letter-spacing:.2em;color:#fff;margin-bottom:22px">${esc(company.toUpperCase())}</div>`}
+      <div style="font-size:30px;font-weight:700;color:#fff;letter-spacing:-0.01em">BID PROPOSAL</div>
+      ${pi.headerText ? `<div style="font-size:13px;font-weight:600;color:#e0b450;margin-top:6px">${esc(pi.headerText)}</div>` : ''}
+      <div style="font-size:20px;font-weight:700;color:#4fc3e8;margin-top:14px">${esc(proj.name || '')}</div>
+      ${setup.address ? `<div style="font-size:11px;color:#cfcfcf;margin-top:5px">${esc(setup.address)}</div>` : ''}
+      <div style="margin-top:20px;font-size:13px;color:#e0b450;font-family:var(--mono);letter-spacing:.08em">TOTAL BASE BID
+        <span style="font-size:26px;font-weight:700;color:#fff;letter-spacing:-0.01em;margin-left:10px;font-family:${fontStack}">${fmt$(n.grand)}</span></div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;margin-top:0">
+      <tr>${cell('Proposal No.', propNo)}${cell('Revision', 'Revision (' + rev + ')')}${cell('Issue Date', dateStr)}${cell('Valid Through', validThrough)}</tr>
+      <tr>${cell('Prepared For', preparedFor)}${cell('Project / PR No.', setup.prNumber)}${cell('Estimator', setup.estimator)}${cell('Drawing Status', setup.bidSet)}</tr>
+      <tr>${cell('Prepared By', company)}${cell('Primary Contact', pi.contactName)}${cell('Phone', pi.companyPhone)}${cell('Email', pi.companyEmail)}</tr>
+    </table>`);
+
+  // ── PAGE 2 · Summary + inclusions/exclusions ───────────────────────────────
+  const summaryText = ai && ai.summary ? ai.summary : '';
+  const infoPanel = (title, rows) => `<div style="flex:1;min-width:240px;border:1px solid #d9e6ef;background:#f7fbfd;padding:12px 14px">
+      <div style="font-size:12px;font-weight:700;color:${accent};margin-bottom:8px">${esc(title)}</div>
+      ${rows.filter(r => r[1]).map(r => `<div style="font-size:10.5px;color:#222;line-height:1.7"><b>${esc(r[0])}:</b> ${esc(r[1])}</div>`).join('') || '<div style="font-size:10.5px;color:#999;font-style:italic">—</div>'}
+    </div>`;
+  const summary = page(`
+    ${h2('1. Project Summary')}
+    <div style="font-size:11px;color:#222;line-height:1.7;margin-bottom:14px">${summaryText
+      ? esc(summaryText)
+      : `${esc(company)} is pleased to submit this proposal for the scope at <b>${esc(proj.name || '')}</b>${setup.address ? ` located at <b>${esc(setup.address)}</b>` : ''}. Quantities and commercial values have been developed from the project drawings and specifications.`}</div>
+
+    <div style="display:flex;gap:12px;margin-bottom:16px">
+      <div style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:12px;text-align:center">
+        <div style="font-family:var(--mono);font-size:8px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700">Total Base Bid</div>
+        <div style="font-size:19px;font-weight:700;color:#111;margin-top:4px">${fmt$(n.grand)}</div></div>
+      <div style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:12px;text-align:center">
+        <div style="font-family:var(--mono);font-size:8px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700">Drawing Status</div>
+        <div style="font-size:14px;font-weight:700;color:#111;margin-top:6px">${esc(setup.bidSet || '—')}</div></div>
+    </div>
+
+    <div style="display:flex;gap:12px;margin-bottom:18px;flex-wrap:wrap">
+      ${infoPanel(company + ' Contact', [['Primary Contact', pi.contactName], ['Email', pi.companyEmail], ['Phone', pi.companyPhone], ['License', pi.companyLicense ? 'CA Contractor License No. ' + pi.companyLicense : ''], ['Address', addressLines.join(', ')]])}
+      ${infoPanel('Project Information', [['Project', proj.name], ['Site Address', setup.address], ['Revision', 'Revision (' + rev + ')'], ['PR Number', setup.prNumber], ['Drawing Status', setup.bidSet], ['Issue Date', dateStr]])}
+    </div>
+
+    ${h2('2. Inclusions and Exclusions')}
+    <div style="display:flex;gap:12px">
+      <div style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:12px 14px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:8px">Inclusions</div>
+        ${bullets(scope.inc)}</div>
+      <div style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:12px 14px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:8px">Exclusions</div>
+        ${bullets(scope.exc)}</div>
+    </div>`);
+
+  // ── PAGE 3 · Scope of work, by cost-code division ──────────────────────────
+  const scopePage = page(`
+    ${h2('3. Detailed Scope of Work (by Trade Division)')}
+    <div style="font-size:10.5px;color:#444;line-height:1.6;margin-bottom:14px">The following scope is organized by construction trade division. Work is intended to provide a complete and operable installation within the limits shown on the contract documents, subject to the clarifications in this proposal.</div>
+    ${(est.groups || []).length ? (est.groups || []).map(g => `
+      <div style="margin-bottom:14px">
+        <div style="font-size:12.5px;font-weight:700;color:${accent};margin-bottom:5px">${esc(g.code || '')}${g.code && g.title ? ' — ' : ''}${esc(g.title || '')}</div>
+        <ul style="margin:0;padding-left:16px">
+          ${(g.items || []).map(it => `<li style="font-size:10.5px;color:#222;line-height:1.55;margin-bottom:4px">${esc(it.title || '')}${(Number(it.qty) > 0) ? ` — approximately <b>${Number(it.qty).toLocaleString()} ${esc(it.unit || '')}</b>` : ''}${it.description ? `. ${esc(it.description)}` : ''}</li>`).join('') || '<li style="font-size:10.5px;color:#999;font-style:italic">No line items in this division yet.</li>'}
+        </ul>
+      </div>`).join('') : '<div style="font-family:var(--mono);font-size:10.5px;color:#999;font-style:italic">No cost-code groups in the estimate yet — the scope section fills itself from the Builder.</div>'}
+    ${clarifications.length ? `
+      <div style="font-size:13px;font-weight:700;color:${accent};margin:18px 0 6px">Bid Basis, Assumptions &amp; Technical Clarifications</div>
+      ${bullets(clarifications)}` : ''}`);
+
+  // ── PAGE 4 · Pricing, terms, signatures ────────────────────────────────────
+  const money = (l, v, bold) => `<tr style="${bold ? `background:${accent};color:#fff;font-weight:700` : ''}">
+      <td style="padding:8px 12px;border-bottom:1px solid #e6eef4;font-size:11px">${esc(l)}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #e6eef4;text-align:right;font-family:var(--mono);font-size:11px">${fmt$(v)}</td></tr>`;
+  const pricing = page(`
+    ${h2('4. Pricing and Base Bid Summary')}
+    <div style="font-size:10.5px;color:#444;line-height:1.6;margin-bottom:12px">All contractor costs are incorporated into the owner-facing values below. No separate contractor fee or percentage is presented.${n.taxRate ? ' Sales tax on furnished materials is included in the total base bid.' : ''}</div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
+      <thead><tr style="background:#111;color:#fff"><th style="padding:8px 12px;text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase">Description</th><th style="padding:8px 12px;text-align:right;font-size:10px;letter-spacing:.06em;text-transform:uppercase;width:160px">Owner Price</th></tr></thead>
+      <tbody>
+        ${(est.groups || []).map(g => money(`${g.code || ''}${g.code && g.title ? ' — ' : ''}${g.title || ''}`, builderGroupTotals(pid, g.id).client)).join('')}
+        ${n.taxAmt > 0 ? money(`Applicable Sales Tax on Furnished Materials (${n.taxRate}%)`, n.taxAmt) : ''}
+        ${money('TOTAL BASE BID', n.grand, true)}
+      </tbody>
+    </table>
+
+    <div style="font-size:13px;font-weight:700;color:${accent};margin-bottom:6px">Owner-Facing Cost Composition</div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
+      <tbody>
+        ${money('Labor, installation, supervision & project requirements', n.laborAmt)}
+        ${money('Materials, equipment' + (n.taxAmt > 0 ? ' & applicable sales tax' : ''), n.otherAmt + n.taxAmt)}
+        <tr style="font-weight:700;background:#f7fbfd"><td style="padding:8px 12px;border-top:1px solid #d9e6ef;font-size:11px">TOTAL BASE BID</td><td style="padding:8px 12px;border-top:1px solid #d9e6ef;text-align:right;font-family:var(--mono);font-size:11px;color:${accent}">${fmt$(n.grand)}</td></tr>
+      </tbody>
+    </table>
+
+    ${terms.length ? `
+      <div style="font-size:13px;font-weight:700;color:${accent};margin-bottom:6px">Commercial Terms</div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
+        <thead><tr style="background:#111;color:#fff"><th style="padding:7px 12px;text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;width:190px">Term</th><th style="padding:7px 12px;text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase">Details</th></tr></thead>
+        <tbody>${terms.map(t => `<tr><td style="padding:8px 12px;border-bottom:1px solid #e6eef4;font-size:10.5px;font-weight:700;color:#111">${esc(t.k)}</td><td style="padding:8px 12px;border-bottom:1px solid #e6eef4;font-size:10.5px;color:#222;line-height:1.55">${esc(t.v)}</td></tr>`).join('')}</tbody>
+      </table>` : ''}
+
+    <div style="font-size:13px;font-weight:700;color:${accent};margin-bottom:6px">Authorization</div>
+    <div style="font-size:10.5px;color:#444;line-height:1.6;margin-bottom:10px">By signing below, the client authorizes ${esc(company)} to proceed with the agreed scope, pricing, schedule, and commercial terms described in this proposal, subject to written revisions accepted by both parties.</div>
+    <div style="display:flex;gap:12px">
+      <div style="flex:1;border:1px solid #d9e6ef;padding:14px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:12px">Client Authorization</div>
+        ${['Name', 'Title', 'Signature', 'Date'].map(l => `<div style="font-size:10.5px;color:#222;margin-bottom:11px">${l}: ______________________________</div>`).join('')}
+      </div>
+      <div style="flex:1;border:1px solid #d9e6ef;padding:14px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:12px">${esc(company.toUpperCase())} Authorization</div>
+        <div style="font-size:10.5px;color:#222;margin-bottom:11px">Name: ${esc(pi.contactName || '______________________________')}</div>
+        <div style="font-size:10.5px;color:#222;margin-bottom:11px">Title: ${esc(company)}</div>
+        <div style="font-size:10.5px;color:#222;margin-bottom:11px">Signature: ___________________________</div>
+        <div style="font-size:10.5px;color:#222;margin-bottom:11px">Date: ______________________________</div>
+      </div>
+    </div>`);
+
+  // ── PAGE 5 · Material order list ───────────────────────────────────────────
+  const boqRows = [];
+  for (const g of (est.groups || [])) {
+    const items = (g.items || []).filter(it => Number(it.qty) > 0);
+    items.forEach((it, i) => boqRows.push({
+      cat: i === 0 ? (g.title || g.code || '') : '',
+      name: it.title || '', qty: Number(it.qty) || 0, unit: it.unit || '', note: it.description || '',
+    }));
+  }
+  const boq = boqRows.length ? page(`
+    ${h2('5. Material Order List (BOQ Summary)')}
+    <div style="font-size:10.5px;color:#444;line-height:1.6;margin-bottom:12px">Order quantities below are derived from the project drawings, schedules, specifications and take-off. Final procurement must be reconciled to approved shop drawings and manufacturer stock lengths before release.</div>
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr style="background:#111;color:#fff">
+        <th style="padding:7px 10px;text-align:left;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;width:120px">Category</th>
+        <th style="padding:7px 10px;text-align:left;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase">Material / Equipment</th>
+        <th style="padding:7px 10px;text-align:right;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;width:80px">Order Qty.</th>
+        <th style="padding:7px 10px;text-align:left;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;width:50px">Unit</th>
+        <th style="padding:7px 10px;text-align:left;font-size:9.5px;letter-spacing:.05em;text-transform:uppercase;width:190px">Procurement Notes</th>
+      </tr></thead>
+      <tbody>${boqRows.map(r => `<tr style="border-bottom:1px solid #eef3f7">
+        <td style="padding:6px 10px;font-size:10px;font-weight:700;color:${accent}">${esc(r.cat)}</td>
+        <td style="padding:6px 10px;font-size:10px;color:#222">${esc(r.name)}</td>
+        <td style="padding:6px 10px;font-size:10px;text-align:right;font-family:var(--mono)">${r.qty.toLocaleString()}</td>
+        <td style="padding:6px 10px;font-size:10px;font-family:var(--mono);color:#555">${esc(r.unit)}</td>
+        <td style="padding:6px 10px;font-size:9px;color:#666;line-height:1.45">${esc(r.note)}</td>
+      </tr>`).join('')}</tbody>
+    </table>`) : '';
+
+  const all = cover + summary + scopePage + pricing + boq;
+  // Whichever page ends up last must NOT force a break, or every print comes
+  // out with a blank sheet on the end.
+  const BRK = 'page-break-after:always';
+  const last = all.lastIndexOf(BRK);
+  const doc = last < 0 ? all : all.slice(0, last) + 'page-break-after:auto' + all.slice(last + BRK.length);
+
+  return doc +
+    ((pi.hidePoweredBy && hasWhitelabel()) ? '' : `<div style="max-width:1100px;margin:0 auto 26px;font-family:'JetBrains Mono',monospace;font-size:8.5px;letter-spacing:.12em;color:#999;text-align:center">POWERED BY NOVANTU</div>`);
+}
+
 function buildBuilderPrintView() {
   const pid = ST.builderSelProj || ST.selProj;
   const proj = allProjects().find(p => p.id === pid);
@@ -7684,7 +7930,51 @@ function buildBuilderPrintView() {
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
           <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Table style</div>
-            <select class="msel" onchange="settingsSetPath(['print','layoutStyle'], this.value)" style="width:100%">${[['standard','Standard'],['compact','Compact']].map(([c,l]) => `<option value="${c}"${(pi.layoutStyle||'standard')===c?' selected':''}>${l}</option>`).join('')}</select></div>
+            <select class="msel" onchange="settingsSetPath(['print','layoutStyle'], this.value)" style="width:100%">${[['standard','Standard — internal cost sheet'],['compact','Compact — internal cost sheet'],['proposal','Proposal — client-facing bid']].map(([c,l]) => `<option value="${c}"${(pi.layoutStyle||'standard')===c?' selected':''}>${l}</option>`).join('')}</select>
+          <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:4px;line-height:1.45">${layout === 'proposal'
+            ? 'Cover, scope by division, inclusions/exclusions, owner pricing, terms, signatures and a material list. Cost and markup never appear — safe to send to a GC.'
+            : 'Shows builder cost, markup % and client price side by side. This is your internal sheet — do not send it out.'}</div></div>
+        ${layout === 'proposal' ? `
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);padding-bottom:4px;border-bottom:1px solid var(--border);margin-top:4px">Proposal document</div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Email</div>
+            <input type="text" class="minp" value="${esc(pi.companyEmail||'')}" onblur="settingsSetPath(['print','companyEmail'], this.value)" style="width:100%;box-sizing:border-box"></div>
+          <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Primary contact</div>
+            <input type="text" class="minp" value="${esc(pi.contactName||'')}" onblur="settingsSetPath(['print','contactName'], this.value)" style="width:100%;box-sizing:border-box"></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+          <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Proposal prefix</div>
+            <input type="text" class="minp" value="${esc(pi.proposalPrefix||'')}" placeholder="auto" title="Leading code on the proposal number. Blank = initials of the company name." onblur="settingsSetPath(['print','proposalPrefix'], this.value)" style="width:100%;box-sizing:border-box"></div>
+          <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Valid (days)</div>
+            <input type="number" min="1" class="minp" value="${Number(pi.validDays)||30}" onblur="settingsSetPath(['print','validDays'], Number(this.value)||30)" style="width:100%;box-sizing:border-box"></div>
+          <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">In business since</div>
+            <input type="text" class="minp" value="${esc(pi.sinceYear||'')}" placeholder="2015" onblur="settingsSetPath(['print','sinceYear'], this.value)" style="width:100%;box-sizing:border-box"></div>
+        </div>
+
+        <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Prepared for <span style="color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0">(blank = the project's GC)</span></div>
+          <input type="text" class="minp" value="${esc(pi.preparedFor||'')}" onblur="settingsSetPath(['print','preparedFor'], this.value)" style="width:100%;box-sizing:border-box"></div>
+
+        <div style="display:grid;grid-template-columns:1fr 1.3fr;gap:8px">
+          <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Sales tax %</div>
+            <input type="number" min="0" step="0.01" class="minp" value="${Number(pi.taxRate)||0}" onblur="settingsSetPath(['print','taxRate'], Number(this.value)||0)" style="width:100%;box-sizing:border-box"></div>
+          <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Tax applies to</div>
+            <select class="msel" onchange="settingsSetPath(['print','taxBase'], this.value)" style="width:100%">
+              ${[['materials','Materials & Equipment lines'],['flagged','Only items ticked taxable']].map(([c,l]) => `<option value="${c}"${(pi.taxBase||'materials')===c?' selected':''}>${l}</option>`).join('')}
+            </select></div>
+        </div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:-6px;line-height:1.45">0% hides the tax line entirely.</div>
+
+        <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Bid basis &amp; clarifications <span style="color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0">(one per line)</span></div>
+          <textarea class="minp" rows="4" onblur="settingsSetPath(['print','clarifications'], this.value)" placeholder="Bid is based on the drawings listed in this proposal.&#10;All quantities are subject to final field verification." style="width:100%;box-sizing:border-box;font-size:12px;resize:vertical;line-height:1.5">${esc(pi.clarifications||'')}</textarea></div>
+
+        <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Commercial terms <span style="color:var(--text3);font-weight:400;text-transform:none;letter-spacing:0">(Label: value, one per line)</span></div>
+          <textarea class="minp" rows="5" onblur="settingsSetPath(['print','terms'], this.value)" placeholder="Payment Terms: Progress billing per approved schedule of values.&#10;Warranty: One year on labor and furnished materials." style="width:100%;box-sizing:border-box;font-size:12px;resize:vertical;line-height:1.5">${esc(pi.terms||'')}</textarea></div>
+
+        <button class="btn btn-ghost btn-sm" onclick="proposalLoadDefaults()" title="Fill the two boxes above with a commercial trade-contractor set">↺ Load commercial defaults</button>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text3);line-height:1.45">The Scope field further down feeds Inclusions / Exclusions — use <b>Scope templates</b> to load a full set.</div>
+        ` : ''}
           <div><div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-bottom:4px">Orientation</div>
             <select class="msel" onchange="settingsSetPath(['print','pageOrientation'], this.value)" style="width:100%">${[['portrait','Portrait'],['landscape','Land.']].map(([c,l]) => `<option value="${c}"${(pi.pageOrientation||'portrait')===c?' selected':''}>${l}</option>`).join('')}</select></div>
         </div>
@@ -7748,6 +8038,7 @@ function buildBuilderPrintView() {
       <button onclick="ST.builderPrintEditPanel=${panelOpen?'false':'true'};render()" style="background:${panelOpen?'var(--ink-900)':'var(--bg)'};color:${panelOpen?'var(--bone-50)':'var(--ink-900)'};border:1px solid var(--ink-900);padding:6px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase" title="Edit template settings">✎ Edit template</button>
     </div>
     <div style="${contentMargin};padding-top:52px;transition:margin-right .15s">
+    ${layout === 'proposal' ? buildProposalPages({ pid, proj, est, totals, pi, brand, accent, fontStack, showLogo, logoH, dateStr }) : `
     ${pi.coverPage ? `
     <div class="print-page cover-page" style="background:#fff;color:#000;padding:${compact?'40px 48px':'80px 64px'};max-width:${pi.pageOrientation==='landscape'?'1400px':'1100px'};margin:0 auto 30px;font-family:${fontStack};min-height:${pi.pageOrientation==='landscape'?'500px':'800px'};display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;page-break-after:always;${pi.showGridLines?'outline:1px dashed rgba(0,0,0,.15);outline-offset:-12px;':''}">
       ${showLogo ? `<img src="${brand.logoData}" style="max-height:${Math.max(140, logoH*2)}px;max-width:60%;margin-bottom:48px">` : ''}
@@ -7785,6 +8076,7 @@ function buildBuilderPrintView() {
       ${pi.footerText ? `<div style="margin-top:32px;padding-top:14px;border-top:1px solid ${headerBg};font-family:var(--mono);font-size:10px;color:#666;text-align:center;letter-spacing:.04em">${esc(pi.footerText)}</div>` : ''}
       ${(pi.hidePoweredBy && hasWhitelabel()) ? '' : `<div style="margin-top:26px;font-family:'JetBrains Mono',monospace;font-size:8.5px;letter-spacing:.12em;color:#999;text-align:center">POWERED BY NOVANTU</div>`}
     </div>
+    `}
     </div>
   `;
 }
@@ -18273,6 +18565,24 @@ function scopeTplLoadPresets() {
   }
   saveSt(); render();
   showToast(n ? `${n} scope template${n === 1 ? '' : 's'} loaded — edit them to match your voice.` : 'Already loaded.', n ? 'success' : 'info');
+}
+
+// Fills the proposal's two prose boxes from the same preset set. Kept separate
+// from scopeTplLoadPresets() because these land in the PRINT template, not in
+// the reusable scope library.
+function proposalLoadDefaults() {
+  const find = (n) => HVAC_SCOPE_PRESETS.find(p => p.name === n);
+  const clar = find('Bid basis & clarifications');
+  const terms = find('Commercial terms');
+  if (clar) settingsSetPath(['print', 'clarifications'], clar.included);
+  if (terms) settingsSetPath(['print', 'terms'], (terms.included || '').split('\n').map(l => {
+    // "PAYMENT TERMS: to be…" → "Payment Terms: to be…" so the table reads well.
+    const i = l.indexOf(':');
+    if (i <= 0) return l;
+    const k = l.slice(0, i).toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+    return k + l.slice(i);
+  }).join('\n'));
+  showToast('Commercial defaults loaded — edit them to match your voice.', 'success');
 }
 
 // Presets for the "Add cost code" picker: HVAC subs get HVAC codes, other subs
