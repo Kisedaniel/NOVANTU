@@ -11948,10 +11948,22 @@ function buildSubsTab() {
     return matchQ && matchCat && matchActive && matchTags;
   });
   const uniqueCodes = [...new Set(subs.flatMap(s=>subCodes(s)).filter(Boolean))].sort();
+  // The starter directory is compiled into the app, so it can't be deleted row
+  // by row. Say so where the rows actually are, with the switch right there.
+  const seedOn = wsOwnsBaseSeed();
+  const seedHidden = (() => { try { return getSettings().hideSampleDirectory === true; } catch (_e) { return false; } })();
+  const seedBanner = (seedOn || seedHidden) ? `
+    <div style="margin:0 10px 8px;padding:8px 11px;background:${seedHidden ? 'var(--bg1)' : 'var(--amber-bg)'};border:1px solid ${seedHidden ? 'var(--border)' : 'var(--amber-border)'};border-radius:var(--r2);display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+      <span style="flex:1;min-width:150px;font-family:var(--mono);font-size:9.5px;line-height:1.5;color:${seedHidden ? 'var(--text3)' : 'var(--amber)'}">
+        ${seedHidden ? 'Starter directory hidden — you only see your own contacts.' : `Showing the built-in starter directory (${SUBS_BASE.length} sample ${dirLabels().lower}s). They live in the app, not in your data — hide them all at once.`}
+      </span>
+      <button class="btn ${seedHidden ? 'btn-ghost' : 'btn-amber'} btn-sm" onclick="wsToggleSampleDirectory()">${seedHidden ? 'Show samples' : 'Hide samples'}</button>
+    </div>` : '';
 
   return `
     <div class="split">
       <div class="list-panel">
+        ${seedBanner}
         <div class="search-wrap">
           <div class="search-box">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
@@ -18621,7 +18633,24 @@ function hasBudgetCalculator() { if (AUTH.isMaster && ST.masterSeeAll) return tr
 function wsOwnsBaseSeed(wsId) {
   wsId = wsId || ST.activeWorkspace;
   const ws = ST.workspaces && ST.workspaces[wsId];
-  return !!(ws && ws.ownsBaseSeed === true);
+  if (!(ws && ws.ownsBaseSeed === true)) return false;
+  // The starter directory is 600+ contacts compiled in the code, not rows in
+  // this workspace — so "delete" can never clear them one by one, and on a
+  // trade-contractor workspace they are simply the wrong list. This switch
+  // hides the whole set at once. It lives in settings (which sync) rather than
+  // on the workspace registry, because the registry's owner-assignment would
+  // otherwise resurrect the seed on the next load.
+  try { return getSettings().hideSampleDirectory !== true; } catch (_e) { return true; }
+}
+
+// Toggle the starter directory. Nothing is destroyed either way: contacts you
+// added yourself are untouched, and turning it back on restores the samples.
+function wsToggleSampleDirectory() {
+  const hidden = (() => { try { return getSettings().hideSampleDirectory === true; } catch (_e) { return false; } })();
+  if (!hidden && !confirm('Hide the starter directory?\n\nThe built-in sample contacts disappear from this workspace. Anything you added yourself stays, and you can turn this back on any time.')) return;
+  settingsSet('hideSampleDirectory', !hidden);
+  if (typeof _invalidateProjectSubCache === 'function') _invalidateProjectSubCache();
+  showToast(hidden ? 'Starter directory restored.' : 'Starter directory hidden — only your own contacts remain.', 'success');
 }
 
 // Scan active workspace data for category names that currently hold data, so a swap never orphans anything.
