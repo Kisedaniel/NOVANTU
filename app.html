@@ -4866,6 +4866,12 @@ async function loadSt() {
     ST.assistantPending = null;
     ST.assistantBusy = false;
     ST.agentPlan = null;
+    // The chat's project lock is per-workspace — carrying it across would point
+    // the assistant at a project id that doesn't exist in the new one.
+    ST.asstProject = null;
+    ST.detailsResult = null;
+    ST.detailsLoading = null;
+    ST.detailsOpen = null;
     ST.workerInbox = {};
     ST.dlogCompile = null;
     ST.dlogCompileLoading = null;
@@ -6096,6 +6102,8 @@ function render() {
     ST.dlogCompile ? 'dlogcompile' : '',
     ST.toAI ? 'toai' : '',
     ST.toSheet ? 'tosheet' : '',
+    ST.agentPlan ? 'agentplan' : '',
+    ST.detailsResult ? 'details' : '',
   ].filter(Boolean).join('|');
   const overlayJustOpened = overlaySig && overlaySig !== _lastOverlaySig;
   _lastOverlaySig = overlaySig;
@@ -7163,6 +7171,11 @@ function buildScopeTemplatesModal() {
   return `<div class="backdrop" onclick="if(event.target===this){ST.scopeTemplatesModal=null;render()}"><div class="modal" style="max-width:760px" onclick="event.stopPropagation()">
     <div class="modal-title">▤ Scope templates</div>
     <div class="modal-sub">Reusable inclusion / exclusion clauses by trade. Save your standard scope once, then drop it into a proposal's notes.</div>
+    ${(wsSubTrade() === 'hvac' || (AUTH.isMaster && ST.masterSeeAll)) ? `
+      <div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:9px 13px">
+        <span style="font-size:12.5px;color:var(--ink-900);flex:1;min-width:240px">Start from a commercial HVAC set — base scope, bid basis &amp; clarifications, and commercial terms. Everything stays editable.</span>
+        <button class="btn btn-amber btn-sm" onclick="scopeTplLoadPresets()">Load HVAC presets</button>
+      </div>` : ''}
     <div style="margin:18px 0 6px;padding:16px 18px;background:var(--bg1);border:1px solid var(--border)">
       <div style="font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:12px">Save a clause set</div>
       <div style="display:grid;grid-template-columns:1.4fr 2fr;gap:12px;margin-bottom:12px">
@@ -10736,6 +10749,7 @@ function buildApp() {
       ${ST.toAI ? buildTakeoffAIModal() : ''}
       ${ST.toSheet ? buildTakeoffSheetModal() : ''}
       ${ST.agentPlan ? buildAgentPlanModal() : ''}
+      ${ST.detailsResult ? buildDetailsModal() : ''}
     </div>`;
 }
 
@@ -10900,6 +10914,8 @@ function buildProjectDetail(p) {
 
     ${buildArchSet(p)}
 
+    ${buildProjectDetailsBox(p)}
+
     ${buildProjBoxes(p)}
 
     ${buildClientShareSectionV2(p)}
@@ -10997,6 +11013,8 @@ function buildSubProjectDetail(p) {
     </div>
 
     ${buildArchSet(p)}
+
+    ${buildProjectDetailsBox(p)}
 
     ${buildProjBoxes(p)}
 
@@ -14006,7 +14024,12 @@ function gcBreakdownClose() { aiOutcomeOnce(ST.gcBreakdown, false); ST.gcBreakdo
 async function aiCompleteText(pid, userPrompt, planImages, opts) {
   const ctx = estBuildContext(pid);
   if (opts && opts.lean) { ctx.priceList = []; ctx.reviewItems = []; ctx.derivedCodes = []; ctx.openRfis = []; }
-  const body = { projectContext: ctx, messages: [{ role: 'user', content: userPrompt }] };
+  // opts.history = prior turns of the SAME conversation. Without it every
+  // message was a cold start: the assistant could not remember what you told it
+  // one line earlier, which read as amnesia. One-shot tasks (take-off, schedule,
+  // letters) pass no history on purpose — they are self-contained.
+  const prior = (opts && Array.isArray(opts.history)) ? opts.history : [];
+  const body = { projectContext: ctx, messages: prior.concat([{ role: 'user', content: userPrompt }]) };
   // opts.task → the real instruction is composed SERVER-SIDE from NOVANTU's
   // prompt library, so the methodology never ships to the browser. `userPrompt`
   // stays as a short placeholder for logs/fallback.
@@ -14707,6 +14730,233 @@ function takeoffPushToBuilder(pid, tid) {
   showToast('Take-off totals added to the Builder — set your unit costs there.', 'success');
 }
 
+// ============================================================
+// PROJECT DETAILS — read the plan set once, and the project describes itself.
+// ONE vision call fills the setup fields, writes a plain-language summary of the
+// building, and lists the code requirements the drawings actually trigger. It
+// all lands in the project's DETAILS panel: reviewable, editable, and the same
+// fields the rest of the platform already reads (estimates, schedules, codes).
+// ============================================================
+function detailsGet(pid) {
+  return (ST.overrides[pid] || {})._aiDetails || null;
+}
+
+async function detailsRead(pid) {
+  if (ST.detailsLoading) return;
+  const p = allProjects().find(x => x.id === pid); if (!p) return;
+  const e = getEstProj(pid);
+  if (!(e.plans || []).some(pl => hasPlanBinary(pl))) {
+    showToast('Upload the plan set for this project first — then I can read the details off it.', 'warn');
+    return;
+  }
+  ST.detailsLoading = pid; render();
+  let planImages = [];
+  try {
+    const r = await renderAllProjectPlans(pid);
+    planImages = r.images || [];
+    // Title block, cover sheet and code-analysis table live at the FRONT of a
+    // set, and vision cost scales with pages — 12 is plenty to identify a job.
+    if (planImages.length > 12) planImages = planImages.slice(0, 12);
+  } catch (err) { console.warn('details: plan render failed', err); }
+  // Never let it describe a building it cannot see — and never spend the credit.
+  if (!planImages.length) {
+    ST.detailsLoading = null; render();
+    showToast('Could not read the plan pages — re-upload the PDF and try again.', 'error');
+    return;
+  }
+  if (!trialGuardAI()) { ST.detailsLoading = null; render(); return; }
+  try {
+    const s = e.setup || {};
+    const knownText = AGENT_SETUP_FIELDS.filter(f => f !== 'notes' && s[f]).map(f => `  ${f}: ${s[f]}`).join('\n');
+    const text = await aiCompleteText(pid, `Project details · ${p.name}`, planImages, {
+      lean: true, task: 'details',
+      taskData: { projectName: p.name, knownText },
+    });
+    const parsed = parseAIJson(text);
+    if (!parsed) throw new Error('Could not read the project details. Try again.');
+    const arr = (x) => Array.isArray(x) ? x.map(v => String(v).slice(0, 220)).slice(0, 20) : [];
+    const raw = (parsed.setup && typeof parsed.setup === 'object') ? parsed.setup : {};
+    // Snap enum fields onto the real dropdown options. A value the <select> has
+    // never heard of saves fine and then renders as an EMPTY dropdown — silently
+    // wrong, which is worse than leaving the field blank and saying so.
+    const fields = [], skipped = [];
+    for (const f of AGENT_SETUP_FIELDS) {
+      if (f === 'notes') continue;
+      const v = String(raw[f] == null ? '' : raw[f]).trim().slice(0, 200);
+      if (!v) continue;
+      const snap = agentSnapEnum(f, v);
+      if (!snap.ok) { skipped.push(`${f} = “${v}”`); continue; }
+      fields.push({ field: f, value: snap.value, was: String(s[f] || ''), off: false });
+    }
+    ST.detailsResult = {
+      pid, fields, skipped,
+      summary: String(parsed.summary || '').slice(0, 1500),
+      keyFacts: arr(parsed.keyFacts),
+      codeNotes: arr(parsed.codeNotes),
+      missing: arr(parsed.missing),
+      pages: planImages.length,
+    };
+    aiLogEvent('details', { ok: true, images: planImages.length }).then(id => { if (ST.detailsResult) ST.detailsResult.evt = id; });
+  } catch (err) {
+    aiLogEvent('details', { ok: false, err: err && err.message, images: planImages.length });
+    showToast('Reading the plans failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.detailsLoading = null; render();
+  }
+}
+
+function detailsToggleField(i) {
+  const d = ST.detailsResult; if (!d || !d.fields[i]) return;
+  d.fields[i].off = !d.fields[i].off; render();
+}
+function detailsDiscard() { aiOutcomeOnce(ST.detailsResult, false); ST.detailsResult = null; render(); }
+
+function detailsApply(pid) {
+  const d = ST.detailsResult; if (!d || d.pid !== pid) return;
+  aiOutcomeOnce(d, true);
+  const setup = getEstProj(pid).setup;
+  let n = 0;
+  for (const f of d.fields) { if (f.off) continue; setup[f.field] = f.value; n++; }
+  if (!ST.overrides[pid]) ST.overrides[pid] = {};
+  ST.overrides[pid]._aiDetails = {
+    ts: new Date().toISOString(),
+    summary: d.summary, keyFacts: d.keyFacts, codeNotes: d.codeNotes, missing: d.missing, pages: d.pages,
+  };
+  ST.detailsResult = null;
+  saveSt();
+  ST.tab = 'projects'; ST.selProj = pid; ST.detailsOpen = pid;
+  render();
+  showToast(`Details saved — ${n} field${n === 1 ? '' : 's'} filled. They're in the project's DETAILS panel.`, 'success');
+}
+
+// Hand-editing the same fields the AI fills. Enum fields render as the real
+// <select>, so what you pick is always a value the rest of the app understands.
+function detailsSetField(pid, field, value) {
+  const snap = agentSnapEnum(field, String(value || ''));
+  getEstProj(pid).setup[field] = snap.ok ? snap.value : String(value || '');
+  saveSt();
+}
+function detailsToggleOpen(pid) {
+  ST.detailsOpen = (ST.detailsOpen === pid) ? null : pid;
+  render();
+}
+
+const DETAILS_FIELD_LABELS = {
+  address: 'Address', jurisdiction: 'Jurisdiction', projectType: 'Project type',
+  occupancy: 'Occupancy', constructionType: 'Construction type', codeYear: 'Code year',
+  stories: 'Stories', sqft: 'Gross SF', architect: 'Architect', mep: 'MEP',
+  structural: 'Structural', civil: 'Civil', bidSet: 'Drawing status / bid set',
+  prNumber: 'PR / project no.', estimator: 'Estimator', revision: 'Revision',
+};
+
+function buildDetailsModal() {
+  const d = ST.detailsResult; if (!d) return '';
+  const p = allProjects().find(x => x.id === d.pid) || { name: d.pid };
+  const flag = (title, items, color) => items.length ? `<div style="margin-top:10px;background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px">
+      <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${color};font-weight:600;margin-bottom:5px">${title}</div>
+      ${items.map(x => `<div style="font-size:12px;color:var(--ink-900);line-height:1.55">• ${esc(x)}</div>`).join('')}
+    </div>` : '';
+
+  return `<div class="backdrop" onclick="if(event.target===this){detailsDiscard()}">
+    <div class="modal modal-wide" style="max-width:720px" onclick="event.stopPropagation()">
+      <div class="modal-title">▣ Project details</div>
+      <div class="modal-sub">${esc(p.name)} · read from ${d.pages} plan page${d.pages === 1 ? '' : 's'} — review before it fills the project</div>
+
+      <div style="max-height:52vh;overflow:auto;margin-top:14px;padding-right:4px">
+        ${d.summary ? `<div style="font-size:13px;color:var(--ink-900);line-height:1.65;background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:11px 14px">${esc(d.summary)}</div>` : ''}
+
+        ${d.fields.length ? `
+          <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin:14px 0 6px">Fields it will fill — untick anything you don't want</div>
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            ${d.fields.map((f, i) => `<tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:5px 6px;width:26px"><input type="checkbox" ${f.off ? '' : 'checked'} onchange="detailsToggleField(${i})"></td>
+              <td style="padding:5px 6px;font-family:var(--mono);font-size:10px;color:var(--text3);white-space:nowrap">${esc(DETAILS_FIELD_LABELS[f.field] || f.field)}</td>
+              <td style="padding:5px 6px;color:${f.off ? 'var(--text3)' : 'var(--ink-900)'};text-decoration:${f.off ? 'line-through' : 'none'}">${esc(f.value)}</td>
+              <td style="padding:5px 6px;font-family:var(--mono);font-size:9.5px;color:var(--amber);text-align:right;white-space:nowrap">${f.was && f.was !== f.value ? 'was ' + esc(f.was) : ''}</td>
+            </tr>`).join('')}
+          </table>` : `<div style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-top:14px">Nothing readable in the title block — the fields stay as they are.</div>`}
+
+        ${flag('Key facts', d.keyFacts, 'var(--text3)')}
+        ${flag('⚠ Code requirements triggered — guidance, not a compliance check', d.codeNotes, 'var(--amber)')}
+        ${flag('Missing / could not find', d.missing, 'var(--plano,#c44a2c)')}
+        ${d.skipped.length ? flag('Skipped — not a valid option in this workspace, set by hand', d.skipped, 'var(--text3)') : ''}
+      </div>
+
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="detailsDiscard()">Discard</button>
+        <button class="btn btn-amber" onclick="detailsApply('${d.pid}')">✓ Save to project</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// The DETAILS panel that lives on the project itself.
+function buildProjectDetailsBox(p) {
+  const pid = p.id;
+  const e = (ST.estimator && ST.estimator[pid]) || {};
+  const s = e.setup || {};
+  const ai = detailsGet(pid);
+  const open = ST.detailsOpen === pid;
+  const busy = ST.detailsLoading === pid;
+  const keys = Object.keys(DETAILS_FIELD_LABELS);
+  const filled = keys.filter(k => s[k]).length;
+  const codes = (typeof deriveCodes === 'function') ? deriveCodes(s) : [];
+  const planCount = (e.plans || []).length;
+
+  const head = `<div class="sec-heading" style="display:flex;justify-content:space-between;align-items:center;gap:10px;cursor:pointer" onclick="detailsToggleOpen('${pid}')">
+      <span>${open ? '▾' : '▸'} Details${filled ? ` <span style="font-family:var(--mono);font-size:9.5px;color:var(--text3);letter-spacing:.06em">${filled}/${keys.length} filled${codes.length ? ` · ${codes.length} code item${codes.length === 1 ? '' : 's'}` : ''}</span>` : ` <span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">empty</span>`}</span>
+      <button class="btn btn-ghost btn-sm" ${busy ? 'disabled' : ''} onclick="event.stopPropagation();detailsRead('${pid}')" title="${planCount ? 'Read the uploaded plan set and fill these in' : 'Upload the plan set first'}">${busy ? '<span class="rp-spinner"></span> Reading…' : '✦ Read from plans'}</button>
+    </div>`;
+
+  if (!open) return `<div class="cats-section">${head}</div>`;
+
+  const fieldRow = (k) => {
+    const label = DETAILS_FIELD_LABELS[k];
+    const getOpts = AGENT_ENUM_FIELDS[k];
+    const val = String(s[k] || '');
+    const input = getOpts
+      ? `<select class="msel" style="font-size:12px;padding:5px 8px" onchange="detailsSetField('${pid}','${k}',this.value);render()">
+           <option value=""${val ? '' : ' selected'}>—</option>
+           ${(getOpts() || []).map(o => `<option value="${esc(o)}"${o === val ? ' selected' : ''}>${esc(o)}</option>`).join('')}
+         </select>`
+      : `<input class="minp" style="font-size:12px;padding:5px 8px" value="${esc(val)}" onchange="detailsSetField('${pid}','${k}',this.value)">`;
+    return `<div style="display:flex;flex-direction:column;gap:3px">
+      <span style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3)">${esc(label)}</span>
+      ${input}
+    </div>`;
+  };
+
+  const block = (title, items, color) => items.length ? `<div style="margin-top:12px">
+      <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${color};font-weight:600;margin-bottom:5px">${title}</div>
+      ${items.map(x => `<div style="font-size:12px;color:var(--ink-900);line-height:1.6">• ${esc(x)}</div>`).join('')}
+    </div>` : '';
+
+  return `<div class="cats-section">
+    ${head}
+    <div style="padding:4px 0 6px">
+      ${ai && ai.summary ? `<div style="font-size:12.5px;color:var(--ink-900);line-height:1.65;background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:10px 13px;margin-bottom:12px">${esc(ai.summary)}</div>` : ''}
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:9px">
+        ${keys.map(fieldRow).join('')}
+      </div>
+
+      ${ai ? block('Key facts', ai.keyFacts || [], 'var(--text3)') : ''}
+
+      ${codes.length ? `<div style="margin-top:12px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--amber);font-weight:600;margin-bottom:5px">Code compliance — derived from the fields above</div>
+        ${codes.slice(0, 24).map(c => `<div style="font-size:12px;color:var(--ink-900);line-height:1.6">• <b>${esc(c.label || '')}</b>${c.ref ? ` <span style="font-family:var(--mono);font-size:10px;color:var(--text3)">${esc(c.ref)}</span>` : ''}${c.why ? ` — <span style="color:var(--text2)">${esc(c.why)}</span>` : ''}</div>`).join('')}
+      </div>` : ''}
+
+      ${ai ? block('⚠ Triggered by the drawings — guidance, not a compliance check', ai.codeNotes || [], 'var(--amber)') : ''}
+      ${ai ? block('Missing / verify', ai.missing || [], 'var(--plano,#c44a2c)') : ''}
+
+      <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:12px">
+        ${ai ? `Read from ${ai.pages || '?'} plan page${ai.pages === 1 ? '' : 's'} on ${new Date(ai.ts).toLocaleDateString()} · every field is editable` : 'Fields are editable — or upload the plan set and let the AI read them in.'}
+      </div>
+    </div>
+  </div>`;
+}
+
 function buildTakeoffAIModal() {
   const m = ST.toAI; if (!m) return '';
   const p = allProjects().find(x => x.id === m.pid) || { name: m.pid };
@@ -15170,6 +15420,55 @@ function assistantPush(role, text) {
   setTimeout(() => { const el = document.getElementById('ai-cmd-log'); if (el) el.scrollTop = el.scrollHeight; }, 30);
 }
 
+// How many prior turns of the Ask AI thread ride along on each message. 12 is
+// ~6 exchanges — enough for "and now do the same for the other one" to work,
+// short enough that a long session doesn't quietly inflate every call.
+const ASST_HISTORY_TURNS = 12;
+
+// The conversation so far, shaped the way the API wants it: alternating roles,
+// starting on a user turn. `dropLast` skips the message we just pushed, because
+// the caller appends it as the live prompt.
+function asstHistory(dropLast) {
+  const log = (ST.assistantLog || []).filter(m => m.role === 'user' || m.role === 'assistant');
+  const rows = dropLast ? log.slice(0, -1) : log.slice();
+  const out = [];
+  for (const m of rows.slice(-ASST_HISTORY_TURNS)) {
+    // Long take-off dumps and plan summaries would blow the budget verbatim.
+    const content = String(m.text || '').slice(0, 4000);
+    if (!content) continue;
+    // Consecutive same-role turns get merged rather than sent as-is.
+    if (out.length && out[out.length - 1].role === m.role) out[out.length - 1].content += '\n\n' + content;
+    else out.push({ role: m.role, content });
+  }
+  while (out.length && out[0].role !== 'user') out.shift();
+  return out;
+}
+
+// ── Project scope for the assistant ──────────────────────────────────────────
+// null = general mode (questions across the whole workspace). A pid = the
+// assistant is LOCKED to that project: see asstPlanValidate, which refuses any
+// action pointing anywhere else. The lock is enforced in code, not in the
+// prompt — a model that misreads its instructions still cannot escape it.
+function asstScopePid() {
+  const pid = ST.asstProject || null;
+  if (!pid) return null;
+  return allProjects().some(p => p.id === pid) ? pid : null;   // stale pid → general
+}
+function asstScopeProject() {
+  const pid = asstScopePid();
+  return pid ? (allProjects().find(p => p.id === pid) || null) : null;
+}
+function asstSetScope(pid) {
+  const next = pid || null;
+  if ((ST.asstProject || null) === next) return;
+  ST.asstProject = next;
+  const p = next ? allProjects().find(x => x.id === next) : null;
+  assistantPush('assistant', p
+    ? `⦿ Locked to “${p.name}”. I'll only read and change this project — nothing else in the workspace can be touched while this is selected.`
+    : '⦿ General mode. I can answer across every project now; to change something, pick the project first.');
+  saveSt(); render();
+}
+
 function aiCmdExampleFill(el) {
   const inp = document.getElementById('ai-cmd-input');
   if (inp) { inp.value = el.getAttribute('data-fill') || ''; inp.focus(); }
@@ -15216,6 +15515,12 @@ function aiCmdIntent(msg) {
   const m = msg.toLowerCase();
   const has = (...ws) => ws.some(w => m.includes(w));
   if (has('award', 'regret', 'adjudic', 'ganador')) return 'award';
+  // "Read the plans" comes BEFORE take-off: both mention plans, but this one is
+  // the cheap first pass that identifies the job, not the measuring pass.
+  if (has('read the plan', 'read plans', 'lee los plano', 'leer los plano', 'lee el plano',
+          'project details', 'detalles del proyecto', 'code compliance', 'cumplimiento',
+          'what is this project', 'que es este proyecto', 'qué es este proyecto',
+          'describe the', 'resumen de la casa', 'summarize the plan')) return 'details';
   if (has('take off', 'take-off', 'takeoff', 'metrado', 'cuantifica', 'quantities', 'quantify')) return 'takeoff';
   if (has('break down', 'breakdown', 'desglos', 'rfp', 'rfq')) return 'breakdown';
   if (has('follow', 'seguimiento', 'correo', 'email', 'mail', 'chase')) return 'followup';
@@ -15293,9 +15598,12 @@ function aiCmdMatchProject(msg) {
 // executed — the same review-before-apply contract as every other AI feature
 // here, which is the whole reason this product is trustworthy.
 // ═════════════════════════════════════════════════════════════════════════════
-const AGENT_SETUP_FIELDS = ['address', 'jurisdiction', 'projectType', 'occupancy', 'constructionType', 'codeYear', 'stories', 'sqft', 'architect', 'mep', 'structural', 'civil', 'bidSet', 'notes'];
+// prNumber / estimator / revision come from how a real submitted bid identifies
+// itself on its cover page: the GC's project reference, who priced it, and which
+// revision this is. Without them every proposal needs those three typed by hand.
+const AGENT_SETUP_FIELDS = ['address', 'jurisdiction', 'projectType', 'occupancy', 'constructionType', 'codeYear', 'stories', 'sqft', 'architect', 'mep', 'structural', 'civil', 'bidSet', 'prNumber', 'estimator', 'revision', 'notes'];
 const AGENT_TABS = ['projects', 'estimator', 'builder', 'bids', 'schedule', 'dailylog', 'subs', 'settings'];
-const AGENT_RUNS = ['takeoff', 'estimate', 'schedule', 'breakdown'];
+const AGENT_RUNS = ['takeoff', 'estimate', 'schedule', 'breakdown', 'details'];
 // Setup fields backed by a fixed <select>. A value outside the list saves fine
 // but renders as an EMPTY dropdown — silently wrong, which is worse than
 // refusing. Snap to the real option, or reject the write and say why.
@@ -15340,7 +15648,21 @@ function asstWorldSnapshot() {
       const e = (ST.estimator && ST.estimator[p.id]) || {};
       const groups = ((ST.estimates && ST.estimates[p.id] && ST.estimates[p.id].groups) || [])
         .map(g => g.code).filter(Boolean).slice(0, 12);
-      L.push(`  id=${p.id} | "${p.name}" | ${p.status || 'active'} | ${t.itemCount || 0} estimate item(s) | ${((e.plans) || []).length} plan file(s)${groups.length ? ` | groups: ${groups.join(', ')}` : ''}`);
+      // Cost/price/margin and size ride along so workspace-wide questions
+      // ("average margin on jobs this size", "which ones are unpriced") are
+      // answerable from the snapshot instead of needing a call per project.
+      const s = e.setup || {};
+      const cost = Math.round(Number(t.builder) || 0);
+      const price = Math.round(Number(t.client) || 0);
+      const marginPct = (price > 0 && cost > 0) ? Math.round(((price - cost) / price) * 1000) / 10 : null;
+      const money = price > 0 ? ` | cost $${cost.toLocaleString()} → price $${price.toLocaleString()}${marginPct != null ? ` (margin ${marginPct}%)` : ''}` : ' | not priced yet';
+      const facts = [
+        s.sqft ? `${s.sqft} sf` : '',
+        s.projectType || '',
+        s.jurisdiction || '',
+        s.stories ? `${s.stories} story` : '',
+      ].filter(Boolean).join(', ');
+      L.push(`  id=${p.id} | "${p.name}" | ${p.status || 'active'}${facts ? ` | ${facts}` : ''} | ${t.itemCount || 0} estimate item(s)${money} | ${((e.plans) || []).length} plan file(s)${groups.length ? ` | groups: ${groups.join(', ')}` : ''}`);
     });
   }
   try {
@@ -15370,23 +15692,31 @@ function asstWorldSnapshot() {
 
 async function aiAgentPlan(msg) {
   if (!trialGuardAI()) return;
+  const scopePid = asstScopePid();
+  const scopeProj = scopePid ? allProjects().find(p => p.id === scopePid) : null;
   ST.assistantBusy = true; render();
   try {
     const text = await aiPostAsk({
-      // The agent is workspace-wide, not project-scoped — a stub keeps the
-      // server contract satisfied without inventing a project.
-      projectContext: {
+      // Locked to a project → send that project's real context so the answer is
+      // grounded in its setup, plans and estimate. General mode → a stub, and
+      // the world snapshot below carries the cross-project picture instead.
+      projectContext: scopePid ? estBuildContext(scopePid) : {
         projectName: '(workspace)', setup: {}, plans: [],
         reviewItems: [], derivedCodes: [], openRfis: [], isSub: isSubAccount(),
       },
-      messages: [{ role: 'user', content: msg }],
+      messages: asstHistory(true).concat([{ role: 'user', content: msg }]),
       task: 'agent',
-      taskData: { msg, world: asstWorldSnapshot() },
+      taskData: {
+        msg,
+        world: asstWorldSnapshot(),
+        scopePid: scopePid || '',
+        scopeName: scopeProj ? scopeProj.name : '',
+      },
     });
     const parsed = parseAIJson(text);
     if (!parsed) throw new Error('I could not put together a plan for that. Try saying it a different way.');
     const reply = String(parsed.reply || '').trim();
-    const { actions, rejected } = asstPlanValidate(parsed.actions);
+    const { actions, rejected } = asstPlanValidate(parsed.actions, scopePid);
     aiLogEvent('agent', { ok: true }).then(id => { if (ST.agentPlan) ST.agentPlan.evt = id; });
 
     if (!actions.length) {
@@ -15405,17 +15735,32 @@ async function aiAgentPlan(msg) {
 
 // Whitelist gate. Anything the model returns that isn't a known op with sane
 // arguments is dropped here and reported — the model proposes, this decides.
-function asstPlanValidate(raw) {
+function asstPlanValidate(raw, scopePid) {
   const actions = [], rejected = [];
   const refs = new Set();
   let creating = 0;
   const maxP = (typeof getActiveMaxProjects === 'function') ? getActiveMaxProjects() : null;
   const known = (pid) => refs.has(pid) || allProjects().some(p => p.id === pid);
+  // THE LOCK. When the user has a project selected, this is the only place that
+  // decides what may be touched — and it answers "this project, nothing else".
+  // The model is told the same thing in its prompt, but that's a courtesy; this
+  // is the guarantee. A plan that strays is dropped action by action, and the
+  // user is told exactly what was skipped and why.
+  const scoped = scopePid ? String(scopePid) : '';
+  const scopeName = scoped ? ((allProjects().find(p => p.id === scoped) || {}).name || 'the selected project') : '';
 
   for (const a of (Array.isArray(raw) ? raw : []).slice(0, 40)) {
     const op = String((a && a.op) || '');
-    const pid = String((a && a.pid) || '').trim();
+    let pid = String((a && a.pid) || '').trim();
+    // Inside a locked project an omitted pid is an obvious self-reference, not
+    // a licence to roam — bind it rather than rejecting a plan that was right.
+    if (scoped && !pid && op !== 'create_project' && op !== 'open_tab') pid = scoped;
+    if (scoped && pid && pid !== scoped) {
+      rejected.push(`${op || 'an action'} on another project — I'm locked to “${scopeName}”`);
+      continue;
+    }
     if (op === 'create_project') {
+      if (scoped) { rejected.push(`creating a project while locked to “${scopeName}” — switch the picker to General first`); continue; }
       const name = String((a && a.name) || '').trim().slice(0, 80);
       if (!name) { rejected.push('a project with no name'); continue; }
       if (maxP != null && getProjectCount() + creating >= maxP) { rejected.push(`“${name}” (plan limit of ${maxP} project${maxP === 1 ? '' : 's'} reached)`); continue; }
@@ -15599,10 +15944,21 @@ async function aiCmdSend() {
   if (inp) inp.value = '';
   assistantPush('user', msg);
   const intent = aiCmdIntent(msg);
+
+  // A selected project overrides everything: no guessing from the wording, no
+  // "which project?" round-trip, and no way to land on a neighbouring job
+  // because two names look alike.
+  const scoped = asstScopeProject();
+  if (scoped) {
+    if (intent === 'agent') { await aiAgentPlan(msg); return; }
+    await aiCmdDispatch(intent, scoped, msg);
+    return;
+  }
+
   const match = aiCmdMatchProject(msg);
-  // Agent mode takes over when the user asks to CREATE or SET UP something —
-  // and whenever the workspace is empty, because "no projects yet, go make one
-  // by hand" is exactly the answer this assistant should never give.
+  // General mode. Agent mode is also the workspace-wide Q&A path — it gets the
+  // snapshot of every project, so "what's our average margin" is answerable
+  // here and "no projects yet, go make one by hand" is never the answer.
   if (intent === 'agent' || match.status === 'none') { await aiAgentPlan(msg); return; }
   if (match.status === 'ambiguous') {
     ST.assistantPending = { intent, msg };
@@ -15683,6 +16039,14 @@ async function aiCmdDispatch(intent, p, msg) {
     return;
   }
 
+  if (intent === 'details') {
+    const e = getEstProj(pid);
+    if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { assistantPush('assistant', `No plans uploaded for “${p.name}” yet — attach the plan set and ask me again, and I'll read the project off it.`); return; }
+    assistantPush('assistant', `✦ Reading the plan set for “${p.name}” — title block, cover and code table. You'll get the building described in plain language, the code requirements it triggers, and the project fields filled in for your review.`);
+    detailsRead(pid);
+    return;
+  }
+
   if (intent === 'takeoff') {
     const e = getEstProj(pid);
     if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { assistantPush('assistant', `No plans uploaded for “${p.name}” yet — add the plan set (Estimator → Plan Sets) and ask me again.`); return; }
@@ -15700,11 +16064,12 @@ async function aiCmdDispatch(intent, p, msg) {
     return;
   }
 
-  // Anything else → a normal AI question with this project's context.
+  // Anything else → a normal AI question with this project's context, carrying
+  // the thread so far so follow-ups like "and the second floor?" make sense.
   if (!trialGuardAI()) return;
   ST.assistantBusy = true; render();
   try {
-    const reply = await aiCompleteText(pid, msg);
+    const reply = await aiCompleteText(pid, msg, null, { history: asstHistory(true) });
     assistantPush('assistant', reply || '(no answer)');
   } catch (err) {
     assistantPush('assistant', '△ ' + (err.message || err));
@@ -15717,6 +16082,7 @@ function buildAssistantTab() {
   const log = ST.assistantLog || [];
   const examples = aiCmdExamples();
   const busy = !!ST.assistantBusy;
+  const scopeP = asstScopeProject();
   // Assistant text: escape, then turn [[pid|name]] tokens into project chips.
   const fmtA = (t) => esc(t)
     .replace(/\[\[([a-zA-Z0-9_.-]+)\|([^\]]+)\]\]/g, `<button onclick="aiCmdPickProject('$1')" style="display:inline-block;margin:2px 4px 2px 0;background:var(--bg1);border:1px solid var(--amber-border);color:var(--amber);border-radius:var(--r2);padding:4px 10px;font-family:var(--mono);font-size:11px;cursor:pointer">$2</button>`)
@@ -15745,14 +16111,28 @@ function buildAssistantTab() {
       ${busy ? `<div style="align-self:flex-start;font-family:var(--mono);font-size:11px;color:var(--text3)"><span class="rp-spinner"></span> thinking…</div>` : ''}
     </div>
 
-    <div style="display:flex;gap:8px;margin-top:10px">
-      <input id="ai-cmd-input" type="text" placeholder="Ask for an estimate, a schedule, a follow-up, award letters…" ${busy ? 'disabled' : ''}
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">
+      <span style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Working on</span>
+      <select id="ai-cmd-scope" onchange="asstSetScope(this.value)" ${busy ? 'disabled' : ''}
+        style="background:var(--bg);border:1px solid ${scopeP ? 'var(--amber)' : 'var(--border)'};border-radius:var(--r2);padding:7px 10px;font-family:var(--mono);font-size:11.5px;color:${scopeP ? 'var(--amber)' : 'var(--text)'};outline:none;max-width:280px">
+        <option value=""${scopeP ? '' : ' selected'}>◇ General — every project</option>
+        ${allProjects().map(p => `<option value="${esc(p.id)}"${scopeP && scopeP.id === p.id ? ' selected' : ''}>⦿ ${esc(p.name)}</option>`).join('')}
+      </select>
+      ${scopeP
+        ? `<span style="font-family:var(--mono);font-size:9.5px;color:var(--amber);background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:10px;padding:3px 9px" title="Nothing outside this project can be read or changed while it's selected">🔒 locked to this project</span>`
+        : `<span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">ask across all projects · pick one to make changes</span>`}
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <input id="ai-cmd-input" type="text" placeholder="${scopeP ? esc('Ask or tell me what to do on ' + scopeP.name + '…') : 'Ask across the workspace, or name a project…'}" ${busy ? 'disabled' : ''}
         onkeydown="if(event.key==='Enter')aiCmdSend()"
         style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--r2);padding:11px 14px;font-family:var(--sans);font-size:13px;color:var(--text);outline:none" onfocus="this.style.borderColor='var(--amber)'" onblur="this.style.borderColor='var(--border)'">
       <button class="btn btn-amber" ${busy ? 'disabled' : ''} onclick="aiCmdSend()">Send ↑</button>
     </div>
     <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:6px">
-      Plan questions? Use Ask AI inside the Estimator — it reads the sheets. This space is for getting things DONE.${isTrialPlan() ? ` · Trial: ${trialAILeft()}/${TRIAL_LIMITS.aiCalls} AI actions left` : ''}
+      ${scopeP
+        ? `Every action is checked against “${esc(scopeP.name)}” before it runs — anything pointing elsewhere is dropped and reported.`
+        : `General mode answers across the whole workspace — margins, status, follow-ups. Select a project above before asking for changes.`}${isTrialPlan() ? ` · Trial: ${trialAILeft()}/${TRIAL_LIMITS.aiCalls} AI actions left` : ''}
     </div>
   </div>`;
 }
@@ -17798,11 +18178,22 @@ function getActiveTradePack() { return getTradePack(wsSubTrade()); }
 // These are the cost codes an HVAC sub actually bills under (CSI 23-series),
 // aligned with SUB_TRADE_PACKS.hvac.categories and the take-off catalog.
 const HVAC_COST_CODES = [
+  // The six divisions a commercial HVAC bid is actually organised and billed
+  // under — matched to how a submitted campus-modernization proposal grouped
+  // its scope and its pricing summary. These come first because they are the
+  // headings a GC reads.
+  { code: '01 00.00', title: 'General Requirements' },
+  { code: '23 05.05', title: 'Mechanical Demolition' },
+  { code: '23 31.00', title: 'Ductwork, Fittings, Dampers & Supports' },
+  { code: '23 07.13', title: 'Mechanical Insulation & Piping' },
+  { code: '23 81.00', title: 'HVAC Equipment & Controls' },
+  { code: '23 37.00', title: 'Air Distribution, Startup & Closeout' },
+  // Finer codes for residential / service work, where the job is billed by
+  // component rather than by division.
   { code: '23 08.00', title: 'Load Calcs & Permits' },
   { code: '23 81.13', title: 'Air Handlers' },
   { code: '23 81.26', title: 'Condensers / Heat Pumps' },
   { code: '23 23.00', title: 'Refrigerant Line Sets' },
-  { code: '23 31.00', title: 'Ductwork' },
   { code: '23 37.13', title: 'Linear Diffuser Boxes' },
   { code: '23 37.16', title: 'Supply & Return Grilles' },
   { code: '23 33.13', title: 'Custom Plenums' },
@@ -17812,7 +18203,78 @@ const HVAC_COST_CODES = [
   { code: '23 05.13', title: 'Crane / Rigging' },
   { code: '01 70.00', title: 'Installation Labor' },
   { code: '23 08.13', title: 'Test, Balance & Start-up' },
+  { code: '23 05.93', title: 'Testing, Adjusting & Balancing' },
 ];
+// ── Scope presets: the clauses that decide who eats a cost ───────────────────
+// Modelled on a real submitted commercial HVAC proposal. The exclusions matter
+// more than any price in the catalog: they are what stops a mechanical sub from
+// being handed the electrician's feeders, the roofer's patching or somebody
+// else's asbestos. Loaded once, edited freely, reused on every bid.
+const HVAC_SCOPE_PRESETS = [
+  {
+    name: 'Commercial HVAC — base scope',
+    cat: 'HVAC',
+    included: [
+      'Complete HVAC work shown on the mechanical drawings and schedules within the defined bid scope, including labor, materials, equipment, tools, supervision, and coordination.',
+      'Mechanical demolition of designated existing ductwork/fittings and equipment, with lawful removal and disposal of demolished HVAC materials.',
+      'New galvanized sheet metal ductwork, spiral round duct, insulated flexible duct, fittings, dampers, transitions, taps, end caps, adapters, hangers, and supports.',
+      'Duct insulation, refrigerant piping, condensate drainage, air distribution devices, packaged equipment, heat pumps, air handlers, exhaust fans, roof curbs, thermostats, and listed factory accessories.',
+      'Low-voltage mechanical control wiring, local control devices, equipment interlocks, and mechanical coordination required by the drawings.',
+      'Submittals, shop drawings, equipment coordination, project supervision, scheduling, closeout documentation, and as-built information for the mechanical scope.',
+      'System startup, operational checks, air balancing coordination, labeling, final cleanup, and one-year mechanical workmanship/material warranty as specified.',
+    ].join('\n'),
+    excluded: [
+      'Line-voltage feeders, branch power wiring, power conduit, breakers, disconnect switches, and final electrical power connections — by the electrical trade unless specifically identified otherwise.',
+      'Structural modifications, cutting/notching of structural members, structural engineering, or supplemental framing not specifically detailed for the mechanical installation.',
+      'Roofing membrane removal, patching, roof warranty work, and final roofing weatherproofing — by the roofing trade. Mechanical roof curbs/adapters are included.',
+      'Architectural patching, painting, finish repair, ceiling replacement, framing, drywall, and decorative finish work caused by access or mechanical installation.',
+      'Fire sprinkler relocation and fire alarm programming/monitoring beyond mechanical equipment interfaces and factory-provided devices.',
+      'Hazardous material identification, testing, abatement, mold remediation, or disposal of regulated substances.',
+      'Utility company fees, premium freight, after-hours premiums, special inspection fees, or owner-directed acceleration not identified in the bid documents.',
+      'Repairs arising from concealed or unknown conditions, undocumented existing utilities, or final issued-for-construction revisions that materially change quantities, capacities, routing, or access.',
+    ].join('\n'),
+  },
+  {
+    name: 'Bid basis & clarifications',
+    cat: 'HVAC',
+    included: [
+      'Bid is based on the mechanical drawings and schedules listed in this proposal. Where the title block identifies the set as Not for Construction, material changes in the final issued documents may require a written price/schedule adjustment.',
+      'Ductwork is based on galvanized steel / SMACNA construction with the insulation, support, sealing, and branch-damper requirements shown in the mechanical notes and specifications.',
+      'Final equipment release is subject to approved submittals and field verification of curb dimensions, electrical characteristics, access, service clearances, and existing roof conditions.',
+      'All quantities are subject to final field verification. Concealed conditions, undocumented utilities, or owner-directed changes are excluded unless incorporated by written change authorization.',
+    ].join('\n'),
+    excluded: '',
+  },
+  {
+    name: 'Commercial terms',
+    cat: 'HVAC',
+    included: [
+      'PROPOSAL VALIDITY: 30 days from the issue date unless extended in writing.',
+      'PAYMENT TERMS: to be established by contract or purchase order. Progress billing may be based on approved mobilization, material release, installation progress, and final closeout.',
+      'SCHEDULE: work schedule to be coordinated after written authorization, site access confirmation, approved submittals, and material/equipment availability.',
+      'CHANGE MANAGEMENT: revisions to issued documents, concealed conditions, owner-directed changes, access constraints, or changes in equipment selection require written authorization before added work proceeds.',
+      'WARRANTY: one-year warranty on mechanical labor and furnished materials from owner acceptance, subject to manufacturer warranty terms for equipment.',
+    ].join('\n'),
+    excluded: '',
+  },
+];
+
+// One-click: drop the presets into this workspace's own scope templates, where
+// they become editable. Skips any name that already exists so it is safe to
+// press twice.
+function scopeTplLoadPresets() {
+  if (!ST.scopeTemplates) ST.scopeTemplates = [];
+  const have = new Set(ST.scopeTemplates.map(t => (t.name || '').toLowerCase()));
+  let n = 0;
+  for (const p of HVAC_SCOPE_PRESETS) {
+    if (have.has(p.name.toLowerCase())) continue;
+    ST.scopeTemplates.push({ id: 'st_' + Date.now() + '_' + Math.random().toString(36).slice(2, 5), ...p });
+    n++;
+  }
+  saveSt(); render();
+  showToast(n ? `${n} scope template${n === 1 ? '' : 's'} loaded — edit them to match your voice.` : 'Already loaded.', n ? 'success' : 'info');
+}
+
 // Presets for the "Add cost code" picker: HVAC subs get HVAC codes, other subs
 // get their trade pack's categories, GCs get null (fall back to CSI divisions).
 function costCodePresets() {
@@ -23568,6 +24030,92 @@ const DEFAULT_PRICING_CATALOG = {
     { code: 'hv-crane',      name: 'Crane / rooftop rigging',  sub: 'Set heavy equipment',        unit: 'EA', perUnit: 1800.00, matchTags: ['crane','rigging','rooftop'] },
     { code: 'hv-labor',      name: 'Installation labor',       sub: 'Equipment set, duct, line sets', unit: 'LS', perUnit: 50000.00, matchTags: ['labor','install','installation','crew'] },
     { code: 'hv-tab',        name: 'Test, balance & start-up', sub: 'Airflow commissioning',      unit: 'EA', perUnit: 1600.00, matchTags: ['balance','tab','commission','start-up','startup'] },
+
+    // ── COMMERCIAL / SHEET-METAL LINE ──────────────────────────────────────
+    // Modelled on a real submitted bid (campus modernization, Div 01 + Div 23):
+    // rectangular + spiral duct by size, duct wrap, refrigerant & condensate
+    // piping, hangers, fittings, packaged rooftop equipment and Titus air
+    // devices. The residential items above stay — a shop that does both bills
+    // from one catalog.
+    //
+    // perUnit is 0 ON PURPOSE. These are the right items, codes and units; the
+    // PRICES belong to the shop. A zero shows up in every draft as "no price —
+    // you set it", which is recoverable. An invented price gets quoted to a GC.
+
+    // Div 01 — General Requirements
+    { code: 'hv-mobilization',  name: 'Mobilization',                 sub: 'Div 01 · set-up & site access',      unit: 'LS', perUnit: 0, matchTags: ['mobilization','mobilize'] },
+    { code: 'hv-submittals',    name: 'Submittals & shop drawings',   sub: 'Div 01 · equipment coordination',    unit: 'LS', perUnit: 0, matchTags: ['submittal','shop drawing','coordination'] },
+    { code: 'hv-supervision',   name: 'Project management & supervision', sub: 'Div 01 · scheduling',            unit: 'LS', perUnit: 0, matchTags: ['supervision','project management','pm'] },
+    { code: 'hv-bonds',         name: 'Bonds / insurance allowance',  sub: 'Div 01 · allowance',                 unit: 'LS', perUnit: 0, matchTags: ['bond','insurance'] },
+    { code: 'hv-closeout',      name: 'Closeout & as-builts',         sub: 'Div 01 · O&M turnover',              unit: 'LS', perUnit: 0, matchTags: ['closeout','as-built','o&m','turnover'] },
+
+    // Div 23 — Mechanical demolition
+    { code: 'hv-demo-duct',     name: 'Duct demolition',              sub: 'Remove duct & fittings',             unit: 'SF', perUnit: 0, matchTags: ['demo','demolition','remove duct'] },
+    { code: 'hv-demo-cond',     name: 'Condensing unit removal',      sub: 'Disconnect & haul off',              unit: 'EA', perUnit: 0, matchTags: ['demo condenser','remove condensing','demo unit'] },
+    { code: 'hv-demo-haul',     name: 'Demolition haul-off & disposal', sub: 'Lawful disposal',                  unit: 'LS', perUnit: 0, matchTags: ['haul','disposal','debris'] },
+
+    // Rectangular galvanized duct — by size, per LF (the sizes a real set calls out)
+    { code: 'hv-rect-12x10',    name: 'Rect duct · 12x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['12x10','rectangular duct'] },
+    { code: 'hv-rect-14x10',    name: 'Rect duct · 14x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['14x10','rectangular duct'] },
+    { code: 'hv-rect-14x12',    name: 'Rect duct · 14x12',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['14x12','rectangular duct'] },
+    { code: 'hv-rect-16x10',    name: 'Rect duct · 16x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['16x10','rectangular duct'] },
+    { code: 'hv-rect-16x12',    name: 'Rect duct · 16x12',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['16x12','rectangular duct'] },
+    { code: 'hv-rect-16x14',    name: 'Rect duct · 16x14',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['16x14','rectangular duct'] },
+    { code: 'hv-rect-20x10',    name: 'Rect duct · 20x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['20x10','rectangular duct'] },
+    { code: 'hv-rect-20x12',    name: 'Rect duct · 20x12',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['20x12','rectangular duct'] },
+    { code: 'hv-rect-20x14',    name: 'Rect duct · 20x14',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['20x14','rectangular duct'] },
+
+    // Spiral round duct — by diameter, per LF
+    { code: 'hv-rnd-06',        name: 'Round duct · 6" dia',          sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['6 in round','6" round','round duct'] },
+    { code: 'hv-rnd-08',        name: 'Round duct · 8" dia',          sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['8 in round','8" round','round duct'] },
+    { code: 'hv-rnd-10',        name: 'Round duct · 10" dia',         sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['10 in round','10" round','round duct'] },
+    { code: 'hv-rnd-12',        name: 'Round duct · 12" dia',         sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['12 in round','12" round','round duct'] },
+    { code: 'hv-rnd-16',        name: 'Round duct · 16" dia',         sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['16 in round','16" round','round duct'] },
+
+    // Insulated flexible duct — R-8, max 5 ft final connections
+    { code: 'hv-flex-08',       name: 'Flex duct · 8" R-8',           sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['8 flex','flexible duct'] },
+    { code: 'hv-flex-10',       name: 'Flex duct · 10" R-8',          sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['10 flex','flexible duct'] },
+    { code: 'hv-flex-12',       name: 'Flex duct · 12" R-8',          sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['12 flex','flexible duct'] },
+    { code: 'hv-flex-16',       name: 'Flex duct · 16" R-8',          sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['16 flex','flexible duct'] },
+
+    // Insulation & piping
+    { code: 'hv-ductwrap-15',   name: 'Duct insulation · 1-1/2" FG',  sub: 'Vapor barrier / jacket',             unit: 'SF', perUnit: 0, matchTags: ['duct insulation','duct wrap','fiberglass'] },
+    { code: 'hv-ref-liq-38',    name: 'Refrigerant line · 3/8" liquid', sub: 'Incl fittings & supports',         unit: 'LF', perUnit: 0, matchTags: ['3/8 liquid','liquid line'] },
+    { code: 'hv-ref-suc-58',    name: 'Refrigerant line · 5/8" suction', sub: 'Insulated',                       unit: 'LF', perUnit: 0, matchTags: ['5/8 suction','suction line'] },
+    { code: 'hv-cond-34',       name: 'Condensate drain · 3/4"',      sub: 'Incl fittings & supports',           unit: 'LF', perUnit: 0, matchTags: ['condensate drain','3/4 condensate'] },
+
+    // Supports & fittings
+    { code: 'hv-hanger-rect',   name: 'Duct hanger · rectangular',    sub: '8 ft spacing basis',                 unit: 'EA', perUnit: 0, matchTags: ['hanger','support','rectangular hanger'] },
+    { code: 'hv-hanger-rnd',    name: 'Duct hanger · round',          sub: '8 ft spacing basis',                 unit: 'EA', perUnit: 0, matchTags: ['hanger','support','round hanger'] },
+    { code: 'hv-elbow-90',      name: '90° elbow',                    sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['elbow','90 degree'] },
+    { code: 'hv-reducer',       name: 'Reducer',                      sub: 'Round / rectangular',                unit: 'EA', perUnit: 0, matchTags: ['reducer'] },
+    { code: 'hv-transition',    name: 'Transition · rect-to-round',   sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['transition'] },
+    { code: 'hv-tap-rect',      name: '45° rectangular tap',          sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['rectangular tap','45 tap'] },
+    { code: 'hv-tap-rnd',       name: 'Round tap',                    sub: '6" through 16"',                     unit: 'EA', perUnit: 0, matchTags: ['round tap','tap'] },
+    { code: 'hv-mvd',           name: 'Manual volume damper',         sub: 'Accessible at branches',             unit: 'EA', perUnit: 0, matchTags: ['volume damper','mvd','damper'] },
+    { code: 'hv-endcap',        name: 'End cap',                      sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['end cap'] },
+    { code: 'hv-adapter',       name: 'Equipment / duct adapter',     sub: 'Coordinate w/ submittals',           unit: 'EA', perUnit: 0, matchTags: ['adapter'] },
+
+    // Packaged & split equipment (commercial)
+    { code: 'hv-ahu-comm',      name: 'Air handler · commercial',     sub: 'Ducted AHU · per schedule',          unit: 'EA', perUnit: 0, matchTags: ['air handler','ahu'] },
+    { code: 'hv-hp-out-4t',     name: 'Heat pump outdoor unit · 4 ton', sub: 'Split system condenser',           unit: 'EA', perUnit: 0, matchTags: ['heat pump','4 ton','outdoor unit'] },
+    { code: 'hv-hp-out-3t',     name: 'Heat pump outdoor unit · 3 ton', sub: 'Split system condenser',           unit: 'EA', perUnit: 0, matchTags: ['heat pump','3 ton','outdoor unit'] },
+    { code: 'hv-rtu-3t',        name: 'Rooftop heat pump · 3 ton',    sub: 'MERV-13 · economizer · curb',        unit: 'EA', perUnit: 0, matchTags: ['rtu','rooftop','3 ton'] },
+    { code: 'hv-rtu-2t',        name: 'Rooftop heat pump · 2 ton',    sub: 'MERV-13 · economizer · curb',        unit: 'EA', perUnit: 0, matchTags: ['rtu','rooftop','2 ton'] },
+    { code: 'hv-ef-comm',       name: 'Exhaust fan · commercial',     sub: 'Roof mounted · per schedule',        unit: 'EA', perUnit: 0, matchTags: ['exhaust fan','ef'] },
+    { code: 'hv-roofcurb',      name: 'Roof curb / adapter',          sub: 'Verify dims before release',         unit: 'EA', perUnit: 0, matchTags: ['roof curb','curb'] },
+
+    // Air distribution devices
+    { code: 'hv-diff-24',       name: 'Supply diffuser · 24x24',      sub: 'Lay-in · neck per schedule',         unit: 'EA', perUnit: 0, matchTags: ['diffuser','supply diffuser','cd-1'] },
+    { code: 'hv-lin-diff',      name: 'Linear air device',            sub: 'LD / LDR · slot diffuser',           unit: 'EA', perUnit: 0, matchTags: ['linear diffuser','ld','ldr'] },
+    { code: 'hv-return-24',     name: 'Return grille · 24x24',        sub: 'Lay-in perforated face',             unit: 'EA', perUnit: 0, matchTags: ['return grille','rg-1'] },
+    { code: 'hv-exh-grille',    name: 'Exhaust grille',               sub: 'Per schedule',                       unit: 'EA', perUnit: 0, matchTags: ['exhaust grille','eg-1'] },
+
+    // Controls & commissioning
+    { code: 'hv-tstat-comm',    name: 'Thermostat · commercial',      sub: 'Per unit served',                    unit: 'EA', perUnit: 0, matchTags: ['thermostat','tstat'] },
+    { code: 'hv-lowvolt',       name: 'Low-voltage control wiring',   sub: 'Interlocks · per unit',              unit: 'EA', perUnit: 0, matchTags: ['low voltage','control wiring','interlock'] },
+    { code: 'hv-startup',       name: 'Equipment start-up',           sub: 'Per unit · operational check',       unit: 'EA', perUnit: 0, matchTags: ['startup','start-up','commissioning'] },
+    { code: 'hv-balance-coord', name: 'Air balance coordination',     sub: 'Independent TAB coordination',       unit: 'LS', perUnit: 0, matchTags: ['air balance','tab','balancing'] },
   ],
   concrete: [
     { code: 'conc-footing',       name: 'Footings · concrete',     sub: 'All-in place · per CY',     unit: 'CY', perUnit: 290.00, matchTags: ['footing','footings','grade beam'] },
@@ -24346,6 +24894,10 @@ function buildEstimatorTab() {
   // an accordion, not as a top-level tab.
   let tab = ST.estimatorTab || 'plans';
   if (tab === 'review') { tab = 'plans'; ST.estimatorTab = 'plans'; }
+  // Setup and Code Compliance moved onto the project itself (Projects → DETAILS),
+  // where the AI can fill them from the plans and they sit next to the bid. The
+  // Estimator keeps what is genuinely its own: the plan set and the take-off.
+  if (tab === 'setup' || tab === 'code') { tab = 'plans'; ST.estimatorTab = 'plans'; }
   if (tab === 'takeoff' && !hasBudgetCalculator()) { tab = 'plans'; }
 
   // Inline tab counters
@@ -24359,9 +24911,7 @@ function buildEstimatorTab() {
   const activeDiscIds = Array.from(new Set(e.plans.map(pl => pl.discipline)));
 
   const tabs = [
-    { id:'plans', label:'Plan Sets',       meta: planCount ? planCount + (planCount===1?' file':' files') : '—' },
-    { id:'setup', label:'Setup',           meta: setupFilled + '/5' },
-    { id:'code',  label:'Code Compliance', meta: codeCount ? codeCount + ' items' : '—' },
+    { id:'plans', label:'Plan Sets', meta: planCount ? planCount + (planCount===1?' file':' files') : '—' },
   ];
   if (hasBudgetCalculator()) tabs.push({ id:'takeoff', label:'Take-off', meta: '' });
 
@@ -24393,8 +24943,8 @@ function buildEstimatorTab() {
 
         <!-- Right side: utility actions -->
         <div class="est-topbar-right">
-          <button class="est-link-btn" onclick="ST.tab='projects';ST.selProj='${p.id}';render()" title="Open this project in the Bidding view">
-            Open in Projects →
+          <button class="est-link-btn" onclick="ST.tab='projects';ST.selProj='${p.id}';ST.detailsOpen='${p.id}';render()" title="Setup and Code Compliance now live on the project itself — in its DETAILS panel">
+            Setup &amp; codes →
           </button>
           <button class="est-askai-btn" onclick="estOpenAskAI()" title="Ask the AI assistant about this project">
             <span class="est-askai-glyph">✦</span>
