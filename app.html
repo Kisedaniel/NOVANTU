@@ -4865,6 +4865,7 @@ async function loadSt() {
     ST.assistantLog = [];
     ST.assistantPending = null;
     ST.assistantBusy = false;
+    ST.agentPlan = null;
     ST.workerInbox = {};
     ST.dlogCompile = null;
     ST.dlogCompileLoading = null;
@@ -10734,6 +10735,7 @@ function buildApp() {
       ${ST.dlogCompile ? buildDlogCompileModal() : ''}
       ${ST.toAI ? buildTakeoffAIModal() : ''}
       ${ST.toSheet ? buildTakeoffSheetModal() : ''}
+      ${ST.agentPlan ? buildAgentPlanModal() : ''}
     </div>`;
 }
 
@@ -14002,8 +14004,6 @@ function gcBreakdownClose() { aiOutcomeOnce(ST.gcBreakdown, false); ST.gcBreakdo
 // catalog on every letter/schedule/log call was pure token waste.
 // Side effect: leaves the call's cost + stop_reason in AI_LAST for aiLogEvent().
 async function aiCompleteText(pid, userPrompt, planImages, opts) {
-  const t0 = Date.now();
-  AI_LAST = null;
   const ctx = estBuildContext(pid);
   if (opts && opts.lean) { ctx.priceList = []; ctx.reviewItems = []; ctx.derivedCodes = []; ctx.openRfis = []; }
   const body = { projectContext: ctx, messages: [{ role: 'user', content: userPrompt }] };
@@ -14012,6 +14012,15 @@ async function aiCompleteText(pid, userPrompt, planImages, opts) {
   // stays as a short placeholder for logs/fallback.
   if (opts && opts.task) { body.task = opts.task; body.taskData = opts.taskData || {}; }
   if (Array.isArray(planImages) && planImages.length) body.planImages = planImages;
+  return aiPostAsk(body);
+}
+
+// The raw ask-ai call. Split out of aiCompleteText because the agent has to be
+// able to run with NO project selected — an empty workspace is exactly the case
+// where the user most needs it to act.
+async function aiPostAsk(body) {
+  const t0 = Date.now();
+  AI_LAST = null;
   const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
     method: 'POST',
     headers: aiEdgeHeaders(),
@@ -15170,6 +15179,17 @@ function aiCmdExampleFill(el) {
 function aiCmdExamples() {
   const projs = allProjects();
   const pn = projs.length ? projs[0].name : 'my project';
+  // An empty workspace is a new customer's first screen. Offering "ask for a
+  // take-off on my project" there is useless — offer the things that actually
+  // work from zero.
+  if (!projs.length) {
+    return [
+      { ic: '＋', label: 'Create your first job', fill: 'Create a project called Vista Del Mar' },
+      { ic: '✎', label: 'Create it and set it up', fill: 'Create a project called Oak Street ADU — Pasadena, residential remodel, 1,800 sf, single story' },
+      { ic: '▤', label: 'Create it with cost codes', fill: `Create a project called Riverside Remodel and add my usual ${isSubAccount() ? 'cost code groups' : 'trade categories'} to it` },
+      { ic: '≡', label: 'Just ask a question', fill: 'What do I need before you can price a job for me?' },
+    ];
+  }
   if (isSubAccount()) {
     return [
       { ic: '✎', label: 'Ask for an estimate', fill: `Generate an estimate for ${pn} — read the plans and use my prices` },
@@ -15202,6 +15222,10 @@ function aiCmdIntent(msg) {
   if (has('schedule', 'gantt', 'cronograma', 'calendario')) return 'schedule';
   if (has('status', 'estado', 'resumen', 'summary', 'avance', 'progress', 'como va', 'cómo va', 'how many', 'cuantas', 'cuántas', 'cuantos', 'cuántos')) return 'status';
   if (has('estimate', 'estimado', 'presupuesto', 'cotiza', 'quote', 'design-build', 'design/build', 'precio')) return 'estimate';
+  // Agent mode is checked LAST on purpose: "create a construction schedule" and
+  // "create a budget estimate" must reach their own tools first. What lands
+  // here is a creation/setup request that no dedicated tool owns.
+  if (has('creat', 'crea', 'nuevo', 'nueva', 'new ', 'add ', 'añad', 'anad', 'agrega', 'registra', 'set up', 'setup', 'configur', 'abre', 'open ', 'llena', 'fill')) return 'agent';
   return 'chat';
 }
 
@@ -15257,6 +15281,317 @@ function aiCmdMatchProject(msg) {
   return { status: 'ambiguous', projs };
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// AGENT MODE — the assistant stops being a router and starts being an operator.
+// ─────────────────────────────────────────────────────────────────────────────
+// Everything above this point could only ROUTE to work that already existed on
+// a project that already existed. So "create the Vista Del Mar job and set it
+// up" dead-ended, which is the one thing a new user asks first.
+//
+// The model never touches the workspace. It returns a PLAN; the plan is
+// validated against these whitelists, shown for approval, and only then
+// executed — the same review-before-apply contract as every other AI feature
+// here, which is the whole reason this product is trustworthy.
+// ═════════════════════════════════════════════════════════════════════════════
+const AGENT_SETUP_FIELDS = ['address', 'jurisdiction', 'projectType', 'occupancy', 'constructionType', 'codeYear', 'stories', 'sqft', 'architect', 'mep', 'structural', 'civil', 'bidSet', 'notes'];
+const AGENT_TABS = ['projects', 'estimator', 'builder', 'bids', 'schedule', 'dailylog', 'subs', 'settings'];
+const AGENT_RUNS = ['takeoff', 'estimate', 'schedule', 'breakdown'];
+// Setup fields backed by a fixed <select>. A value outside the list saves fine
+// but renders as an EMPTY dropdown — silently wrong, which is worse than
+// refusing. Snap to the real option, or reject the write and say why.
+const AGENT_ENUM_FIELDS = {
+  jurisdiction: () => EST_JURISDICTIONS,
+  projectType: () => EST_PROJECT_TYPE,
+  occupancy: () => EST_OCCUPANCY,
+  constructionType: () => EST_CONSTR_TYPE,
+  codeYear: () => ['2019', '2022', '2025'],
+};
+function agentSnapEnum(field, value) {
+  const get = AGENT_ENUM_FIELDS[field];
+  if (!get) return { ok: true, value };            // free-text field
+  const opts = get() || [];
+  const v = String(value || '').trim();
+  if (!v) return { ok: true, value: '' };
+  const exact = opts.find(o => o.toLowerCase() === v.toLowerCase());
+  if (exact) return { ok: true, value: exact };
+  // Tolerate near-misses ("remodel" → "Remodel", "adu" → "ADU") but never guess
+  // across different meanings.
+  const near = opts.find(o => o.toLowerCase().includes(v.toLowerCase()) || v.toLowerCase().includes(o.toLowerCase()));
+  if (near) return { ok: true, value: near };
+  return { ok: false, value: v, opts };
+}
+
+// Deterministic picture of the workspace — 0 tokens. This is what lets the
+// agent target real project ids and real price-list codes instead of guessing.
+function asstWorldSnapshot() {
+  const L = [];
+  L.push(isSubAccount()
+    ? `WORKSPACE TYPE: SUBCONTRACTOR (${(typeof getActiveTradePack === 'function' && getActiveTradePack()?.label) || 'trade'})`
+    : 'WORKSPACE TYPE: GENERAL CONTRACTOR');
+  const projs = allProjects();
+  if (!projs.length) {
+    L.push('PROJECTS: none yet — this workspace is empty. If the user wants work done, create the project first in the same plan.');
+  } else {
+    L.push(`PROJECTS (${projs.length}) — copy the id EXACTLY when targeting one:`);
+    projs.slice(0, 40).forEach(p => {
+      const t = (typeof builderTotals === 'function') ? builderTotals(p.id) : { itemCount: 0 };
+      // Read-only peek — never getEstProj() here, it would create state entries
+      // for every project just to render a snapshot.
+      const e = (ST.estimator && ST.estimator[p.id]) || {};
+      const groups = ((ST.estimates && ST.estimates[p.id] && ST.estimates[p.id].groups) || [])
+        .map(g => g.code).filter(Boolean).slice(0, 12);
+      L.push(`  id=${p.id} | "${p.name}" | ${p.status || 'active'} | ${t.itemCount || 0} estimate item(s) | ${((e.plans) || []).length} plan file(s)${groups.length ? ` | groups: ${groups.join(', ')}` : ''}`);
+    });
+  }
+  try {
+    const pl = (typeof aiPriceList === 'function') ? aiPriceList() : [];
+    if (pl.length) {
+      L.push('PRICE LIST (CODE | name | unit | $/unit) — the ONLY items you may attach a price to:');
+      pl.slice(0, 120).forEach(r => L.push(`  ${r.code} | ${r.name} | ${r.unit} | ${r.perUnit}`));
+    } else {
+      L.push('PRICE LIST: empty — do NOT put a price on any line item; leave unitCost 0.');
+    }
+  } catch (_e) {}
+  // Setup fields backed by a dropdown — give the model the real options so it
+  // picks a valid one instead of a plausible synonym the UI can't display.
+  L.push('SETUP FIELDS WITH FIXED OPTIONS (use these EXACT strings):');
+  L.push(`  jurisdiction: ${EST_JURISDICTIONS.join(' | ')}`);
+  L.push(`  projectType: ${EST_PROJECT_TYPE.join(' | ')}`);
+  L.push(`  occupancy: ${EST_OCCUPANCY.join(' | ')}`);
+  L.push(`  constructionType: ${EST_CONSTR_TYPE.join(' | ')}`);
+  L.push('  codeYear: 2019 | 2022 | 2025');
+  L.push('  (free text: address, stories, sqft, architect, mep, structural, civil, bidSet, notes)');
+  try {
+    const max = (typeof getActiveMaxProjects === 'function') ? getActiveMaxProjects() : null;
+    if (max != null) L.push(`PROJECT LIMIT: ${getProjectCount()}/${max} used on this plan.`);
+  } catch (_e) {}
+  return L.join('\n');
+}
+
+async function aiAgentPlan(msg) {
+  if (!trialGuardAI()) return;
+  ST.assistantBusy = true; render();
+  try {
+    const text = await aiPostAsk({
+      // The agent is workspace-wide, not project-scoped — a stub keeps the
+      // server contract satisfied without inventing a project.
+      projectContext: {
+        projectName: '(workspace)', setup: {}, plans: [],
+        reviewItems: [], derivedCodes: [], openRfis: [], isSub: isSubAccount(),
+      },
+      messages: [{ role: 'user', content: msg }],
+      task: 'agent',
+      taskData: { msg, world: asstWorldSnapshot() },
+    });
+    const parsed = parseAIJson(text);
+    if (!parsed) throw new Error('I could not put together a plan for that. Try saying it a different way.');
+    const reply = String(parsed.reply || '').trim();
+    const { actions, rejected } = asstPlanValidate(parsed.actions);
+    aiLogEvent('agent', { ok: true }).then(id => { if (ST.agentPlan) ST.agentPlan.evt = id; });
+
+    if (!actions.length) {
+      // No actions is a legitimate outcome — the user asked a question.
+      assistantPush('assistant', (reply || '(no answer)') + (rejected.length ? `\n\n△ I skipped: ${rejected.join('; ')}` : ''));
+      return;
+    }
+    ST.agentPlan = { msg, reply, actions, rejected, ts: Date.now() };
+  } catch (err) {
+    aiLogEvent('agent', { ok: false, err: err && err.message });
+    assistantPush('assistant', '△ ' + (err.message || err));
+  } finally {
+    ST.assistantBusy = false; render();
+  }
+}
+
+// Whitelist gate. Anything the model returns that isn't a known op with sane
+// arguments is dropped here and reported — the model proposes, this decides.
+function asstPlanValidate(raw) {
+  const actions = [], rejected = [];
+  const refs = new Set();
+  let creating = 0;
+  const maxP = (typeof getActiveMaxProjects === 'function') ? getActiveMaxProjects() : null;
+  const known = (pid) => refs.has(pid) || allProjects().some(p => p.id === pid);
+
+  for (const a of (Array.isArray(raw) ? raw : []).slice(0, 40)) {
+    const op = String((a && a.op) || '');
+    const pid = String((a && a.pid) || '').trim();
+    if (op === 'create_project') {
+      const name = String((a && a.name) || '').trim().slice(0, 80);
+      if (!name) { rejected.push('a project with no name'); continue; }
+      if (maxP != null && getProjectCount() + creating >= maxP) { rejected.push(`“${name}” (plan limit of ${maxP} project${maxP === 1 ? '' : 's'} reached)`); continue; }
+      const ref = String((a && a.ref) || '').trim() || ('new' + (creating + 1));
+      refs.add(ref); creating++;
+      actions.push({ op, name, ref });
+      continue;
+    }
+    if (op === 'open_tab') {
+      const tab = String((a && a.value) || '').trim();
+      if (!AGENT_TABS.includes(tab)) { rejected.push(`opening an unknown screen “${tab}”`); continue; }
+      actions.push({ op, value: tab });
+      continue;
+    }
+    // Everything below needs a project that exists or is being created here.
+    if (!known(pid)) { rejected.push(`${op || 'an action'} on an unknown project`); continue; }
+    if (op === 'set_setup') {
+      const field = String((a && a.field) || '').trim();
+      if (!AGENT_SETUP_FIELDS.includes(field)) { rejected.push(`setting the unknown field “${field}”`); continue; }
+      const snap = agentSnapEnum(field, String((a && a.value) || '').slice(0, 200));
+      if (!snap.ok) { rejected.push(`${field} = “${snap.value}” (not one of: ${snap.opts.join(', ')}) — set it by hand`); continue; }
+      actions.push({ op, pid, field, value: snap.value });
+    } else if (op === 'add_group') {
+      const code = String((a && a.code) || '').trim().slice(0, 40);
+      if (!code) { rejected.push('a cost-code group with no code'); continue; }
+      actions.push({ op, pid, code, title: String((a && a.title) || '').trim().slice(0, 80) });
+    } else if (op === 'add_item') {
+      const title = String((a && a.title) || '').trim().slice(0, 120);
+      if (!title) { rejected.push('a line item with no description'); continue; }
+      // A price may only come from the workspace's own catalog — same rule the
+      // draft/DBE flows enforce. An off-list price is silently dropped to 0.
+      let unitCost = 0, code = String((a && a.code) || '').trim().slice(0, 40);
+      try {
+        const row = ((typeof aiPriceList === 'function') ? aiPriceList() : []).find(r => r.code === code);
+        if (row) unitCost = Number(row.perUnit) || 0; else code = '';
+      } catch (_e) { code = ''; }
+      actions.push({
+        op, pid, code, title,
+        groupCode: String((a && a.groupCode) || '').trim().slice(0, 40),
+        qty: Math.max(0, Number(a && a.qty) || 0),
+        unit: String((a && a.unit) || '').trim().slice(0, 12) || 'EA',
+        unitCost,
+      });
+    } else if (op === 'run') {
+      const what = String((a && a.value) || '').trim();
+      if (!AGENT_RUNS.includes(what)) { rejected.push(`running the unknown tool “${what}”`); continue; }
+      actions.push({ op, pid, value: what });
+    } else {
+      rejected.push(`an unsupported action “${op}”`);
+    }
+  }
+  return { actions, rejected };
+}
+
+function asstPlanDescribe(a) {
+  const nm = (pid) => {
+    const p = allProjects().find(x => x.id === pid);
+    return p ? `“${p.name}”` : `the new project`;
+  };
+  switch (a.op) {
+    case 'create_project': return `Create the project <b>${esc(a.name)}</b>`;
+    case 'set_setup':      return `Set <b>${esc(a.field)}</b> = ${esc(a.value) || '<i>(blank)</i>'} on ${esc(nm(a.pid))}`;
+    case 'add_group':      return `Add cost-code group <b>${esc(a.code)}</b>${a.title ? ' · ' + esc(a.title) : ''}`;
+    case 'add_item':       return `Add line <b>${esc(a.title)}</b> — ${a.qty} ${esc(a.unit)}${a.unitCost ? ` @ ${fmt$(a.unitCost)}` : ' <i>(no price — you set it)</i>'}${a.groupCode ? ` → ${esc(a.groupCode)}` : ''}`;
+    case 'run':            return `Then open the <b>${esc(a.value)}</b> tool on ${esc(nm(a.pid))} for your review`;
+    case 'open_tab':       return `Take you to <b>${esc(a.value)}</b>`;
+    default:               return esc(a.op);
+  }
+}
+
+function buildAgentPlanModal() {
+  const pl = ST.agentPlan; if (!pl) return '';
+  return `<div class="backdrop" onclick="if(event.target===this){asstPlanCancel()}">
+    <div class="modal" style="max-width:620px" onclick="event.stopPropagation()">
+      <div class="modal-title">✦ Here's what I'll do</div>
+      <div class="modal-sub">Nothing has changed yet — this runs only when you approve it.</div>
+      ${pl.reply ? `<div style="font-family:var(--sans);font-size:13px;color:var(--text2);line-height:1.55;margin-top:12px">${esc(pl.reply)}</div>` : ''}
+      <div style="margin-top:14px;border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+        ${pl.actions.map((a, i) => `<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 12px;${i ? 'border-top:1px solid var(--border);' : ''}background:var(--bg1)">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--text3);min-width:18px">${i + 1}</span>
+          <span style="font-size:12.5px;color:var(--ink-900);line-height:1.5">${asstPlanDescribe(a)}</span>
+        </div>`).join('')}
+      </div>
+      ${pl.rejected && pl.rejected.length ? `<div style="margin-top:10px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:9px 12px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--amber);font-weight:600;margin-bottom:4px">△ Skipped</div>
+        ${pl.rejected.map(r => `<div style="font-size:12px;color:var(--ink-900);line-height:1.5">• ${esc(r)}</div>`).join('')}
+      </div>` : ''}
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="asstPlanCancel()">Cancel</button>
+        <button class="btn btn-amber" onclick="asstPlanRun()">✓ Do it</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function asstPlanCancel() {
+  const pl = ST.agentPlan;
+  if (pl) { aiOutcomeOnce(pl, false); assistantPush('assistant', 'Cancelled — nothing was changed.'); }
+  ST.agentPlan = null; render();
+}
+
+async function asstPlanRun() {
+  const pl = ST.agentPlan; if (!pl) return;
+  aiOutcomeOnce(pl, true);
+  ST.agentPlan = null;
+  const refs = {};          // symbolic ref → real project id
+  const done = [], failed = [];
+  let runAfter = null, goTab = null;
+  // Resolve a target to a REAL project id, or null. Without this, a
+  // create_project that got blocked by the plan limit would leave the later
+  // actions pointing at the literal ref string — and getEstProj("new1") would
+  // happily create a junk record for a project that does not exist.
+  const rp = (pid) => {
+    const id = refs[pid] || pid;
+    return allProjects().some(p => p.id === id) ? id : null;
+  };
+
+  for (const a of pl.actions) {
+    try {
+      if (a.op !== 'create_project' && a.op !== 'open_tab' && !rp(a.pid)) {
+        failed.push(`${a.op} — its project was never created`);
+        continue;
+      }
+      if (a.op === 'create_project') {
+        if (!canAddProject()) { failed.push(`“${a.name}” — project limit reached`); ST.upsellModal = { reason: 'projects' }; continue; }
+        const id = 'cp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5);
+        ST.addedProjects.push({ id, name: a.name, status: 'active', dl: '', sdl: null, est: null, source: null, comments: '', rfi: '', builder: null });
+        // allProjects() memoizes until the next render — without this, every
+        // following action in this same plan would fail to find the project.
+        _invalidateProjectSubCache();
+        addActivity('project_added', '', a.name, '', null, null, 'Created by the AI assistant');
+        refs[a.ref] = id; ST.selProj = id;
+        done.push(`Created “${a.name}”`);
+      } else if (a.op === 'set_setup') {
+        getEstProj(rp(a.pid)).setup[a.field] = a.value;
+        done.push(`${a.field} → ${a.value || '(blank)'}`);
+      } else if (a.op === 'add_group') {
+        const est = builderEnsure(rp(a.pid));
+        if (est.groups.some(g => (g.code || '') === a.code)) { done.push(`Group ${a.code} already existed`); continue; }
+        est.groups.push({ id: 'g_' + Date.now() + '_' + est.groups.length, code: a.code, title: a.title, items: [] });
+        done.push(`Added group ${a.code}`);
+      } else if (a.op === 'add_item') {
+        const est = builderEnsure(rp(a.pid));
+        let g = est.groups.find(x => (x.code || '') === a.groupCode) || est.groups[est.groups.length - 1];
+        if (!g) { g = { id: 'g_' + Date.now(), code: a.groupCode || 'GEN', title: '', items: [] }; est.groups.push(g); }
+        const mk = (typeof getSettings === 'function' && getSettings().defaultMarkup) ? getSettings().defaultMarkup : {};
+        g.items.push({
+          id: 'i_' + Date.now() + '_' + g.items.length + Math.random().toString(36).slice(2, 4),
+          code: a.code, title: a.title, description: '',
+          qty: a.qty, unit: a.unit, unitCost: a.unitCost,
+          costType: 'Materials', markup: Number(mk.Materials) || 0, taxable: false,
+        });
+        done.push(`Added “${a.title}”`);
+      } else if (a.op === 'run') {
+        runAfter = { pid: rp(a.pid), what: a.value };
+      } else if (a.op === 'open_tab') {
+        goTab = a.value;
+      }
+    } catch (err) {
+      failed.push(`${a.op}: ${err && err.message ? err.message : err}`);
+    }
+  }
+
+  saveSt();
+  assistantPush('assistant',
+    (done.length ? `✓ Done:\n${done.map(d => '• ' + d).join('\n')}` : 'Nothing was applied.') +
+    (failed.length ? `\n\n△ Failed:\n${failed.map(f => '• ' + f).join('\n')}` : ''));
+
+  if (runAfter) {
+    const p = allProjects().find(x => x.id === runAfter.pid);
+    if (p) { await aiCmdDispatch(runAfter.what, p, pl.msg); return; }
+  }
+  if (goTab) { setTab(goTab); return; }
+  render();
+}
+
 async function aiCmdSend() {
   const inp = document.getElementById('ai-cmd-input');
   const msg = (inp && inp.value || '').trim();
@@ -15265,7 +15600,10 @@ async function aiCmdSend() {
   assistantPush('user', msg);
   const intent = aiCmdIntent(msg);
   const match = aiCmdMatchProject(msg);
-  if (match.status === 'none') { assistantPush('assistant', 'No projects yet — create one in Projects first, then ask me again.'); return; }
+  // Agent mode takes over when the user asks to CREATE or SET UP something —
+  // and whenever the workspace is empty, because "no projects yet, go make one
+  // by hand" is exactly the answer this assistant should never give.
+  if (intent === 'agent' || match.status === 'none') { await aiAgentPlan(msg); return; }
   if (match.status === 'ambiguous') {
     ST.assistantPending = { intent, msg };
     assistantPush('assistant', 'Which project?\n' + match.projs.slice(0, 8).map(p => `[[${p.id}|${p.name}]]`).join(' '));
