@@ -4092,30 +4092,56 @@ const HVAC_DEMO_ESTIMATE = { groups: [
 
 // Gate: only a sub workspace whose trade is HVAC sees the demo seed.
 function wsShowsHvacDemo() {
-  try { return HVAC_DEMO_SEED && typeof isSubAccount === 'function' && isSubAccount() && wsSubTrade() === 'hvac'; }
+  // Opt-in PER WORKSPACE (settings.hvacDemo === 'on'), set only on a prospect's
+  // demo workspace. The global switch alone targeted EVERY hvac sub workspace —
+  // including a real paying HVAC client's, the exact trade the demo is built
+  // for — which would have received fake GCs and a fake $148k estimate the
+  // moment the switch was flipped for a sales demo.
+  try { return HVAC_DEMO_SEED && typeof isSubAccount === 'function' && isSubAccount() && wsSubTrade() === 'hvac' && (ST.settings || {}).hvacDemo === 'on'; }
   catch(_e) { return false; }
 }
 
-// Inject the demo data into ST once per session (id-guarded → never duplicates,
-// and respects anything the user has since deleted).
+// A demo record the user deleted must stay deleted. Removing an addedSubs /
+// addedProjects entry leaves no trace, so without this list the seeder would
+// push it straight back on the next page load.
+function hvacDemoMarkRemoved(id) {
+  if (!id || !(id === HVAC_DEMO_PID || /^demo-(gc|sup)-/.test(String(id)))) return;
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  const arr = Array.isArray(ST.settings.hvacDemoRemovedIds) ? ST.settings.hvacDemoRemovedIds : [];
+  if (!arr.includes(id)) arr.push(id);
+  ST.settings.hvacDemoRemovedIds = arr;
+}
+
+// Inject the demo data ONCE PER WORKSPACE, EVER. The old guard was an
+// in-memory flag that reset on every page load, and deletions left no trace —
+// so a deleted demo contact or project came back after the next reload. Now a
+// persisted "seeded" stamp stops re-seeding, and hvacDemoRemovedIds keeps
+// deleted records deleted even if that stamp is ever lost in a merge.
 function seedHvacDemoOnce() {
   try {
-    if (!wsShowsHvacDemo() || ST._hvacDemoSeeded) return;
+    const S = ST.settings || {};
+    if (!wsShowsHvacDemo() || ST._hvacDemoSeeded || S.hvacDemoSeededAt) return;
     if (!Array.isArray(ST.addedSubs)) ST.addedSubs = [];
     if (!Array.isArray(ST.addedProjects)) ST.addedProjects = [];
     if (!ST.estimates || typeof ST.estimates !== 'object') ST.estimates = {};
+    const removed = new Set(Array.isArray(S.hvacDemoRemovedIds) ? S.hvacDemoRemovedIds : []);
     let added = false;
     const haveSub = new Set(ST.addedSubs.map(s => s && s.id));
     for (const g of GC_SUPPLIERS_BASE) {
-      if (!haveSub.has(g.id)) { ST.addedSubs.push(JSON.parse(JSON.stringify(g))); added = true; }
+      if (!haveSub.has(g.id) && !removed.has(g.id)) { ST.addedSubs.push(JSON.parse(JSON.stringify(g))); added = true; }
     }
-    if (!ST.addedProjects.some(p => p && p.id === HVAC_DEMO_PID)) {
+    const projGone = removed.has(HVAC_DEMO_PID);
+    if (!projGone && !ST.addedProjects.some(p => p && p.id === HVAC_DEMO_PID)) {
       ST.addedProjects.push(JSON.parse(JSON.stringify(HVAC_DEMO_PROJECT))); added = true;
     }
-    if (!ST.estimates[HVAC_DEMO_PID] || !(ST.estimates[HVAC_DEMO_PID].groups || []).length) {
+    if (!projGone && (!ST.estimates[HVAC_DEMO_PID] || !(ST.estimates[HVAC_DEMO_PID].groups || []).length)) {
       ST.estimates[HVAC_DEMO_PID] = JSON.parse(JSON.stringify(HVAC_DEMO_ESTIMATE)); added = true;
     }
     ST._hvacDemoSeeded = true;
+    // Written straight to settings (which sync) rather than via settingsSet():
+    // this runs at the top of render(), and settingsSet would re-enter render.
+    if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+    ST.settings.hvacDemoSeededAt = new Date().toISOString();
     if (added && typeof _invalidateProjectSubCache === 'function') _invalidateProjectSubCache();
   } catch (e) { console.warn('HVAC demo seed skipped:', e); }
 }
@@ -6249,8 +6275,241 @@ function _shadeRgb(r, g, b, factor) {
 // ============================================================
 // FILES TAB — currently houses Email Templates
 // ============================================================
+// ============================================================
+// PRICE BOOK — the workspace's own products and unit prices, in one place.
+// ------------------------------------------------------------
+// This is the same catalog the estimating AI is allowed to quote from
+// (aiPriceList → getPricingForType), so editing a price here changes what every
+// draft, design-build estimate and agent action prices with. There is no second
+// copy to keep in sync: this IS the catalog.
+// ============================================================
+function priceBookStats() {
+  const types = (typeof getPricingEditorTypes === 'function') ? getPricingEditorTypes() : [];
+  let total = 0, unpriced = 0;
+  for (const t of types) {
+    for (const r of getPricingForType(t.id)) { total++; if (!(Number(r.perUnit) > 0)) unpriced++; }
+  }
+  return { types, total, unpriced };
+}
+
+function priceBookCSV() {
+  const { types } = priceBookStats();
+  const rows = [['Category', 'Code', 'Item', 'Detail', 'Unit', 'Price per unit']];
+  for (const t of types) {
+    for (const r of getPricingForType(t.id)) {
+      rows.push([t.label, r.code, r.name, r.sub || '', r.unit, Number(r.perUnit) || 0]);
+    }
+  }
+  const csv = rows.map(r => r.map(c => {
+    const s = String(c ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'price-book-' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('Price book exported — fill the price column and import it back.', 'success');
+}
+
+// Import updates PRICES ONLY, matched by code. It deliberately cannot add,
+// rename or delete an item: a spreadsheet that came back mangled can then cost
+// you a wrong price, never a corrupted catalog.
+async function priceBookImportFile(input) {
+  const file = input && input.files && input.files[0];
+  if (input) input.value = '';
+  if (!file) return;
+  try {
+    // Excel prepends a UTF-8 BOM. And a Spanish / Latin-American Excel saves CSV
+    // with ";" between fields, because "," is its decimal mark — detect which.
+    const text = (await file.text()).replace(/^﻿/, '');
+    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    // Some tools write an Excel "sep=;" hint as the first line — honour it, then drop it.
+    const hint = /^sep=(.)\s*$/i.exec(lines[0] || '');
+    if (hint) lines.shift();
+    if (lines.length < 2) throw new Error('That file has no rows.');
+    const countOutside = (line, sepCh) => { let n = 0, inQ = false; for (const c of line) { if (c === '"') inQ = !inQ; else if (!inQ && c === sepCh) n++; } return n; };
+    const sep = hint ? hint[1] : [';', '\t'].reduce((best, ch) => countOutside(lines[0], ch) > countOutside(lines[0], best) ? ch : best, ',');
+    const decComma = sep === ';';   // ";"-separated file ⇒ decimal-comma locale
+    const cell = (line) => {
+      // Minimal CSV reader — handles quoted fields with the separator inside.
+      const out = []; let cur = '', q = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (q) {
+          if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+          else if (ch === '"') q = false;
+          else cur += ch;
+        } else if (ch === '"') q = true;
+        else if (ch === sep) { out.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      out.push(cur);
+      return out.map(s => s.trim());
+    };
+    // The old parser stripped every comma, so "12,50" (twelve-fifty in a
+    // decimal-comma locale) became 1250 — a price 100x too high, applied
+    // silently. Read the number the way the file's own locale wrote it.
+    const parsePrice = (raw) => {
+      let s = String(raw == null ? '' : raw).replace(/[$\s ]/g, '');
+      if (!s) return NaN;
+      const lc = s.lastIndexOf(','), ld = s.lastIndexOf('.');
+      if (lc >= 0 && ld >= 0) {
+        // Both marks present: whichever comes LAST is the decimal ("1.250,50" / "1,250.50").
+        s = lc > ld ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+      } else if (lc >= 0) {
+        // Comma only: decimal in a decimal-comma file, or with 1–2 digits after it.
+        const single = s.indexOf(',') === lc, tail = s.length - lc - 1;
+        s = (single && (decComma || tail <= 2)) ? s.replace(',', '.') : s.replace(/,/g, '');
+      } else if (ld >= 0 && decComma) {
+        // Dot only, decimal-comma file: "1.250" / "1.250.000" are thousands.
+        const single = s.indexOf('.') === ld, tail = s.length - ld - 1;
+        if (!single || tail === 3) s = s.replace(/\./g, '');
+      }
+      return /^\d*\.?\d+$/.test(s) ? parseFloat(s) : NaN;
+    };
+    const head = cell(lines[0]).map(h => h.toLowerCase());
+    const iCode = head.findIndex(h => h === 'code');
+    const iPrice = head.findIndex(h => h.startsWith('price'));
+    if (iCode < 0 || iPrice < 0) throw new Error('Need a "Code" column and a "Price per unit" column — export the file first to get the right shape.');
+
+    const byCode = new Map();
+    for (const t of priceBookStats().types) {
+      getPricingForType(t.id).forEach((r, idx) => { if (r.code) byCode.set(String(r.code), { typeId: t.id, idx }); });
+    }
+    let hit = 0, miss = 0, same = 0, bad = 0;
+    const jumps = [];
+    for (let i = 1; i < lines.length; i++) {
+      const c = cell(lines[i]);
+      const code = String(c[iCode] || '').trim();
+      if (!code) continue;
+      const loc = byCode.get(code);
+      if (!loc) { miss++; continue; }
+      const val = parsePrice(c[iPrice]);
+      if (!isFinite(val) || val < 0) { bad++; continue; }
+      const cur = Number(getPricingForType(loc.typeId)[loc.idx]?.perUnit) || 0;
+      if (cur === val) { same++; continue; }
+      // A 10x swing on an already-priced item is almost always a decimal-mark or
+      // unit mix-up, not a real price change. Apply it, but say which ones.
+      if (cur > 0 && val > 0 && (val / cur >= 10 || cur / val >= 10)) jumps.push(code);
+      setPricingItem(loc.typeId, loc.idx, 'perUnit', val);
+      hit++;
+    }
+    render();
+    showToast(`${hit} price${hit === 1 ? '' : 's'} updated${same ? ` · ${same} unchanged` : ''}${miss ? ` · ${miss} row(s) skipped (code not in the book)` : ''}${bad ? ` · ${bad} unreadable price(s) skipped` : ''}.`
+      + (jumps.length ? ` ⚠ ${jumps.length} changed by 10x or more — check: ${jumps.slice(0, 4).join(', ')}${jumps.length > 4 ? '…' : ''}` : ''),
+      jumps.length || bad ? 'warn' : (hit ? 'success' : 'warn'));
+  } catch (err) {
+    showToast('Import failed: ' + (err.message || err), 'error');
+  }
+}
+
+// Price edits patch the row IN PLACE instead of calling render(). A render here
+// would rebuild the table under the cursor: while the user Tabs from price to
+// price, every field would lose focus. The row leaves amber immediately; the
+// counters and the left-rail badge catch up through the idle render, which
+// waits until focus has left the inputs.
+function pbSetPrice(typeId, idx, el) {
+  setPricingItem(typeId, idx, 'perUnit', el.value);
+  const v = Number((getPricingForType(typeId)[idx] || {}).perUnit) || 0;
+  const zero = !(v > 0);
+  const tr = el.closest ? el.closest('tr') : null;
+  if (tr) tr.style.background = zero ? 'var(--amber-bg)' : '';
+  el.style.borderColor = zero ? 'var(--amber)' : '';
+  el.style.color = zero ? 'var(--amber)' : '';
+  el.title = zero ? 'No price yet — the AI will show this item at $0 until you set it' : '';
+  if (String(el.value) !== String(v)) el.value = v;   // show what was actually stored
+  if (typeof scheduleIdleRender === 'function') scheduleIdleRender();
+}
+
+function buildPriceBookPane() {
+  const { types, total, unpriced } = priceBookStats();
+  const q = (ST.pbQuery || '').toLowerCase();
+  const onlyUnpriced = !!ST.pbUnpricedOnly;
+
+  if (!types.length) {
+    return `<div class="empty">No price catalog for this workspace type yet.</div>`;
+  }
+
+  const section = (t) => {
+    const all = getPricingForType(t.id);
+    const rows = all.map((r, idx) => ({ r, idx })).filter(({ r }) => {
+      if (onlyUnpriced && Number(r.perUnit) > 0) return false;
+      if (!q) return true;
+      return [r.code, r.name, r.sub, r.unit].filter(Boolean).some(v => String(v).toLowerCase().includes(q));
+    });
+    const miss = all.filter(r => !(Number(r.perUnit) > 0)).length;
+    if (!rows.length && (q || onlyUnpriced)) return '';
+    return `<div style="margin-bottom:22px">
+      <div style="display:flex;align-items:baseline;gap:10px;padding-bottom:6px;border-bottom:1px solid var(--ink-700);margin-bottom:8px">
+        <b style="font-size:14px;color:var(--ink-900)">${esc(t.label)}</b>
+        <span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">${all.length} item${all.length === 1 ? '' : 's'}${miss ? ` · <span style="color:var(--amber)">${miss} unpriced</span>` : ''}</span>
+        <div style="flex:1"></div>
+        <button class="edit-btn" onclick="addPricingItem('${t.id}')" title="Add a product to this category">+ Item</button>
+        <button class="edit-btn" onclick="if(confirm(${esc(JSON.stringify('Reset ' + t.label + ' to the built-in catalog? Your prices for this category are lost.'))}))resetPricingForType('${t.id}')" title="Restore the built-in list">↺</button>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr>
+          ${['Code', 'Item', 'Detail', 'Unit', '$ / unit', ''].map((h, i) => `<th style="text-align:${i === 4 ? 'right' : 'left'};font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:5px 6px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
+        </tr></thead>
+        <tbody>
+          ${rows.map(({ r, idx }) => {
+            const zero = !(Number(r.perUnit) > 0);
+            const inp = (field, val, extra) => `<input class="minp" value="${esc(val == null ? '' : String(val))}" onchange="setPricingItem('${t.id}',${idx},'${field}',this.value)" style="width:100%;box-sizing:border-box;font-size:11.5px;padding:4px 6px;${extra || ''}">`;
+            return `<tr style="border-bottom:1px solid var(--border);${zero ? 'background:var(--amber-bg)' : ''}">
+              <td style="padding:3px 6px;width:130px">${inp('code', r.code, 'font-family:var(--mono);font-size:10.5px')}</td>
+              <td style="padding:3px 6px">${inp('name', r.name)}</td>
+              <td style="padding:3px 6px;width:190px">${inp('sub', r.sub)}</td>
+              <td style="padding:3px 6px;width:62px">${inp('unit', r.unit, 'font-family:var(--mono);text-align:center')}</td>
+              <td style="padding:3px 6px;width:104px"><input class="minp" type="number" min="0" step="0.01" value="${Number(r.perUnit) || 0}" onchange="pbSetPrice('${t.id}',${idx},this)" title="${zero ? 'No price yet — the AI will show this item at $0 until you set it' : ''}" style="width:100%;box-sizing:border-box;font-size:11.5px;padding:4px 6px;font-family:var(--mono);text-align:right;${zero ? 'border-color:var(--amber);color:var(--amber)' : ''}"></td>
+              <td style="padding:3px 6px;width:30px"><button class="edit-btn" style="color:var(--red);border-color:var(--red-border);padding:2px 6px" onclick="if(confirm(${esc(JSON.stringify('Delete “' + String(r.name || '') + '”?'))}))deletePricingItem('${t.id}',${idx})">✕</button></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  };
+
+  const body = types.map(section).join('');
+
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:1px solid var(--ink-700);margin-bottom:18px;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">[ FILES / PRICE BOOK ] · ${total} ITEM${total === 1 ? '' : 'S'}</div>
+        <h1 style="font-size:28px;font-weight:600;letter-spacing:-0.02em;color:var(--ink-900);margin:0">Price book</h1>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn btn-ghost btn-sm" onclick="priceBookCSV()" title="Download the whole book as a spreadsheet">⬇ Export CSV</button>
+        <label class="btn btn-ghost btn-sm" style="cursor:pointer;margin:0" title="Bring prices back in — matched by code, prices only">⬆ Import prices
+          <input type="file" accept=".csv,text/csv" onchange="priceBookImportFile(this)" style="display:none"></label>
+      </div>
+    </div>
+
+    <div style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px;max-width:680px">
+      These are your own products and unit prices. <b>The estimating AI may only quote from this list</b> — a draft, a design-build estimate or an assistant action can never invent a product or a price that isn't here. Change a price and every future estimate uses it.
+    </div>
+
+    ${unpriced ? `<div style="margin-bottom:16px;padding:10px 13px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r2);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span style="flex:1;min-width:250px;font-size:12.5px;color:var(--ink-900)"><b>${unpriced} item${unpriced === 1 ? '' : 's'} still has no price.</b> They show up in drafts at $0 with a "you set it" note — nothing is ever invented. Export the CSV, fill the price column with your client, import it back.</span>
+      <button class="btn ${onlyUnpriced ? 'btn-amber' : 'btn-ghost'} btn-sm" onclick="ST.pbUnpricedOnly=${onlyUnpriced ? 'false' : 'true'};render()">${onlyUnpriced ? 'Show all' : 'Show only these'}</button>
+    </div>` : ''}
+
+    <div style="margin-bottom:16px">
+      <input id="pb-search" class="minp" placeholder="Search code, item, detail…" value="${esc(ST.pbQuery || '')}" oninput="ST.pbQuery=this.value;render()" style="width:100%;box-sizing:border-box;max-width:380px">
+    </div>
+
+    ${body || `<div style="font-family:var(--mono);font-size:11.5px;color:var(--text3);font-style:italic">Nothing matches that filter.</div>`}
+  `;
+}
+
 function buildFilesTab() {
-  const view = ST.filesView || 'templates';
+  // Price book: any plan with the estimator. Template editor: Send Center only,
+  // unchanged — Pro and Trial reach Files for the price book alone.
+  const canTpl = (typeof hasFeature === 'function' && hasFeature('sendcenter')) || AUTH.isMaster;
+  let view = ST.filesView || (canTpl ? 'templates' : 'pricebook');
+  if (view === 'templates' && !canTpl) view = 'pricebook';
   const tpl = ST.emailTemplates || DEFAULT_TEMPLATES;
   const editing = ST.templateEditor; // 'rfp' | 'followup' | null
 
@@ -6268,9 +6527,14 @@ function buildFilesTab() {
     <!-- Left rail: file categories -->
     <div class="list-panel" style="width:240px">
       <div class="sec-label" style="padding:14px 14px 6px">Files</div>
-      <div onclick="ST.filesView='templates';render()" style="cursor:pointer;padding:8px 12px;margin:0 6px;border-radius:2px;font-size:13px;color:${view==='templates'?'var(--bone-50)':'var(--text2)'};background:${view==='templates'?'var(--ink-950)':'transparent'};display:flex;align-items:center;gap:10px"><i data-lucide="mail"></i><span>Templates</span></div>
-      <div style="padding:14px 14px 6px;font-family:var(--mono);font-size:9px;color:var(--text3);letter-spacing:.12em;text-transform:uppercase;opacity:.6">Coming soon</div>
-      <div style="padding:8px 12px;margin:0 6px;color:var(--text3);font-size:13px;opacity:.5;cursor:not-allowed;display:flex;align-items:center;gap:10px"><i data-lucide="paperclip"></i><span>Attachments</span></div>
+      ${canTpl ? `<div onclick="ST.filesView='templates';render()" style="cursor:pointer;padding:8px 12px;margin:0 6px;border-radius:2px;font-size:13px;color:${view==='templates'?'var(--bone-50)':'var(--text2)'};background:${view==='templates'?'var(--ink-950)':'transparent'};display:flex;align-items:center;gap:10px"><i data-lucide="mail"></i><span>Templates</span></div>` : ''}
+      <div onclick="ST.filesView='pricebook';render()" style="cursor:pointer;padding:8px 12px;margin:0 6px;border-radius:2px;font-size:13px;color:${view==='pricebook'?'var(--bone-50)':'var(--text2)'};background:${view==='pricebook'?'var(--ink-950)':'transparent'};display:flex;align-items:center;gap:10px"><i data-lucide="tag"></i><span style="flex:1">Price book</span>${(() => {
+        const s = priceBookStats();
+        if (!s.total) return '';
+        return s.unpriced
+          ? `<span style="font-family:var(--mono);font-size:9px;color:var(--amber)" title="${s.unpriced} item(s) with no price yet">${s.unpriced}&nbsp;⚠</span>`
+          : `<span style="font-family:var(--mono);font-size:9px;opacity:.6">${s.total}</span>`;
+      })()}</div>
     </div>
 
     <!-- Right pane: editor -->
@@ -6322,7 +6586,7 @@ function buildFilesTab() {
             </div>
           </div>`;
         }).join('')}
-      ` : `<div class="empty">Coming soon</div>`}
+      ` : view === 'pricebook' ? buildPriceBookPane() : `<div class="empty">Pick a section on the left.</div>`}
     </div>
   </div>`;
 }
@@ -6819,7 +7083,7 @@ function buildBuilderDetail(proj) {
         <button class="btn btn-ghost btn-sm" onclick="ST.templateSaveDialog='${proj.id}';render();setTimeout(()=>document.getElementById('tpl-save-name')?.focus(),30)" title="Save current as template">↓ Save template</button>
         <button class="btn btn-ghost btn-sm" onclick="ST.bulkEditDialog={pid:'${proj.id}'};render()" title="Apply markup change to many items">⇶ Bulk edit</button>
         <button class="btn btn-ghost btn-sm" onclick="builderImportFromBids('${proj.id}')" title="Pull selected bids">⥃ Import from bids</button>
-        <button class="btn btn-ghost btn-sm" onclick="ST.priceBookModal={pid:'${proj.id}'};render()" title="Insert reusable items from your price book">▤ Price book${(ST.priceBook||[]).length?' · '+ST.priceBook.length:''}</button>
+        <button class="btn btn-ghost btn-sm" onclick="ST.priceBookModal={pid:'${proj.id}'};render()" title="Insert products from your price book — the same list the AI prices from">▤ Price book${(() => { const n = priceBookStats().total; return n ? ' · ' + n : ''; })()}</button>
         <button class="btn btn-ghost btn-sm" onclick="openTradeCalc('${proj.id}')" title="Measure by trade and add the quantity to the estimate">⊟ Calculators</button>
         ${hasFeature('fieldops') ? `<button class="btn btn-ghost btn-sm" onclick="schedProposeAI('${proj.id}')" ${ST.schedAILoading?'disabled':''} title="AI drafts a construction schedule (Gantt) from this estimate's cost codes — in real build order">${ST.schedAILoading===proj.id?'✦ Planning…':'✦ AI schedule'}</button>` : ''}
         <button class="btn btn-amber btn-sm" onclick="ST.builderPrintMode=true;ST.builderPrintEditPanel=false;render()">▤ Print preview</button>
@@ -7064,24 +7328,51 @@ function priceBookAdd() {
 }
 function priceBookDelete(id) { ST.priceBook = (ST.priceBook || []).filter(x => x.id !== id); saveSt(); render(); }
 function priceBookToggleSel(id) { const m = ST.priceBookModal; if (!m) return; m.sel = m.sel || {}; m.sel[id] = !m.sel[id]; render(); }
+// There used to be TWO "price books": this Builder dialog kept its own list
+// (ST.priceBook) that nothing else read, while Files → Price book edited the
+// catalog the AI prices from. An item added in one never showed in the other.
+// Now the catalog is THE price book and this dialog inserts from it. The old
+// list survives as "Saved lines" so no one's data disappears.
 function priceBookInsert(pid) {
   const m = ST.priceBookModal; if (!m) return;
   const sel = m.sel || {};
-  const chosen = (ST.priceBook || []).filter(x => sel[x.id]);
-  if (!chosen.length) { showToast('Select at least one item.', 'warn'); return; }
   const est = builderEnsure(pid);
-  let added = 0;
-  for (const it of chosen) {
-    const code = it.cat || 'PRICE BOOK';
-    let g = est.groups.find(x => x.code === code);
-    if (!g) { g = { id: 'g_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), code, title: code, items: [] }; est.groups.push(g); }
+  const uid = (p) => p + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+  // Where lines land matters: the client proposal lists scope BY GROUP, so a
+  // chosen group keeps the division structure the estimator already built.
+  const target = (m.group && m.group !== '__bycat') ? (est.groups || []).find(g => g.id === m.group) : null;
+  const groupFor = (code) => {
+    if (target) { target.items = target.items || []; return target; }
+    let g = est.groups.find(x => (x.code || '') === code);
+    if (!g) { g = { id: uid('g_'), code, title: code, items: [] }; est.groups.push(g); }
     g.items = g.items || [];
+    return g;
+  };
+  let added = 0, unpriced = 0;
+  // Catalog rows — same shape every other catalog insert uses (estApplyDraft,
+  // dbeApply, the assistant's add_item): code, name, unit, price, Materials.
+  const baseMk = Number(getSettings().defaultMarkup?.Materials) || 0;
+  for (const t of priceBookStats().types) {
+    for (const row of getPricingForType(t.id)) {
+      if (!sel['cat:' + t.id + ':' + row.code]) continue;
+      const uc = Number(row.perUnit) || 0;
+      if (!(uc > 0)) unpriced++;
+      groupFor(t.label).items.push({ id: uid('i_'), code: row.code, title: row.name, description: row.sub || '', qty: 1, unit: row.unit || 'EA', unitCost: uc, costType: 'Materials', markup: baseMk, taxable: false });
+      added++;
+    }
+  }
+  // Legacy saved lines — inserted exactly as before.
+  for (const it of (ST.priceBook || [])) {
+    if (!sel[it.id]) continue;
     const pbCt = it.costType || 'Materials';
-    g.items.push({ id: 'i_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), code: it.cat || '', title: it.title, description: '', qty: 1, unit: it.unit || '', unitCost: Number(it.unitCost) || 0, costType: pbCt, markup: (Number(getSettings().defaultMarkup?.[pbCt]) || 0), taxable: false });
+    groupFor(it.cat || 'PRICE BOOK').items.push({ id: uid('i_'), code: it.cat || '', title: it.title, description: '', qty: 1, unit: it.unit || '', unitCost: Number(it.unitCost) || 0, costType: pbCt, markup: (Number(getSettings().defaultMarkup?.[pbCt]) || 0), taxable: false });
     added++;
   }
+  if (!added) { showToast('Select at least one item.', 'warn'); return; }
   ST.priceBookModal = null; saveSt(); render();
-  showToast(added + ' item' + (added === 1 ? '' : 's') + ' added to the estimate.', 'success');
+  showToast(`${added} item${added === 1 ? '' : 's'} added — quantities start at 1, set them in the Builder.`
+    + (unpriced ? ` ${unpriced} ha${unpriced === 1 ? 's' : 've'} no price yet — set ${unpriced === 1 ? 'it' : 'them'} in Files → Price book.` : ''),
+    unpriced ? 'warn' : 'success');
 }
 function buildPriceBookModal() {
   const m = ST.priceBookModal; if (!m) return '';
@@ -7092,11 +7383,54 @@ function buildPriceBookModal() {
   items.forEach(it => { const c = it.cat || 'Uncategorized'; (byCat[c] = byCat[c] || []).push(it); });
   const cats = Object.keys(byCat).sort();
   const selCount = Object.values(sel).filter(Boolean).length;
+  const q = String(m.q || '').toLowerCase();
+  const { types, total } = priceBookStats();
+  const groups = ((ST.estimates && ST.estimates[m.pid] && ST.estimates[m.pid].groups) || []);
+  const legacyOpen = !!m.legacyOpen;
+
+  // The catalog — Files → Price book, the list the AI prices from.
+  const catalogHtml = types.map(t => {
+    const rows = getPricingForType(t.id).filter(r => !q || [r.code, r.name, r.sub, r.unit].filter(Boolean).some(v => String(v).toLowerCase().includes(q)));
+    if (!rows.length) return '';
+    return `<div style="background:var(--bg1);border-bottom:1px solid var(--border);padding:8px 14px;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">${esc(t.label)} · ${rows.length}</div>
+      ${rows.map(r => {
+        const key = 'cat:' + t.id + ':' + r.code;
+        const zero = !(Number(r.perUnit) > 0);
+        return `<label style="display:flex;align-items:center;gap:12px;padding:9px 14px;border-bottom:1px solid var(--border);cursor:pointer;${zero ? 'background:var(--amber-bg)' : ''}">
+          <input type="checkbox" ${sel[key] ? 'checked' : ''} onclick="priceBookToggleSel(${esc(JSON.stringify(key))})" style="flex-shrink:0">
+          <div style="flex:1;min-width:0"><div style="font-size:13px;color:var(--ink-900);line-height:1.4">${esc(r.name)}</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px">${esc(r.code)}${r.sub ? ' · ' + esc(r.sub) : ''}</div></div>
+          <div style="font-family:var(--mono);font-size:13.5px;font-weight:600;white-space:nowrap;color:${zero ? 'var(--amber)' : 'var(--ink-900)'}" title="${zero ? 'No price yet — set it in Files → Price book' : ''}">${zero ? 'no price' : fmt$(Number(r.perUnit))}<span style="font-size:10px;color:var(--text3)">/${esc(r.unit || 'EA')}</span></div>
+        </label>`;
+      }).join('')}`;
+  }).join('');
+
   return `<div class="backdrop" onclick="if(event.target===this){ST.priceBookModal=null;render()}"><div class="modal" style="max-width:760px" onclick="event.stopPropagation()">
     <div class="modal-title">▤ Price book</div>
-    <div class="modal-sub">Your reusable catalog of priced items. Build it once, drop items into any estimate.</div>
-    <div style="margin:18px 0 6px;padding:16px 18px;background:var(--bg1);border:1px solid var(--border)">
-      <div style="font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:12px">Add an item to your catalog</div>
+    <div class="modal-sub">Your products and unit prices — the same list the estimating AI prices from. Tick what you need and drop it into this estimate.</div>
+
+    <div style="display:flex;gap:10px;align-items:center;margin:16px 0 8px;flex-wrap:wrap">
+      <input id="pbins-search" class="minp" placeholder="Search ${total} item${total === 1 ? '' : 's'}…" value="${esc(m.q || '')}" oninput="ST.priceBookModal.q=this.value;render()" style="flex:1;min-width:200px;margin:0">
+      <button class="btn btn-ghost btn-sm" onclick="ST.priceBookModal=null;ST.filesView='pricebook';setTab('files')" title="Add products, change prices, import from a spreadsheet">Edit prices / add items →</button>
+    </div>
+    <div style="max-height:340px;overflow-y:auto;border:1px solid var(--border)">
+      ${catalogHtml || `<div style="padding:30px 20px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--text3);font-style:italic;line-height:1.6">${q ? 'Nothing matches that search.' : 'Your price book is empty — add products in Files → Price book.'}</div>`}
+    </div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
+      <span class="modal-label" style="margin:0">Insert into</span>
+      <select class="msel" onchange="ST.priceBookModal.group=this.value" style="margin:0;flex:1;min-width:220px">
+        <option value="__bycat"${!m.group || m.group === '__bycat' ? ' selected' : ''}>A group per price-book category</option>
+        ${groups.map(g => `<option value="${esc(g.id)}"${m.group === g.id ? ' selected' : ''}>${esc((g.code || '') + (g.code && g.title && g.title !== g.code ? ' — ' + g.title : ''))}</option>`).join('')}
+      </select>
+    </div>
+    <div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:5px;line-height:1.5">The client proposal lists scope by group — pick an existing division to keep that structure.</div>
+
+    <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:10px">
+      <button onclick="ST.priceBookModal.legacyOpen=${legacyOpen ? 'false' : 'true'};render()" style="background:none;border:0;padding:0;cursor:pointer;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3)">${legacyOpen ? '▾' : '▸'} Saved lines${items.length ? ' · ' + items.length : ''} <span style="text-transform:none;letter-spacing:0">— one-off lines for this workspace, not used by the AI</span></button>
+    </div>
+    ${!legacyOpen ? '' : `
+    <div style="margin:12px 0 6px;padding:16px 18px;background:var(--bg1);border:1px solid var(--border)">
+      <div style="font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin-bottom:12px">Add a saved line</div>
       <div class="modal-label" style="margin:0 0 5px">Category</div>
       <select id="pb-cat" class="msel" style="margin:0 0 12px;width:100%">${CATS.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>
       <div class="modal-label" style="margin:0 0 5px">Description *</div>
@@ -7106,11 +7440,11 @@ function buildPriceBookModal() {
         <div><div class="modal-label" style="margin:0 0 5px">Unit cost</div><input id="pb-uc" class="minp" style="margin:0;width:100%" placeholder="0.00"></div>
         <div><div class="modal-label" style="margin:0 0 5px">Cost type</div><select id="pb-ctype" class="msel" style="margin:0;width:100%">${COST_TYPES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select></div>
       </div>
-      <div style="margin-top:14px;text-align:right"><button class="btn btn-amber btn-sm" onclick="priceBookAdd()">+ Add to catalog</button></div>
+      <div style="margin-top:14px;text-align:right"><button class="btn btn-amber btn-sm" onclick="priceBookAdd()">+ Save line</button></div>
     </div>
-    <div style="font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin:18px 0 8px">Your catalog${items.length?' · '+items.length+' item'+(items.length===1?'':'s'):''}</div>
-    <div style="max-height:320px;overflow-y:auto;border:1px solid var(--border)">
-      ${items.length === 0 ? `<div style="padding:34px 20px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--text3);font-style:italic;line-height:1.6">No items yet.<br>Add your common priced items above — they'll be here for every estimate.</div>`
+    <div style="font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);margin:14px 0 8px">Saved lines${items.length?' · '+items.length:''}</div>
+    <div style="max-height:220px;overflow-y:auto;border:1px solid var(--border)">
+      ${items.length === 0 ? `<div style="padding:24px 20px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--text3);font-style:italic;line-height:1.6">No saved lines. For products you quote often, add them to the Price book instead — the AI can use those.</div>`
       : cats.map(c => `
         <div style="background:var(--bg1);border-bottom:1px solid var(--border);padding:8px 14px;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">${esc(c)}</div>
         ${byCat[c].map(it => `<div style="display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--border)">
@@ -7120,7 +7454,7 @@ function buildPriceBookModal() {
           <button onclick="priceBookDelete('${it.id}')" title="Remove" style="font-family:var(--mono);font-size:13px;color:var(--red);background:none;border:none;cursor:pointer;flex-shrink:0;padding:4px">✕</button>
         </div>`).join('')}
       `).join('')}
-    </div>
+    </div>`}
     <div class="modal-btns" style="margin-top:18px;align-items:center">
       <span style="font-family:var(--mono);font-size:11px;color:var(--text3);margin-right:auto">${selCount} selected</span>
       <button class="btn btn-ghost" onclick="ST.priceBookModal=null;render()">Close</button>
@@ -11357,6 +11691,44 @@ function buildSubProjectDetail(p) {
 // email (mailto, since the trial has no Send Center), follow-up logging, and an
 // auto Summary that proves the platform tracks the whole pursuit in one place.
 function subGcGet(pid) { return (ST.overrides[pid] && ST.overrides[pid]._gc) || {}; }
+
+// Directory contacts a project can be bid TO. Only the workspace's OWN
+// contacts: the built-in starter directory is sample data, and hundreds of
+// samples in a picker would bury the real GCs. General contractors first.
+function subGcDirectory() {
+  const own = (ST.addedSubs || []).filter(s => s && !ST.subOverrides?.[s.id]?._deleted);
+  const isGc = (s) => /general contractor/i.test(String(s.divName || '')) || subCodes(s).some(c => /general contractor/i.test(String(c)));
+  const byName = (a, b) => String(a.company || '').localeCompare(String(b.company || ''));
+  return { gcs: own.filter(isGc).sort(byName), others: own.filter(s => !isGc(s)).sort(byName) };
+}
+function subGcOptionsHtml(selectedSid) {
+  const { gcs, others } = subGcDirectory();
+  const opt = (s) => `<option value="${esc(s.id)}"${s.id === selectedSid ? ' selected' : ''}>${esc(s.company || '(no name)')}${s.contact ? ' — ' + esc(s.contact) : ''}</option>`;
+  return (gcs.length ? `<optgroup label="General contractors">${gcs.map(opt).join('')}</optgroup>` : '')
+       + (others.length ? `<optgroup label="Other contacts">${others.map(opt).join('')}</optgroup>` : '');
+}
+// Link a project to a directory contact. Fills the "Who you're bidding to"
+// block — which the estimate email, the PDF, the Summary and the portal all
+// read — plus the project's builder line (sidebar, proposal "Prepared for").
+// The contact id is kept so the link survives the company being renamed.
+function subGcApplyContact(pid, sid) {
+  const s = (ST.addedSubs || []).find(x => x && x.id === sid);
+  if (!s) return false;
+  if (!ST.overrides[pid]) ST.overrides[pid] = {};
+  ST.overrides[pid]._gc = Object.assign({}, ST.overrides[pid]._gc || {}, {
+    sid: s.id, company: s.company || '', contact: s.contact || '', email: s.email || '', phone: s.phone || s.cell || '',
+  });
+  const p = (ST.addedProjects || []).find(x => x.id === pid);
+  if (p && s.company) p.builder = s.company;
+  return true;
+}
+function subGcPickFromDirectory(pid, sid) {
+  if (!sid) return;
+  if (subGcApplyContact(pid, sid)) {
+    saveSt(); render();
+    showToast('Contact linked — the estimate email, PDF and portal now use it.', 'success');
+  }
+}
 function subGcSet(pid, field, val) {
   if (!ST.overrides[pid]) ST.overrides[pid] = {};
   if (!ST.overrides[pid]._gc) ST.overrides[pid]._gc = {};
@@ -11643,6 +12015,16 @@ function buildSubGcDeliverySection(p) {
         <span>Who you're bidding to · follow-up</span>
         <button class="btn btn-ghost btn-sm" onclick="ST.subSummaryModal='${pid}';render()" title="Auto-summary of the whole pursuit">▤ Summary</button>
       </div>
+      ${(() => {
+        const opts = subGcOptionsHtml(gc.sid || '');
+        return opts ? `<div style="display:flex;align-items:center;gap:8px;padding:2px 0 8px;flex-wrap:wrap">
+          <span style="font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">From ${esc(dirLabels().plural)}</span>
+          <select class="msel" style="flex:1;min-width:200px;margin:0;font-size:12px" onchange="subGcPickFromDirectory('${pid}', this.value)">
+            <option value="">${gc.sid ? '— linked — change it here —' : '— pick a contact to fill these in —'}</option>
+            ${opts}
+          </select>
+        </div>` : '';
+      })()}
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:4px 0 12px">
         ${fld('GC / Client company', 'company', 'e.g. Summit Ridge Builders')}
@@ -12642,6 +13024,7 @@ async function confirmDeleteProject(pid) {
   // mark its status so it doesn't show in active filters)
   const idx = (ST.addedProjects || []).findIndex(p => p.id === pid);
   if (idx !== -1) {
+    hvacDemoMarkRemoved(pid);   // no-op unless it's the seeded demo project
     ST.addedProjects.splice(idx, 1);
   } else {
     // It's a seed project — mark as deleted via an override flag so filters can hide it
@@ -12683,6 +13066,7 @@ async function confirmDeleteSub(sid) {
   // Drop from addedSubs OR mark deleted via subOverrides flag if it's a seed sub
   const idx = (ST.addedSubs || []).findIndex(s => s.id === sid);
   if (idx !== -1) {
+    hvacDemoMarkRemoved(sid);   // no-op unless it's a seeded demo contact
     ST.addedSubs.splice(idx, 1);
   } else {
     if (!ST.subOverrides[sid]) ST.subOverrides[sid] = {};
@@ -13279,6 +13663,17 @@ function buildAddProjModal() {
       </select>
       <div class="modal-label">Deadline (optional)</div>
       <input type="text" class="minp" id="np-dl" placeholder="e.g. 08/30/25" inputmode="numeric" oninput="this.value=this.value.replace(/[^0-9\/]/g,'')">
+      ${isSubAccount() ? (() => {
+        // A sub's project IS a bid to someone. Pick them here and the email,
+        // PDF and portal are ready — instead of retyping a contact you already have.
+        const opts = subGcOptionsHtml('');
+        return `<div class="modal-label">Bidding to (optional)</div>
+        <select class="msel" id="np-gc">
+          <option value="">— pick later —</option>
+          ${opts}
+        </select>
+        ${opts ? '' : `<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:5px;line-height:1.5">Add your GCs in <b>${esc(dirLabels().plural)}</b> and they'll show up here.</div>`}`;
+      })() : ''}
       <div class="modal-btns">
         <button class="btn btn-ghost" onclick="ST.addProjModal=false;render()">Cancel</button>
         <button class="btn btn-amber" onclick="confirmAddProj()">Add Project</button>
@@ -20667,7 +21062,12 @@ const TAB_FEATURE_MAP = {
   schedule: 'fieldops',
   dailylog: 'fieldops',
   rfis: 'projects',
-  files: 'sendcenter',
+  // Files holds the Price book — the catalog the estimating AI prices from — so
+  // it opens to every plan with the estimator. The email-template editor inside
+  // it stays behind 'sendcenter' (see buildFilesTab), exactly as before. With the
+  // current plans this equals "estimator OR sendcenter": no plan has sendcenter
+  // without the estimator.
+  files: 'estimator',
   insights: 'projects',
   settings: null,   // settings always available
   overview: null,
@@ -24382,79 +24782,79 @@ const DEFAULT_PRICING_CATALOG = {
     // you set it", which is recoverable. An invented price gets quoted to a GC.
 
     // Div 01 — General Requirements
-    { code: 'hv-mobilization',  name: 'Mobilization',                 sub: 'Div 01 · set-up & site access',      unit: 'LS', perUnit: 0, matchTags: ['mobilization','mobilize'] },
-    { code: 'hv-submittals',    name: 'Submittals & shop drawings',   sub: 'Div 01 · equipment coordination',    unit: 'LS', perUnit: 0, matchTags: ['submittal','shop drawing','coordination'] },
-    { code: 'hv-supervision',   name: 'Project management & supervision', sub: 'Div 01 · scheduling',            unit: 'LS', perUnit: 0, matchTags: ['supervision','project management','pm'] },
-    { code: 'hv-bonds',         name: 'Bonds / insurance allowance',  sub: 'Div 01 · allowance',                 unit: 'LS', perUnit: 0, matchTags: ['bond','insurance'] },
-    { code: 'hv-closeout',      name: 'Closeout & as-builts',         sub: 'Div 01 · O&M turnover',              unit: 'LS', perUnit: 0, matchTags: ['closeout','as-built','o&m','turnover'] },
+    { addedIn: 2, code: 'hv-mobilization',  name: 'Mobilization',                 sub: 'Div 01 · set-up & site access',      unit: 'LS', perUnit: 0, matchTags: ['mobilization','mobilize'] },
+    { addedIn: 2, code: 'hv-submittals',    name: 'Submittals & shop drawings',   sub: 'Div 01 · equipment coordination',    unit: 'LS', perUnit: 0, matchTags: ['submittal','shop drawing','coordination'] },
+    { addedIn: 2, code: 'hv-supervision',   name: 'Project management & supervision', sub: 'Div 01 · scheduling',            unit: 'LS', perUnit: 0, matchTags: ['supervision','project management','pm'] },
+    { addedIn: 2, code: 'hv-bonds',         name: 'Bonds / insurance allowance',  sub: 'Div 01 · allowance',                 unit: 'LS', perUnit: 0, matchTags: ['bond','insurance'] },
+    { addedIn: 2, code: 'hv-closeout',      name: 'Closeout & as-builts',         sub: 'Div 01 · O&M turnover',              unit: 'LS', perUnit: 0, matchTags: ['closeout','as-built','o&m','turnover'] },
 
     // Div 23 — Mechanical demolition
-    { code: 'hv-demo-duct',     name: 'Duct demolition',              sub: 'Remove duct & fittings',             unit: 'SF', perUnit: 0, matchTags: ['demo','demolition','remove duct'] },
-    { code: 'hv-demo-cond',     name: 'Condensing unit removal',      sub: 'Disconnect & haul off',              unit: 'EA', perUnit: 0, matchTags: ['demo condenser','remove condensing','demo unit'] },
-    { code: 'hv-demo-haul',     name: 'Demolition haul-off & disposal', sub: 'Lawful disposal',                  unit: 'LS', perUnit: 0, matchTags: ['haul','disposal','debris'] },
+    { addedIn: 2, code: 'hv-demo-duct',     name: 'Duct demolition',              sub: 'Remove duct & fittings',             unit: 'SF', perUnit: 0, matchTags: ['demo','demolition','remove duct'] },
+    { addedIn: 2, code: 'hv-demo-cond',     name: 'Condensing unit removal',      sub: 'Disconnect & haul off',              unit: 'EA', perUnit: 0, matchTags: ['demo condenser','remove condensing','demo unit'] },
+    { addedIn: 2, code: 'hv-demo-haul',     name: 'Demolition haul-off & disposal', sub: 'Lawful disposal',                  unit: 'LS', perUnit: 0, matchTags: ['haul','disposal','debris'] },
 
     // Rectangular galvanized duct — by size, per LF (the sizes a real set calls out)
-    { code: 'hv-rect-12x10',    name: 'Rect duct · 12x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['12x10','rectangular duct'] },
-    { code: 'hv-rect-14x10',    name: 'Rect duct · 14x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['14x10','rectangular duct'] },
-    { code: 'hv-rect-14x12',    name: 'Rect duct · 14x12',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['14x12','rectangular duct'] },
-    { code: 'hv-rect-16x10',    name: 'Rect duct · 16x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['16x10','rectangular duct'] },
-    { code: 'hv-rect-16x12',    name: 'Rect duct · 16x12',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['16x12','rectangular duct'] },
-    { code: 'hv-rect-16x14',    name: 'Rect duct · 16x14',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['16x14','rectangular duct'] },
-    { code: 'hv-rect-20x10',    name: 'Rect duct · 20x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['20x10','rectangular duct'] },
-    { code: 'hv-rect-20x12',    name: 'Rect duct · 20x12',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['20x12','rectangular duct'] },
-    { code: 'hv-rect-20x14',    name: 'Rect duct · 20x14',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['20x14','rectangular duct'] },
+    { addedIn: 2, code: 'hv-rect-12x10',    name: 'Rect duct · 12x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['12x10','rectangular duct'] },
+    { addedIn: 2, code: 'hv-rect-14x10',    name: 'Rect duct · 14x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['14x10','rectangular duct'] },
+    { addedIn: 2, code: 'hv-rect-14x12',    name: 'Rect duct · 14x12',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['14x12','rectangular duct'] },
+    { addedIn: 2, code: 'hv-rect-16x10',    name: 'Rect duct · 16x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['16x10','rectangular duct'] },
+    { addedIn: 2, code: 'hv-rect-16x12',    name: 'Rect duct · 16x12',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['16x12','rectangular duct'] },
+    { addedIn: 2, code: 'hv-rect-16x14',    name: 'Rect duct · 16x14',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['16x14','rectangular duct'] },
+    { addedIn: 2, code: 'hv-rect-20x10',    name: 'Rect duct · 20x10',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['20x10','rectangular duct'] },
+    { addedIn: 2, code: 'hv-rect-20x12',    name: 'Rect duct · 20x12',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['20x12','rectangular duct'] },
+    { addedIn: 2, code: 'hv-rect-20x14',    name: 'Rect duct · 20x14',            sub: 'Galv sheet metal · SMACNA',          unit: 'LF', perUnit: 0, matchTags: ['20x14','rectangular duct'] },
 
     // Spiral round duct — by diameter, per LF
-    { code: 'hv-rnd-06',        name: 'Round duct · 6" dia',          sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['6 in round','6" round','round duct'] },
-    { code: 'hv-rnd-08',        name: 'Round duct · 8" dia',          sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['8 in round','8" round','round duct'] },
-    { code: 'hv-rnd-10',        name: 'Round duct · 10" dia',         sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['10 in round','10" round','round duct'] },
-    { code: 'hv-rnd-12',        name: 'Round duct · 12" dia',         sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['12 in round','12" round','round duct'] },
-    { code: 'hv-rnd-16',        name: 'Round duct · 16" dia',         sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['16 in round','16" round','round duct'] },
+    { addedIn: 2, code: 'hv-rnd-06',        name: 'Round duct · 6" dia',          sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['6 in round','6" round','round duct'] },
+    { addedIn: 2, code: 'hv-rnd-08',        name: 'Round duct · 8" dia',          sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['8 in round','8" round','round duct'] },
+    { addedIn: 2, code: 'hv-rnd-10',        name: 'Round duct · 10" dia',         sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['10 in round','10" round','round duct'] },
+    { addedIn: 2, code: 'hv-rnd-12',        name: 'Round duct · 12" dia',         sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['12 in round','12" round','round duct'] },
+    { addedIn: 2, code: 'hv-rnd-16',        name: 'Round duct · 16" dia',         sub: 'Spiral galv',                        unit: 'LF', perUnit: 0, matchTags: ['16 in round','16" round','round duct'] },
 
     // Insulated flexible duct — R-8, max 5 ft final connections
-    { code: 'hv-flex-08',       name: 'Flex duct · 8" R-8',           sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['8 flex','flexible duct'] },
-    { code: 'hv-flex-10',       name: 'Flex duct · 10" R-8',          sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['10 flex','flexible duct'] },
-    { code: 'hv-flex-12',       name: 'Flex duct · 12" R-8',          sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['12 flex','flexible duct'] },
-    { code: 'hv-flex-16',       name: 'Flex duct · 16" R-8',          sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['16 flex','flexible duct'] },
+    { addedIn: 2, code: 'hv-flex-08',       name: 'Flex duct · 8" R-8',           sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['8 flex','flexible duct'] },
+    { addedIn: 2, code: 'hv-flex-10',       name: 'Flex duct · 10" R-8',          sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['10 flex','flexible duct'] },
+    { addedIn: 2, code: 'hv-flex-12',       name: 'Flex duct · 12" R-8',          sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['12 flex','flexible duct'] },
+    { addedIn: 2, code: 'hv-flex-16',       name: 'Flex duct · 16" R-8',          sub: 'Max 5 ft final connection',          unit: 'LF', perUnit: 0, matchTags: ['16 flex','flexible duct'] },
 
     // Insulation & piping
-    { code: 'hv-ductwrap-15',   name: 'Duct insulation · 1-1/2" FG',  sub: 'Vapor barrier / jacket',             unit: 'SF', perUnit: 0, matchTags: ['duct insulation','duct wrap','fiberglass'] },
-    { code: 'hv-ref-liq-38',    name: 'Refrigerant line · 3/8" liquid', sub: 'Incl fittings & supports',         unit: 'LF', perUnit: 0, matchTags: ['3/8 liquid','liquid line'] },
-    { code: 'hv-ref-suc-58',    name: 'Refrigerant line · 5/8" suction', sub: 'Insulated',                       unit: 'LF', perUnit: 0, matchTags: ['5/8 suction','suction line'] },
-    { code: 'hv-cond-34',       name: 'Condensate drain · 3/4"',      sub: 'Incl fittings & supports',           unit: 'LF', perUnit: 0, matchTags: ['condensate drain','3/4 condensate'] },
+    { addedIn: 2, code: 'hv-ductwrap-15',   name: 'Duct insulation · 1-1/2" FG',  sub: 'Vapor barrier / jacket',             unit: 'SF', perUnit: 0, matchTags: ['duct insulation','duct wrap','fiberglass'] },
+    { addedIn: 2, code: 'hv-ref-liq-38',    name: 'Refrigerant line · 3/8" liquid', sub: 'Incl fittings & supports',         unit: 'LF', perUnit: 0, matchTags: ['3/8 liquid','liquid line'] },
+    { addedIn: 2, code: 'hv-ref-suc-58',    name: 'Refrigerant line · 5/8" suction', sub: 'Insulated',                       unit: 'LF', perUnit: 0, matchTags: ['5/8 suction','suction line'] },
+    { addedIn: 2, code: 'hv-cond-34',       name: 'Condensate drain · 3/4"',      sub: 'Incl fittings & supports',           unit: 'LF', perUnit: 0, matchTags: ['condensate drain','3/4 condensate'] },
 
     // Supports & fittings
-    { code: 'hv-hanger-rect',   name: 'Duct hanger · rectangular',    sub: '8 ft spacing basis',                 unit: 'EA', perUnit: 0, matchTags: ['hanger','support','rectangular hanger'] },
-    { code: 'hv-hanger-rnd',    name: 'Duct hanger · round',          sub: '8 ft spacing basis',                 unit: 'EA', perUnit: 0, matchTags: ['hanger','support','round hanger'] },
-    { code: 'hv-elbow-90',      name: '90° elbow',                    sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['elbow','90 degree'] },
-    { code: 'hv-reducer',       name: 'Reducer',                      sub: 'Round / rectangular',                unit: 'EA', perUnit: 0, matchTags: ['reducer'] },
-    { code: 'hv-transition',    name: 'Transition · rect-to-round',   sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['transition'] },
-    { code: 'hv-tap-rect',      name: '45° rectangular tap',          sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['rectangular tap','45 tap'] },
-    { code: 'hv-tap-rnd',       name: 'Round tap',                    sub: '6" through 16"',                     unit: 'EA', perUnit: 0, matchTags: ['round tap','tap'] },
-    { code: 'hv-mvd',           name: 'Manual volume damper',         sub: 'Accessible at branches',             unit: 'EA', perUnit: 0, matchTags: ['volume damper','mvd','damper'] },
-    { code: 'hv-endcap',        name: 'End cap',                      sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['end cap'] },
-    { code: 'hv-adapter',       name: 'Equipment / duct adapter',     sub: 'Coordinate w/ submittals',           unit: 'EA', perUnit: 0, matchTags: ['adapter'] },
+    { addedIn: 2, code: 'hv-hanger-rect',   name: 'Duct hanger · rectangular',    sub: '8 ft spacing basis',                 unit: 'EA', perUnit: 0, matchTags: ['hanger','support','rectangular hanger'] },
+    { addedIn: 2, code: 'hv-hanger-rnd',    name: 'Duct hanger · round',          sub: '8 ft spacing basis',                 unit: 'EA', perUnit: 0, matchTags: ['hanger','support','round hanger'] },
+    { addedIn: 2, code: 'hv-elbow-90',      name: '90° elbow',                    sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['elbow','90 degree'] },
+    { addedIn: 2, code: 'hv-reducer',       name: 'Reducer',                      sub: 'Round / rectangular',                unit: 'EA', perUnit: 0, matchTags: ['reducer'] },
+    { addedIn: 2, code: 'hv-transition',    name: 'Transition · rect-to-round',   sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['transition'] },
+    { addedIn: 2, code: 'hv-tap-rect',      name: '45° rectangular tap',          sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['rectangular tap','45 tap'] },
+    { addedIn: 2, code: 'hv-tap-rnd',       name: 'Round tap',                    sub: '6" through 16"',                     unit: 'EA', perUnit: 0, matchTags: ['round tap','tap'] },
+    { addedIn: 2, code: 'hv-mvd',           name: 'Manual volume damper',         sub: 'Accessible at branches',             unit: 'EA', perUnit: 0, matchTags: ['volume damper','mvd','damper'] },
+    { addedIn: 2, code: 'hv-endcap',        name: 'End cap',                      sub: 'Assorted sizes',                     unit: 'EA', perUnit: 0, matchTags: ['end cap'] },
+    { addedIn: 2, code: 'hv-adapter',       name: 'Equipment / duct adapter',     sub: 'Coordinate w/ submittals',           unit: 'EA', perUnit: 0, matchTags: ['adapter'] },
 
     // Packaged & split equipment (commercial)
-    { code: 'hv-ahu-comm',      name: 'Air handler · commercial',     sub: 'Ducted AHU · per schedule',          unit: 'EA', perUnit: 0, matchTags: ['air handler','ahu'] },
-    { code: 'hv-hp-out-4t',     name: 'Heat pump outdoor unit · 4 ton', sub: 'Split system condenser',           unit: 'EA', perUnit: 0, matchTags: ['heat pump','4 ton','outdoor unit'] },
-    { code: 'hv-hp-out-3t',     name: 'Heat pump outdoor unit · 3 ton', sub: 'Split system condenser',           unit: 'EA', perUnit: 0, matchTags: ['heat pump','3 ton','outdoor unit'] },
-    { code: 'hv-rtu-3t',        name: 'Rooftop heat pump · 3 ton',    sub: 'MERV-13 · economizer · curb',        unit: 'EA', perUnit: 0, matchTags: ['rtu','rooftop','3 ton'] },
-    { code: 'hv-rtu-2t',        name: 'Rooftop heat pump · 2 ton',    sub: 'MERV-13 · economizer · curb',        unit: 'EA', perUnit: 0, matchTags: ['rtu','rooftop','2 ton'] },
-    { code: 'hv-ef-comm',       name: 'Exhaust fan · commercial',     sub: 'Roof mounted · per schedule',        unit: 'EA', perUnit: 0, matchTags: ['exhaust fan','ef'] },
-    { code: 'hv-roofcurb',      name: 'Roof curb / adapter',          sub: 'Verify dims before release',         unit: 'EA', perUnit: 0, matchTags: ['roof curb','curb'] },
+    { addedIn: 2, code: 'hv-ahu-comm',      name: 'Air handler · commercial',     sub: 'Ducted AHU · per schedule',          unit: 'EA', perUnit: 0, matchTags: ['air handler','ahu'] },
+    { addedIn: 2, code: 'hv-hp-out-4t',     name: 'Heat pump outdoor unit · 4 ton', sub: 'Split system condenser',           unit: 'EA', perUnit: 0, matchTags: ['heat pump','4 ton','outdoor unit'] },
+    { addedIn: 2, code: 'hv-hp-out-3t',     name: 'Heat pump outdoor unit · 3 ton', sub: 'Split system condenser',           unit: 'EA', perUnit: 0, matchTags: ['heat pump','3 ton','outdoor unit'] },
+    { addedIn: 2, code: 'hv-rtu-3t',        name: 'Rooftop heat pump · 3 ton',    sub: 'MERV-13 · economizer · curb',        unit: 'EA', perUnit: 0, matchTags: ['rtu','rooftop','3 ton'] },
+    { addedIn: 2, code: 'hv-rtu-2t',        name: 'Rooftop heat pump · 2 ton',    sub: 'MERV-13 · economizer · curb',        unit: 'EA', perUnit: 0, matchTags: ['rtu','rooftop','2 ton'] },
+    { addedIn: 2, code: 'hv-ef-comm',       name: 'Exhaust fan · commercial',     sub: 'Roof mounted · per schedule',        unit: 'EA', perUnit: 0, matchTags: ['exhaust fan','ef'] },
+    { addedIn: 2, code: 'hv-roofcurb',      name: 'Roof curb / adapter',          sub: 'Verify dims before release',         unit: 'EA', perUnit: 0, matchTags: ['roof curb','curb'] },
 
     // Air distribution devices
-    { code: 'hv-diff-24',       name: 'Supply diffuser · 24x24',      sub: 'Lay-in · neck per schedule',         unit: 'EA', perUnit: 0, matchTags: ['diffuser','supply diffuser','cd-1'] },
-    { code: 'hv-lin-diff',      name: 'Linear air device',            sub: 'LD / LDR · slot diffuser',           unit: 'EA', perUnit: 0, matchTags: ['linear diffuser','ld','ldr'] },
-    { code: 'hv-return-24',     name: 'Return grille · 24x24',        sub: 'Lay-in perforated face',             unit: 'EA', perUnit: 0, matchTags: ['return grille','rg-1'] },
-    { code: 'hv-exh-grille',    name: 'Exhaust grille',               sub: 'Per schedule',                       unit: 'EA', perUnit: 0, matchTags: ['exhaust grille','eg-1'] },
+    { addedIn: 2, code: 'hv-diff-24',       name: 'Supply diffuser · 24x24',      sub: 'Lay-in · neck per schedule',         unit: 'EA', perUnit: 0, matchTags: ['diffuser','supply diffuser','cd-1'] },
+    { addedIn: 2, code: 'hv-lin-diff',      name: 'Linear air device',            sub: 'LD / LDR · slot diffuser',           unit: 'EA', perUnit: 0, matchTags: ['linear diffuser','ld','ldr'] },
+    { addedIn: 2, code: 'hv-return-24',     name: 'Return grille · 24x24',        sub: 'Lay-in perforated face',             unit: 'EA', perUnit: 0, matchTags: ['return grille','rg-1'] },
+    { addedIn: 2, code: 'hv-exh-grille',    name: 'Exhaust grille',               sub: 'Per schedule',                       unit: 'EA', perUnit: 0, matchTags: ['exhaust grille','eg-1'] },
 
     // Controls & commissioning
-    { code: 'hv-tstat-comm',    name: 'Thermostat · commercial',      sub: 'Per unit served',                    unit: 'EA', perUnit: 0, matchTags: ['thermostat','tstat'] },
-    { code: 'hv-lowvolt',       name: 'Low-voltage control wiring',   sub: 'Interlocks · per unit',              unit: 'EA', perUnit: 0, matchTags: ['low voltage','control wiring','interlock'] },
-    { code: 'hv-startup',       name: 'Equipment start-up',           sub: 'Per unit · operational check',       unit: 'EA', perUnit: 0, matchTags: ['startup','start-up','commissioning'] },
-    { code: 'hv-balance-coord', name: 'Air balance coordination',     sub: 'Independent TAB coordination',       unit: 'LS', perUnit: 0, matchTags: ['air balance','tab','balancing'] },
+    { addedIn: 2, code: 'hv-tstat-comm',    name: 'Thermostat · commercial',      sub: 'Per unit served',                    unit: 'EA', perUnit: 0, matchTags: ['thermostat','tstat'] },
+    { addedIn: 2, code: 'hv-lowvolt',       name: 'Low-voltage control wiring',   sub: 'Interlocks · per unit',              unit: 'EA', perUnit: 0, matchTags: ['low voltage','control wiring','interlock'] },
+    { addedIn: 2, code: 'hv-startup',       name: 'Equipment start-up',           sub: 'Per unit · operational check',       unit: 'EA', perUnit: 0, matchTags: ['startup','start-up','commissioning'] },
+    { addedIn: 2, code: 'hv-balance-coord', name: 'Air balance coordination',     sub: 'Independent TAB coordination',       unit: 'LS', perUnit: 0, matchTags: ['air balance','tab','balancing'] },
   ],
   concrete: [
     { code: 'conc-footing',       name: 'Footings · concrete',     sub: 'All-in place · per CY',     unit: 'CY', perUnit: 290.00, matchTags: ['footing','footings','grade beam'] },
@@ -24495,16 +24895,37 @@ const DEFAULT_PRICING_CATALOG = {
 };
 
 // ── Pricing accessors ────────────────────────────────────────────────────────
+// Bump this when rows are ADDED to DEFAULT_PRICING_CATALOG, and tag each new row
+// with `addedIn: <the new number>`. That is how a catalog a workspace saved
+// before the addition learns about the new rows — without bringing back
+// built-in rows the user deleted on purpose (see takeoffPricingDeleted).
+const PRICING_CATALOG_VERSION = 2;
+
 function getPricingCatalog() {
-  const custom = ST.settings?.takeoffPricing;
-  if (custom && typeof custom === 'object') {
-    const merged = {};
-    for (const k of Object.keys(DEFAULT_PRICING_CATALOG)) {
-      merged[k] = custom[k] && Array.isArray(custom[k]) ? custom[k] : DEFAULT_PRICING_CATALOG[k];
-    }
-    return merged;
+  const s = ST.settings || {};
+  const custom = (s.takeoffPricing && typeof s.takeoffPricing === 'object') ? s.takeoffPricing : null;
+  if (!custom) return DEFAULT_PRICING_CATALOG;
+  const dead = (s.takeoffPricingDeleted && typeof s.takeoffPricingDeleted === 'object') ? s.takeoffPricingDeleted : {};
+  const ver = (s.takeoffPricingVer && typeof s.takeoffPricingVer === 'object') ? s.takeoffPricingVer : {};
+  const merged = {};
+  // Saved categories that aren't built-in keys used to be silently dropped here.
+  const keys = new Set([...Object.keys(DEFAULT_PRICING_CATALOG), ...Object.keys(custom)]);
+  for (const k of keys) {
+    const saved = Array.isArray(custom[k]) ? custom[k] : null;
+    const defs = DEFAULT_PRICING_CATALOG[k] || [];
+    if (!saved) { merged[k] = defs; continue; }
+    // A saved list used to REPLACE the built-in one wholesale, so rows added to
+    // the built-in catalog later (the commercial HVAC line) never appeared in a
+    // workspace that had ever touched a price. Now: the saved rows, untouched and
+    // in their original positions, then any built-in row newer than this saved
+    // list that the user didn't deliberately delete. Pure — writes nothing.
+    const seen = new Set(saved.map(r => r && r.code));
+    const gone = new Set(Array.isArray(dead[k]) ? dead[k] : []);
+    const base = Number(ver[k]) || 0;
+    const extra = defs.filter(d => d && !seen.has(d.code) && !gone.has(d.code) && (Number(d.addedIn) || 0) > base);
+    merged[k] = extra.length ? saved.concat(extra) : saved;
   }
-  return DEFAULT_PRICING_CATALOG;
+  return merged;
 }
 
 function getPricingForType(typeId) {
@@ -24512,13 +24933,56 @@ function getPricingForType(typeId) {
   return cat[typeId] || [];
 }
 
-function setPricingItem(typeId, idx, field, value) {
+// Every editor addresses a row by its position in the MERGED list above, but
+// writes land in the SAVED array. Materialising the merged list first makes the
+// two identical, so position N is always the row the user is looking at.
+function ensurePricingList(typeId) {
   if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-  if (!ST.settings.takeoffPricing) ST.settings.takeoffPricing = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG));
-  if (!ST.settings.takeoffPricing[typeId]) ST.settings.takeoffPricing[typeId] = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG[typeId] || []));
-  const list = ST.settings.takeoffPricing[typeId];
+  if (!ST.settings.takeoffPricing || typeof ST.settings.takeoffPricing !== 'object') ST.settings.takeoffPricing = {};
+  const merged = getPricingForType(typeId);
+  const saved = ST.settings.takeoffPricing[typeId];
+  if (!Array.isArray(saved) || saved.length !== merged.length) {
+    ST.settings.takeoffPricing[typeId] = JSON.parse(JSON.stringify(merged));
+  }
+  if (!ST.settings.takeoffPricingVer || typeof ST.settings.takeoffPricingVer !== 'object') ST.settings.takeoffPricingVer = {};
+  ST.settings.takeoffPricingVer[typeId] = PRICING_CATALOG_VERSION;
+  return ST.settings.takeoffPricing[typeId];
+}
+
+// Only built-in rows can reappear through the merge, so only they need a record
+// of having been removed. A code the user invented just disappears.
+function pricingTombstone(typeId, code) {
+  if (!code || !(DEFAULT_PRICING_CATALOG[typeId] || []).some(d => d.code === code)) return;
+  if (!ST.settings.takeoffPricingDeleted || typeof ST.settings.takeoffPricingDeleted !== 'object') ST.settings.takeoffPricingDeleted = {};
+  const arr = Array.isArray(ST.settings.takeoffPricingDeleted[typeId]) ? ST.settings.takeoffPricingDeleted[typeId] : [];
+  if (!arr.includes(code)) arr.push(code);
+  ST.settings.takeoffPricingDeleted[typeId] = arr;
+}
+
+function setPricingItem(typeId, idx, field, value) {
+  // Before: the first edit of ANY price copied the entire built-in catalog into
+  // settings, freezing every category against future additions. Now only the
+  // edited category is materialised — from the merged list, positions intact.
+  const list = ensurePricingList(typeId);
   if (!list[idx]) return;
-  if (field === 'perUnit') value = parseFloat(value) || 0;
+  // min="0" on the input doesn't stop a typed minus sign; a negative unit price
+  // would quietly subtract from every estimate that uses the item.
+  if (field === 'perUnit') value = Math.max(0, parseFloat(value) || 0);
+  if (field === 'code') {
+    // The code is the row's identity: the budget calculator stores quantities by
+    // it, and the AI and the CSV import look prices up by it. A blank or
+    // duplicate code would silently cross two rows' data.
+    const next = String(value == null ? '' : value).trim();
+    const old = list[idx].code;
+    if (!next) { showToast('A code can’t be empty.', 'warn'); render(); return; }
+    if (next !== old && list.some((r, i) => i !== idx && r && r.code === next)) {
+      showToast(`Code “${next}” is already used in this category.`, 'warn'); render(); return;
+    }
+    // Renaming a built-in code is a deletion of the old one as far as the merge
+    // is concerned — otherwise the original row reappears beside the renamed one.
+    if (next !== old) pricingTombstone(typeId, old);
+    value = next;
+  }
   list[idx][field] = value;
   saveSt();
 }
@@ -24527,9 +24991,14 @@ function resetPricingForType(typeId) {
   if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   if (!ST.settings.takeoffPricing) ST.settings.takeoffPricing = {};
   ST.settings.takeoffPricing[typeId] = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG[typeId] || []));
+  // "Restore the built-in list" means all of it — including rows deleted before.
+  if (ST.settings.takeoffPricingDeleted) delete ST.settings.takeoffPricingDeleted[typeId];
+  if (!ST.settings.takeoffPricingVer || typeof ST.settings.takeoffPricingVer !== 'object') ST.settings.takeoffPricingVer = {};
+  ST.settings.takeoffPricingVer[typeId] = PRICING_CATALOG_VERSION;
   saveSt();
   render();
-  showToast('Pricing reset to defaults for ' + typeId, 'success');
+  const t = (typeof allTakeoffTypes === 'function') ? allTakeoffTypes().find(x => x.id === typeId) : null;
+  showToast('Price book reset to the built-in list for ' + ((t && t.label) || typeId) + '.', 'success');
 }
 
 // Which catalogs appear in the Settings price editor: a master with "see all"
@@ -24545,26 +25014,22 @@ function addPricingItem(typeId) {
   // Building out the catalog is part of the paid personalized set-up — the trial
   // can edit existing prices but not add products (keeps the set-up valuable).
   if (isTrialPlan()) { ST.upsellModal = { reason: 'catalog' }; render(); return; }
-  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-  if (!ST.settings.takeoffPricing) ST.settings.takeoffPricing = {};
-  if (!Array.isArray(ST.settings.takeoffPricing[typeId])) {
-    ST.settings.takeoffPricing[typeId] = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG[typeId] || []));
-  }
-  const code = typeId.slice(0, 4) + '-' + Date.now().toString(36).slice(-4);
-  ST.settings.takeoffPricing[typeId].push({ code, name: 'New item', sub: '', unit: 'EA', perUnit: 0, matchTags: [] });
+  const list = ensurePricingList(typeId);
+  // The base-36 tail of Date.now() collides on a quick double-click — and a
+  // duplicate code silently merges two rows' calculator quantities.
+  const used = new Set(list.map(r => r && r.code));
+  let code, n = 0;
+  do { code = typeId.slice(0, 4) + '-' + (Date.now() + n).toString(36).slice(-4); n++; } while (used.has(code) && n < 5000);
+  list.push({ code, name: 'New item', sub: '', unit: 'EA', perUnit: 0, matchTags: [] });
   ST.settingsPricingOpen = typeId;
   saveSt();
   render();
 }
 
 function deletePricingItem(typeId, idx) {
-  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-  if (!ST.settings.takeoffPricing) ST.settings.takeoffPricing = {};
-  if (!Array.isArray(ST.settings.takeoffPricing[typeId])) {
-    ST.settings.takeoffPricing[typeId] = JSON.parse(JSON.stringify(DEFAULT_PRICING_CATALOG[typeId] || []));
-  }
-  const list = ST.settings.takeoffPricing[typeId];
+  const list = ensurePricingList(typeId);
   if (idx < 0 || idx >= list.length) return;
+  pricingTombstone(typeId, list[idx] && list[idx].code);
   list.splice(idx, 1);
   ST.settingsPricingOpen = typeId;
   saveSt();
@@ -25821,12 +26286,15 @@ function confirmAddProj() {
     dl: document.getElementById('np-dl')?.value?.trim() || '',
     sdl: null, est: null, source: null, comments: '', rfi: '', builder: null
   });
+  const gcSid = document.getElementById('np-gc')?.value || '';
+  const linked = gcSid ? subGcApplyContact(id, gcSid) : false;
   ST.selProj = id;
   addActivity('project_added', '', name, '', null, null, 'New project added');
+  if (typeof _invalidateProjectSubCache === 'function') _invalidateProjectSubCache();
   saveSt();
   ST.addProjModal = false;
   render();
-  showToast('Project added.', 'success');
+  showToast(linked ? 'Project added and linked to its GC.' : 'Project added.', 'success');
 }
 
 function confirmAddSub() {
