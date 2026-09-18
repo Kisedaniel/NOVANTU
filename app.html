@@ -4901,6 +4901,15 @@ async function loadSt() {
     ST.detailsResult = null;
     ST.detailsLoading = null;
     ST.detailsOpen = null;
+    // Chat attach / loading state never survives a reload: a stuck "uploading"
+    // would lock the input forever.
+    ST.asstUploading = 0;
+    ST.asstBusyLabel = '';
+    ST.asstPlansHot = null;
+    ST.bidLoading = null;
+    ST.bidStage = '';
+    ST.bidDraftOpen = null;   // the draft itself persists in overrides._bidDraft
+    ST.bidLearnLoading = false;
     ST.workerInbox = {};
     ST.dlogCompile = null;
     ST.dlogCompileLoading = null;
@@ -6077,6 +6086,8 @@ function render() {
   if (typeof installGlobalErrorHandler === 'function') installGlobalErrorHandler();
   // Pre-load the HVAC subcontractor demo (no-op on every other workspace).
   if (typeof seedHvacDemoOnce === 'function') seedHvacDemoOnce();
+  // One-time HVAC-sub layout: six divisions + client-facing proposal print.
+  try { if (typeof hvacSubDefaultsOnce === 'function') hvacSubDefaultsOnce(); } catch (_e) {}
   // Invalidate memoization caches at the start of each render
   _invalidateProjectSubCache();
   // Reset the take-off skip flag; buildEstTakeoff() re-asserts it this pass if
@@ -6133,6 +6144,7 @@ function render() {
     ST.toSheet ? 'tosheet' : '',
     ST.agentPlan ? 'agentplan' : '',
     ST.detailsResult ? 'details' : '',
+    ST.bidDraftOpen ? 'biddraft' : '',
   ].filter(Boolean).join('|');
   const overlayJustOpened = overlaySig && overlaySig !== _lastOverlaySig;
   _lastOverlaySig = overlaySig;
@@ -6297,7 +6309,9 @@ function priceBookCSV() {
   const rows = [['Category', 'Code', 'Item', 'Detail', 'Unit', 'Price per unit']];
   for (const t of types) {
     for (const r of getPricingForType(t.id)) {
-      rows.push([t.label, r.code, r.name, r.sub || '', r.unit, Number(r.perUnit) || 0]);
+      // HVAC exports its division (DUCTWORK, INSULATION & PIPING…) so the sheet
+      // the shop fills in reads like its bid. Import ignores this column.
+      rows.push([pricingRowCat(t.id, r) || t.label, r.code, r.name, r.sub || '', r.unit, Number(r.perUnit) || 0]);
     }
   }
   const csv = rows.map(r => r.map(c => {
@@ -6442,6 +6456,54 @@ function buildPriceBookPane() {
     });
     const miss = all.filter(r => !(Number(r.perUnit) > 0)).length;
     if (!rows.length && (q || onlyUnpriced)) return '';
+    const cats = tradeCategoriesFor(t.id);
+    const rowHtml = ({ r, idx }) => {
+      const zero = !(Number(r.perUnit) > 0);
+      const inp = (field, val, extra) => `<input class="minp" value="${esc(val == null ? '' : String(val))}" onchange="setPricingItem('${t.id}',${idx},'${field}',this.value)" style="width:100%;box-sizing:border-box;font-size:11.5px;padding:4px 6px;${extra || ''}">`;
+      const catSel = cats ? `<td style="padding:3px 6px;width:150px"><select class="msel" onchange="setPricingItem('${t.id}',${idx},'cat',this.value);render()" title="Which division of the bid this item belongs to" style="width:100%;margin:0;font-size:10.5px;padding:4px 6px">${cats.map(c => `<option value="${esc(c.cat)}"${pricingRowCat(t.id, r) === c.cat ? ' selected' : ''}>${esc(c.cat)}</option>`).join('')}</select></td>` : '';
+      return `<tr style="border-bottom:1px solid var(--border);${zero ? 'background:var(--amber-bg)' : ''}">
+              <td style="padding:3px 6px;width:130px">${inp('code', r.code, 'font-family:var(--mono);font-size:10.5px')}</td>
+              <td style="padding:3px 6px">${inp('name', r.name)}</td>
+              <td style="padding:3px 6px;width:190px">${inp('sub', r.sub)}</td>
+              ${catSel}
+              <td style="padding:3px 6px;width:62px">${inp('unit', r.unit, 'font-family:var(--mono);text-align:center')}</td>
+              <td style="padding:3px 6px;width:104px"><input class="minp" type="number" min="0" step="0.01" value="${Number(r.perUnit) || 0}" onchange="pbSetPrice('${t.id}',${idx},this)" title="${zero ? 'No price yet — the AI will show this item at $0 until you set it' : ''}" style="width:100%;box-sizing:border-box;font-size:11.5px;padding:4px 6px;font-family:var(--mono);text-align:right;${zero ? 'border-color:var(--amber);color:var(--amber)' : ''}"></td>
+              <td style="padding:3px 6px;width:30px"><button class="edit-btn" style="color:var(--red);border-color:var(--red-border);padding:2px 6px" onclick="if(confirm(${esc(JSON.stringify('Delete “' + String(r.name || '') + '”?'))}))deletePricingItem('${t.id}',${idx})">✕</button></td>
+            </tr>`;
+    };
+    const table = (list) => `<table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr>
+          ${['Code', 'Item', 'Detail'].concat(cats ? ['Category'] : [], ['Unit', '$ / unit', '']).map(h => `<th style="text-align:${h === '$ / unit' ? 'right' : 'left'};font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:5px 6px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
+        </tr></thead>
+        <tbody>${list.map(rowHtml).join('')}</tbody>
+      </table>`;
+    if (cats) {
+      // HVAC: the book reads like the bid — one block per division, each with
+      // its own "+ Item" so a new product is born in the right place.
+      return `<div style="margin-bottom:22px">
+        <div style="display:flex;align-items:baseline;gap:10px;padding-bottom:6px;border-bottom:1px solid var(--ink-700);margin-bottom:8px">
+          <b style="font-size:14px;color:var(--ink-900)">${esc(t.label)}</b>
+          <span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">${all.length} item${all.length === 1 ? '' : 's'} in ${cats.length} categories${miss ? ` · <span style="color:var(--amber)">${miss} unpriced</span>` : ''}</span>
+          <div style="flex:1"></div>
+          <button class="edit-btn" onclick="if(confirm(${esc(JSON.stringify('Reset ' + t.label + ' to the built-in catalog? Your prices for this category are lost.'))}))resetPricingForType('${t.id}')" title="Restore the built-in list">↺</button>
+        </div>
+        ${cats.map(c => {
+          const inCat = rows.filter(({ r }) => pricingRowCat(t.id, r) === c.cat);
+          const allIn = all.filter(r => pricingRowCat(t.id, r) === c.cat);
+          if (!inCat.length && (q || onlyUnpriced)) return '';
+          const tot = allIn.length, unp = allIn.filter(r => !(Number(r.perUnit) > 0)).length;
+          return `<div style="margin:0 0 16px">
+            <div style="display:flex;align-items:baseline;gap:10px;padding:6px 0 4px">
+              <span style="font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-900);font-weight:600">${esc(c.cat)}</span>
+              <span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">${esc(c.code)} · ${tot} item${tot === 1 ? '' : 's'}${unp ? ` · <span style="color:var(--amber)">${unp} unpriced</span>` : ''}</span>
+              <div style="flex:1"></div>
+              <button class="edit-btn" onclick="addPricingItem('${t.id}',${esc(JSON.stringify(c.cat))})" title="Add a product to ${esc(c.cat)}">+ Item</button>
+            </div>
+            ${inCat.length ? table(inCat) : `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text3);font-style:italic;padding:4px 0 8px">No items yet.</div>`}
+          </div>`;
+        }).join('')}
+      </div>`;
+    }
     return `<div style="margin-bottom:22px">
       <div style="display:flex;align-items:baseline;gap:10px;padding-bottom:6px;border-bottom:1px solid var(--ink-700);margin-bottom:8px">
         <b style="font-size:14px;color:var(--ink-900)">${esc(t.label)}</b>
@@ -6535,6 +6597,7 @@ function buildFilesTab() {
           ? `<span style="font-family:var(--mono);font-size:9px;color:var(--amber)" title="${s.unpriced} item(s) with no price yet">${s.unpriced}&nbsp;⚠</span>`
           : `<span style="font-family:var(--mono);font-size:9px;opacity:.6">${s.total}</span>`;
       })()}</div>
+      ${isHvacSub() ? `<div onclick="ST.filesView='bidmethod';render()" style="cursor:pointer;padding:8px 12px;margin:0 6px;border-radius:2px;font-size:13px;color:${view==='bidmethod'?'var(--bone-50)':'var(--text2)'};background:${view==='bidmethod'?'var(--ink-950)':'transparent'};display:flex;align-items:center;gap:10px"><i data-lucide="book-open"></i><span style="flex:1">Bid method</span>${bidProfileGet() ? `<span style="font-family:var(--mono);font-size:9px;opacity:.6" title="Learned from your past bid">✓</span>` : ''}</div>` : ''}
     </div>
 
     <!-- Right pane: editor -->
@@ -6586,7 +6649,7 @@ function buildFilesTab() {
             </div>
           </div>`;
         }).join('')}
-      ` : view === 'pricebook' ? buildPriceBookPane() : `<div class="empty">Pick a section on the left.</div>`}
+      ` : view === 'pricebook' ? buildPriceBookPane() : view === 'bidmethod' ? buildBidMethodPane() : `<div class="empty">Pick a section on the left.</div>`}
     </div>
   </div>`;
 }
@@ -7067,6 +7130,8 @@ function buildBuilderTab() {
 }
 
 function buildBuilderDetail(proj) {
+  // HVAC: an empty estimate opens already laid out in the six divisions.
+  if (typeof hvacSeedGroups === 'function' && hvacSeedGroups(proj.id)) saveSt();
   const est = ST.estimates[proj.id] || { groups: [] };
   const totals = builderTotals(proj.id);
   return `
@@ -7357,7 +7422,10 @@ function priceBookInsert(pid) {
       if (!sel['cat:' + t.id + ':' + row.code]) continue;
       const uc = Number(row.perUnit) || 0;
       if (!(uc > 0)) unpriced++;
-      groupFor(t.label).items.push({ id: uid('i_'), code: row.code, title: row.name, description: row.sub || '', qty: 1, unit: row.unit || 'EA', unitCost: uc, costType: 'Materials', markup: baseMk, taxable: false });
+      // HVAC "by category" = the item's own division (Ductwork, Insulation…),
+      // not one catch-all "HVAC" group.
+      const dest = (!target && tradeCategoriesFor(t.id)) ? hvacGroupFor(pid, pricingRowCat(t.id, row)) : groupFor(t.label);
+      dest.items.push({ id: uid('i_'), code: row.code, title: row.name, description: row.sub || '', qty: 1, unit: row.unit || 'EA', unitCost: uc, costType: 'Materials', markup: baseMk, taxable: false });
       added++;
     }
   }
@@ -7392,8 +7460,16 @@ function buildPriceBookModal() {
   const catalogHtml = types.map(t => {
     const rows = getPricingForType(t.id).filter(r => !q || [r.code, r.name, r.sub, r.unit].filter(Boolean).some(v => String(v).toLowerCase().includes(q)));
     if (!rows.length) return '';
-    return `<div style="background:var(--bg1);border-bottom:1px solid var(--border);padding:8px 14px;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">${esc(t.label)} · ${rows.length}</div>
-      ${rows.map(r => {
+    const head = (label, n) => `<div style="background:var(--bg1);border-bottom:1px solid var(--border);padding:8px 14px;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text3)">${esc(label)} · ${n}</div>`;
+    const cats = tradeCategoriesFor(t.id);
+    // HVAC: one heading per division, so the list reads the way the bid does.
+    if (cats) return cats.map(c => {
+      const inCat = rows.filter(r => pricingRowCat(t.id, r) === c.cat);
+      return inCat.length ? head(c.cat, inCat.length) + inCat.map(rowHtml(t)).join('') : '';
+    }).join('');
+    return head(t.label, rows.length) + rows.map(rowHtml(t)).join('');
+  }).join('');
+  function rowHtml(t) { return (r) => {
         const key = 'cat:' + t.id + ':' + r.code;
         const zero = !(Number(r.perUnit) > 0);
         return `<label style="display:flex;align-items:center;gap:12px;padding:9px 14px;border-bottom:1px solid var(--border);cursor:pointer;${zero ? 'background:var(--amber-bg)' : ''}">
@@ -7401,8 +7477,7 @@ function buildPriceBookModal() {
           <div style="flex:1;min-width:0"><div style="font-size:13px;color:var(--ink-900);line-height:1.4">${esc(r.name)}</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);margin-top:2px">${esc(r.code)}${r.sub ? ' · ' + esc(r.sub) : ''}</div></div>
           <div style="font-family:var(--mono);font-size:13.5px;font-weight:600;white-space:nowrap;color:${zero ? 'var(--amber)' : 'var(--ink-900)'}" title="${zero ? 'No price yet — set it in Files → Price book' : ''}">${zero ? 'no price' : fmt$(Number(r.perUnit))}<span style="font-size:10px;color:var(--text3)">/${esc(r.unit || 'EA')}</span></div>
         </label>`;
-      }).join('')}`;
-  }).join('');
+  }; }
 
   return `<div class="backdrop" onclick="if(event.target===this){ST.priceBookModal=null;render()}"><div class="modal" style="max-width:760px" onclick="event.stopPropagation()">
     <div class="modal-title">▤ Price book</div>
@@ -7852,9 +7927,18 @@ function buildProposalPages(o) {
   const setup = (ST.estimator && ST.estimator[pid] && ST.estimator[pid].setup) || {};
   const ai = (ST.overrides[pid] || {})._aiDetails || null;
   const n = proposalNumbers(pid, est, totals, pi);
-  const scope = proposalSplitScope(pi.notes);
+  // A bid built from the drawings writes THIS project's scope, exclusions and
+  // clarifications; the workspace template is the fallback for projects that
+  // never had one.
+  const pov = (ST.overrides[pid] || {})._proposal || {};
+  const scope = proposalSplitScope(String(pov.notes || '').trim() ? pov.notes : pi.notes);
   const terms = proposalParseTerms(pi.terms);
-  const clarifications = String(pi.clarifications || '').split('\n').map(x => x.replace(/^[-•·*]\s*/, '').trim()).filter(Boolean);
+  const clarifications = String(String(pov.clarifications || '').trim() ? pov.clarifications : (pi.clarifications || '')).split('\n').map(x => x.replace(/^[-•·*]\s*/, '').trim()).filter(Boolean);
+  // HVAC workspaces start every estimate with all six divisions in place, so a
+  // job with no demolition carries an EMPTY demolition group. A client-facing
+  // document must not print "Mechanical Demolition — $0.00": only divisions
+  // that actually hold work reach the page.
+  const liveGroups = (est.groups || []).filter(g => (g.items || []).length);
 
   const company = (pi.companyName || brand.wordmark || '').toString();
   const initials = company.split(/\s+/).filter(Boolean).map(w => w[0]).join('').toUpperCase().slice(0, 4);
@@ -7900,7 +7984,7 @@ function buildProposalPages(o) {
     </table>`);
 
   // ── PAGE 2 · Summary + inclusions/exclusions ───────────────────────────────
-  const summaryText = ai && ai.summary ? ai.summary : '';
+  const summaryText = pov.summary || (ai && ai.summary ? ai.summary : '');
   const infoPanel = (title, rows) => `<div style="flex:1;min-width:240px;border:1px solid #d9e6ef;background:#f7fbfd;padding:12px 14px">
       <div style="font-size:12px;font-weight:700;color:${accent};margin-bottom:8px">${esc(title)}</div>
       ${rows.filter(r => r[1]).map(r => `<div style="font-size:10.5px;color:#222;line-height:1.7"><b>${esc(r[0])}:</b> ${esc(r[1])}</div>`).join('') || '<div style="font-size:10.5px;color:#999;font-style:italic">—</div>'}
@@ -7939,7 +8023,7 @@ function buildProposalPages(o) {
   const scopePage = page(`
     ${h2('3. Detailed Scope of Work (by Trade Division)')}
     <div style="font-size:10.5px;color:#444;line-height:1.6;margin-bottom:14px">The following scope is organized by construction trade division. Work is intended to provide a complete and operable installation within the limits shown on the contract documents, subject to the clarifications in this proposal.</div>
-    ${(est.groups || []).length ? (est.groups || []).map(g => `
+    ${liveGroups.length ? liveGroups.map(g => `
       <div style="margin-bottom:14px">
         <div style="font-size:12.5px;font-weight:700;color:${accent};margin-bottom:5px">${esc(g.code || '')}${g.code && g.title ? ' — ' : ''}${esc(g.title || '')}</div>
         <ul style="margin:0;padding-left:16px">
@@ -7960,7 +8044,7 @@ function buildProposalPages(o) {
     <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
       <thead><tr style="background:#111;color:#fff"><th style="padding:8px 12px;text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase">Description</th><th style="padding:8px 12px;text-align:right;font-size:10px;letter-spacing:.06em;text-transform:uppercase;width:160px">Owner Price</th></tr></thead>
       <tbody>
-        ${(est.groups || []).map(g => money(`${g.code || ''}${g.code && g.title ? ' — ' : ''}${g.title || ''}`, builderGroupTotals(pid, g.id).client)).join('')}
+        ${liveGroups.map(g => money(`${g.code || ''}${g.code && g.title ? ' — ' : ''}${g.title || ''}`, builderGroupTotals(pid, g.id).client)).join('')}
         ${n.taxAmt > 0 ? money(`Applicable Sales Tax on Furnished Materials (${n.taxRate}%)`, n.taxAmt) : ''}
         ${money('TOTAL BASE BID', n.grand, true)}
       </tbody>
@@ -11376,6 +11460,7 @@ function buildApp() {
       ${ST.toSheet ? buildTakeoffSheetModal() : ''}
       ${ST.agentPlan ? buildAgentPlanModal() : ''}
       ${ST.detailsResult ? buildDetailsModal() : ''}
+      ${ST.bidDraftOpen ? buildBidDraftModal() : ''}
     </div>`;
 }
 
@@ -11469,7 +11554,35 @@ function subEstStore(pid) {
   if (!ST.overrides[pid]._subEst || typeof ST.overrides[pid]._subEst !== 'object') ST.overrides[pid]._subEst = {};
   return ST.overrides[pid]._subEst;
 }
+// HVAC: a division's amount comes FROM THE BUILDER once the Builder holds lines
+// for it — the project tab shows the six totals, the Builder the breakdown, and
+// the two can never disagree. A division with no Builder lines keeps working as
+// a hand-typed number, so a quick lump-sum bid is still possible.
+function subEstFromBuilder(pid, cat) {
+  if (typeof isHvacSub !== 'function' || !isHvacSub()) return null;
+  const def = hvacCatDef(cat); if (!def) return null;
+  const est = ST.estimates && ST.estimates[pid]; if (!est) return null;
+  const g = (est.groups || []).find(x => (x.code || '') === def.code);
+  const n = g ? (g.items || []).length : 0;
+  if (!n) return null;
+  return { amount: builderGroupTotals(pid, g.id).client, note: `${n} line${n === 1 ? '' : 's'} in the Builder`, fromBuilder: true };
+}
+// Builder groups that are NOT one of the six divisions (a take-off group, a
+// hand-made code…) still belong in the bid total.
+function subEstBuilderExtra(pid) {
+  if (typeof isHvacSub !== 'function' || !isHvacSub()) return { amount: 0, lines: 0 };
+  const est = ST.estimates && ST.estimates[pid]; if (!est) return { amount: 0, lines: 0 };
+  const known = new Set(HVAC_CATEGORIES.map(c => c.code));
+  let amount = 0, lines = 0;
+  for (const g of (est.groups || [])) {
+    if (known.has(g.code || '') || !(g.items || []).length) continue;
+    amount += builderGroupTotals(pid, g.id).client; lines += g.items.length;
+  }
+  return { amount, lines };
+}
 function subEstGet(pid, cat) {
+  const fromB = subEstFromBuilder(pid, cat);
+  if (fromB) return fromB;
   const st = (ST.overrides[pid] && ST.overrides[pid]._subEst) || {};
   const e = st[cat];
   return (e && typeof e === 'object') ? { amount: Number(e.amount) || 0, note: e.note || '' } : { amount: 0, note: '' };
@@ -11491,7 +11604,7 @@ function subEstSetNote(pid, idx, value) {
   saveSt();
 }
 // Sum the currently-shown categories so the total matches the visible rows.
-function subEstTotal(pid) { let t = 0; CATS.forEach(cat => { t += subEstGet(pid, cat).amount; }); return t; }
+function subEstTotal(pid) { let t = 0; CATS.forEach(cat => { t += subEstGet(pid, cat).amount; }); return t + subEstBuilderExtra(pid).amount; }
 
 function buildProjectDetail(p) {
   if (!p) return '<div class="empty">Project not found</div>';
@@ -11591,6 +11704,15 @@ function buildProjectDetail(p) {
 function buildSubEstRow(pid, idx, cat) {
   const e = subEstGet(pid, cat);
   const priced = e.amount > 0;
+  if (e.fromBuilder) {
+    // Read-only here on purpose: the number is the sum of the Builder lines, and
+    // the place to change it is the line that makes it up.
+    return `<div class="cat-row" style="align-items:center;gap:10px">
+      <div class="cat-name" style="flex:1;min-width:0">${esc(cat)}</div>
+      <button onclick="ST.builderSelProj='${pid}';setTab('builder')" title="Open the breakdown in the Builder" style="flex:1;min-width:90px;max-width:240px;text-align:left;background:transparent;border:none;border-bottom:1px dashed var(--border);padding:4px 2px;font-size:11px;color:var(--text2);font-family:var(--sans);cursor:pointer">${esc(e.note)} →</button>
+      <div style="width:132px;text-align:right;font-family:var(--mono);font-size:12px;color:var(--ink-900);font-weight:600;padding:6px 9px">${fmt$(e.amount)}</div>
+    </div>`;
+  }
   return `<div class="cat-row" style="align-items:center;gap:10px">
     <div class="cat-name" style="flex:1;min-width:0">${esc(cat)}</div>
     <input type="text" value="${esc(e.note || '')}" placeholder="scope note (optional)"
@@ -11647,9 +11769,26 @@ function buildSubProjectDetail(p) {
     <div class="cats-section">
       <div class="sec-heading" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
         <span>Estimate — ${esc(tradeLabel)}</span>
-        <button class="btn btn-ghost btn-sm" onclick="if(typeof _toMountReset==='function')_toMountReset();ST.tab='estimator';ST.estimatorSelProj='${p.id}';ST.estimatorTab='takeoff';render()" title="Open the budget calculator for this project">Budget calculator →</button>
+        ${isHvacSub()
+          ? `<button class="btn btn-ghost btn-sm" onclick="ST.builderSelProj='${p.id}';setTab('builder')" title="The line-by-line breakdown of these categories">Breakdown in Builder →</button>`
+          : `<button class="btn btn-ghost btn-sm" onclick="if(typeof _toMountReset==='function')_toMountReset();ST.tab='estimator';ST.estimatorSelProj='${p.id}';ST.estimatorTab='takeoff';render()" title="Open the budget calculator for this project">Budget calculator →</button>`}
       </div>
+      ${(() => {
+        const ov = ST.overrides[p.id] || {};
+        const bits = [];
+        if (ov._bidDraft) bits.push(`<div style="margin:6px 0 10px;padding:9px 12px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r2);display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="flex:1;min-width:200px;font-size:12.5px;color:var(--ink-900)"><b>A bid draft is waiting for review</b> — ${ov._bidDraft.lines.length} lines read from the drawings.</span><button class="btn btn-amber btn-sm" onclick="ST.bidDraftOpen='${p.id}';render()">✎ Review the bid</button></div>`);
+        if (ov._bid && (ov._bid.rfis || []).length) bits.push(`<div style="margin:0 0 10px;font-family:var(--mono);font-size:10.5px;color:var(--text2);display:flex;align-items:center;gap:8px">⚑ ${ov._bid.rfis.length} RFI${ov._bid.rfis.length === 1 ? '' : 's'} from the bid${ov._bid.bidDate ? ` · bid date ${esc(ov._bid.bidDate)}` : ''} <button class="edit-btn" onclick="bidCopyRfis('${p.id}')">⧉ Copy RFIs</button></div>`);
+        return bits.join('');
+      })()}
       ${cats.map((cat, i) => buildSubEstRow(p.id, i, cat)).join('')}
+      ${(() => {
+        const x = subEstBuilderExtra(p.id);
+        return x.lines ? `<div class="cat-row" style="align-items:center;gap:10px">
+          <div class="cat-name" style="flex:1;min-width:0">OTHER BUILDER LINES</div>
+          <button onclick="ST.builderSelProj='${p.id}';setTab('builder')" style="flex:1;min-width:90px;max-width:240px;text-align:left;background:transparent;border:none;border-bottom:1px dashed var(--border);padding:4px 2px;font-size:11px;color:var(--text2);font-family:var(--sans);cursor:pointer">${x.lines} line${x.lines === 1 ? '' : 's'} outside the six divisions →</button>
+          <div style="width:132px;text-align:right;font-family:var(--mono);font-size:12px;color:var(--ink-900);font-weight:600;padding:6px 9px">${fmt$(x.amount)}</div>
+        </div>` : '';
+      })()}
       <div class="cat-row" style="align-items:center;border-top:2px solid var(--border);margin-top:4px;padding-top:10px">
         <div class="cat-name" style="flex:1;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text2)">Total bid</div>
         <div style="font-family:var(--mono);font-size:15px;font-weight:700;color:var(--green)">${fmt$(total)}</div>
@@ -14251,12 +14390,41 @@ async function estAddPlan(pid) {
   const discSel = document.getElementById('est-plan-disc');
   const inp = document.getElementById('est-plan-file');
   if (!inp || !inp.files || !inp.files[0]) { showToast('Pick a PDF first.', 'warn'); return; }
-  const f = inp.files[0];
-  if (!/pdf$/i.test(f.type) && !/\.pdf$/i.test(f.name)) {
-    showToast('Only PDF files are accepted.', 'error');
-    return;
-  }
-  if (!trialGuardPlanUpload()) return; // free-trial upload cap
+  const r = await estAddPlanFile(pid, inp.files[0], discSel?.value || 'A');
+  if (!r.ok) { showToast(r.err, 'error'); return; }
+  if (inp) inp.value = '';
+  const lbl = document.getElementById('est-plan-file-lbl');
+  if (lbl) lbl.textContent = '';
+  if (r.warn) showToast(r.warn, 'warn');
+  showToast('Plan set recorded: ' + r.meta.name, 'success');
+  render();
+}
+
+// Discipline from the file name — "M-101 Mechanical.pdf" is M. Falls back to
+// Mechanical on an HVAC workspace (that is what an HVAC shop uploads) and to
+// Architectural otherwise. The user can change it later in the plan list.
+function planGuessDiscipline(name) {
+  const n = String(name || '').trim();
+  const ids = new Set(EST_DISCIPLINES.map(d => d.id));
+  const pick = (id) => ids.has(id) ? id : null;
+  const lead = /^([A-Z]{1,2})[\s\-_.]?\d/i.exec(n);
+  if (lead && pick(lead[1].toUpperCase())) return lead[1].toUpperCase();
+  const w = n.toLowerCase();
+  if (/mech|hvac|mecan/.test(w) && pick('M')) return 'M';
+  if (/elec/.test(w) && pick('E')) return 'E';
+  if (/plumb|plomer/.test(w) && pick('P')) return 'P';
+  if (/struct|estruct/.test(w) && pick('S')) return 'S';
+  if (/arch|arquit/.test(w) && pick('A')) return 'A';
+  return (typeof isHvacSub === 'function' && isHvacSub() && pick('M')) ? 'M' : 'A';
+}
+
+// One PDF into a project's plan set — shared by the Estimator form and the
+// assistant's 📎 attach, so both enforce the same limits and storage path.
+// Returns { ok, meta, warn } or { ok:false, err }. Never renders or toasts.
+async function estAddPlanFile(pid, f, disc) {
+  if (!f) return { ok: false, err: 'No file.' };
+  if (!/pdf$/i.test(f.type) && !/\.pdf$/i.test(f.name)) return { ok: false, err: `“${f.name}” is not a PDF — only PDF plan sets are accepted.` };
+  if (!trialGuardPlanUpload()) return { ok: false, err: 'Plan upload limit reached on this plan.' }; // free-trial upload cap
 
   // Hard 25-page limit per file — read page count before accepting
   if (window.pdfjsLib) {
@@ -14264,8 +14432,7 @@ async function estAddPlan(pid) {
       const buf = await f.arrayBuffer();
       const doc = await pdfjsLib.getDocument({ data: buf }).promise;
       if (doc.numPages > MAX_AI_PAGES_PER_PLAN) {
-        showToast(`This PDF has ${doc.numPages} pages. Novantu accepts max ${MAX_AI_PAGES_PER_PLAN} per file — split it into architectural, structural, MEP, etc. and upload each separately.`, 'error');
-        return;
+        return { ok: false, err: `“${f.name}” has ${doc.numPages} pages. Novantu accepts max ${MAX_AI_PAGES_PER_PLAN} per file — split it into architectural, structural, MEP, etc. and upload each separately.` };
       }
     } catch (err) {
       console.warn('Could not read page count, accepting anyway:', err);
@@ -14273,7 +14440,7 @@ async function estAddPlan(pid) {
   }
 
   const e = getEstProj(pid);
-  const disc = discSel?.value || 'A';
+  disc = disc || 'A';
   const planId = 'pln_' + Date.now() + Math.random().toString(36).slice(2, 6);
   const meta = {
     id: planId,
@@ -14284,19 +14451,10 @@ async function estAddPlan(pid) {
     ts: new Date().toISOString(),
   };
 
-  const finish = () => {
-    e.plans.push(meta);
-    saveSt();
-    if (inp) inp.value = '';
-    const lbl = document.getElementById('est-plan-file-lbl');
-    if (lbl) lbl.textContent = '';
-    showToast('Plan set recorded: ' + f.name, 'success');
-    render();
-  };
-
   // Upload the bytes to Supabase Storage; keep the dataUrl in the session cache
   // (for instant download/preview) and store only the short path in state. If
   // Storage is unreachable, fall back to embedding ≤10 MB inline so nothing is lost.
+  let warn = '';
   ST.toUploading = true; render();
   try {
     const dataUrl = await new Promise((res, rej) => {
@@ -14308,14 +14466,14 @@ async function estAddPlan(pid) {
     _PLAN_BLOBS[planId] = dataUrl;
     if (pdfPath) meta.pdfPath = pdfPath;
     else if (f.size <= 10 * 1024 * 1024) meta.dataUrl = dataUrl;   // inline fallback
-    else showToast('PDF over 10 MB and Storage is unreachable — metadata only.', 'warn');
-    ST.toUploading = false;
-    finish();
+    else warn = `“${f.name}” is over 10 MB and Storage is unreachable — only its name was recorded.`;
   } catch (err) {
-    ST.toUploading = false;
-    showToast('Failed to read/upload file — metadata recorded only.', 'warn');
-    finish();
+    warn = `Failed to read/upload “${f.name}” — only its name was recorded.`;
   }
+  ST.toUploading = false;
+  e.plans.push(meta);
+  saveSt();
+  return { ok: true, meta, warn };
 }
 
 async function estDownloadPlan(pid, planId) {
@@ -14771,6 +14929,14 @@ async function aiPostAsk(body) {
   // instead of letting it surface as an unexplained parse error.
   if (AI_LAST.stop_reason === 'max_tokens') {
     console.warn('ask-ai: response hit max_tokens — output was cut off', AI_LAST);
+    // Structured tasks: half a JSON document is worse than none — it either
+    // fails to parse with a cryptic error or, worse, parses into a partial
+    // estimate that looks complete. Say what happened and how to get around it.
+    if (body && body.task) {
+      throw new Error('The answer was too long and got cut off before it finished. Ask for a narrower piece (one floor, one system, or fewer sheets) and try again.');
+    }
+    // Plain chat: keep what arrived and say it is incomplete.
+    full += '\n\n△ (This answer was cut off — ask me to “continue” for the rest.)';
   }
   return full;
 }
@@ -14839,6 +15005,22 @@ function draftDropItem(gi, ii) {
   render();
 }
 
+// Where an AI-drafted estimate lands. Everywhere but HVAC: its groups, as
+// drafted. On an HVAC workspace the model's own grouping is advisory — every
+// line is filed into the shop's six divisions by its price-book code, so an AI
+// estimate reads exactly like the proposals the shop already sends.
+function builderPlaceAIGroups(pid, newGroups, mode) {
+  const est = builderEnsure(pid);
+  if (typeof isHvacSub === 'function' && isHvacSub()) {
+    if (mode === 'replace') est.groups = [];
+    hvacSeedGroups(pid);
+    hvacFileLines(pid, newGroups.flatMap(g => g.items || []));
+    return;
+  }
+  if (mode === 'replace') est.groups = newGroups;
+  else est.groups.push(...newGroups);
+}
+
 function estApplyDraft(pid, mode) {
   const d = ST.estimatorDraft; if (!d || d.pid !== pid) return;
   aiOutcomeOnce(d, true);
@@ -14855,8 +15037,7 @@ function estApplyDraft(pid, mode) {
       costType: 'Materials', markup: baseMarkup, taxable: false,
     })),
   }));
-  if (mode === 'replace') ST.estimates[pid].groups = newGroups;
-  else ST.estimates[pid].groups.push(...newGroups);
+  builderPlaceAIGroups(pid, newGroups, mode);
   ST.estimatorDraft = null;
   saveSt();
   setTab('builder'); ST.builderSelProj = pid; render();
@@ -14948,6 +15129,7 @@ async function dbeGenerate(pid) {
   } catch (err) {
     aiLogEvent('dbe', { ok: false, err: err && err.message, images: planImages.length });
     showToast('Design-build estimate failed: ' + (err.message || err), 'error');
+    if (ST.tab === 'assistant') assistantPush('assistant', '△ The estimate failed: ' + (err.message || err));
   } finally {
     ST.dbeLoading = null; render();
   }
@@ -14979,8 +15161,7 @@ function dbeApply(pid, mode) {
       costType: 'Materials', markup: baseMarkup, taxable: false,
     })),
   }));
-  if (mode === 'replace') ST.estimates[pid].groups = newGroups;
-  else ST.estimates[pid].groups.push(...newGroups);
+  builderPlaceAIGroups(pid, newGroups, mode);
   ST.dbeResult = null;
   saveSt();
   setTab('builder'); ST.builderSelProj = pid; render();
@@ -14999,7 +15180,7 @@ function buildDbeModal() {
       <div class="modal-sub">${esc(p.name)} · the AI reads your plans/sketches, sizes the system per code, and drafts from your prices</div>
 
       <div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:9px 12px;margin:12px 0;line-height:1.6">
-        ${planCount ? `▦ ${planCount} plan/sketch page${planCount===1?'':'s'} will be read by the AI.` : '⚠ No plans/sketches uploaded — add them in Estimator → Take-off, or just describe the job below.'}
+        ${planCount ? `▦ ${planCount} plan/sketch page${planCount===1?'':'s'} will be read by the AI.` : '⚠ No plans/sketches uploaded — attach them with 📎 in Ask AI, or just describe the job below.'}
       </div>
 
       <div class="modal-label">Describe your design idea / scope <span style="color:var(--text3)">(optional but helps a lot)</span></div>
@@ -15244,6 +15425,10 @@ const TAKEOFF_PRESETS = {
     label: 'Plumbing fixtures',
     sub: 'WC, lavs, sinks, tubs, showers, drains… counted per level & room (EA).',
   },
+  hvac: {
+    label: 'HVAC / mechanical',
+    sub: 'Equipment & air devices by tag (EA), duct LF by printed size, refrigerant & condensate LF — each row matched to your price book.',
+  },
   custom: {
     label: 'Custom take-off',
     sub: 'Describe it: "doors & windows", "LF of baseboard", "light fixtures by type"…',
@@ -15255,19 +15440,28 @@ function takeoffsGet(pid) {
   return (ov && Array.isArray(ov._takeoffs)) ? ov._takeoffs : [];
 }
 function takeoffFind(pid, tid) { return takeoffsGet(pid).find(t => t.id === tid) || null; }
-function takeoffOpen(pid) { ST.toAI = { pid, type: 'walls', extra: '' }; render(); }
+function takeoffOpen(pid) { ST.toAI = { pid, type: (typeof isHvacSub === 'function' && isHvacSub()) ? 'hvac' : 'walls', extra: '' }; render(); }
 function takeoffRowTotal(r) { return (r.unit === 'SF' && r.height) ? r.dims * r.height : r.dims; }
 function toFmtNum(n) { return (Math.round(Number(n) * 100) / 100).toLocaleString(); }
 
-async function takeoffGenerate(pid) {
-  if (ST.toAILoading) return;
-  const m = ST.toAI; if (!m || m.pid !== pid) return;
-  m.extra = document.getElementById('toai-extra')?.value ?? m.extra;
+// opts (from the assistant) = { type, extra, chat:true }: runs without the
+// picker modal and reports back into the conversation instead of opening the
+// sheet. Without opts it is the modal's "Run take-off" button, as before.
+async function takeoffGenerate(pid, opts) {
+  if (ST.toAILoading) return null;
+  const chat = !!(opts && opts.chat);
+  const say = (msg, kind) => chat ? assistantPush('assistant', '△ ' + msg) : showToast(msg, kind);
+  let m;
+  if (opts) m = { pid, type: opts.type || 'custom', extra: opts.extra || '' };
+  else {
+    m = ST.toAI; if (!m || m.pid !== pid) return null;
+    m.extra = document.getElementById('toai-extra')?.value ?? m.extra;
+  }
   if (!TAKEOFF_PRESETS[m.type]) m.type = 'custom';
-  if (m.type === 'custom' && !(m.extra || '').trim()) { showToast('Describe what you want quantified first.', 'warn'); return; }
+  if (m.type === 'custom' && !(m.extra || '').trim()) { say('Describe what you want quantified first.', 'warn'); return null; }
   const e = getEstProj(pid);
   const plansWithBin = (e.plans || []).filter(pl => hasPlanBinary(pl));
-  if (!plansWithBin.length) { showToast('Upload the plan set first (Estimator → Plan Sets), then run the take-off.', 'warn'); return; }
+  if (!plansWithBin.length) { say('Attach the plan set first (📎 in Ask AI), then run the take-off.', 'warn'); return null; }
   ST.toAILoading = pid; render();
   let planImages = [];
   try {
@@ -15278,17 +15472,22 @@ async function takeoffGenerate(pid) {
   // and never spend a trial AI credit on one.
   if (!planImages.length) {
     ST.toAILoading = null; render();
-    showToast('Could not read the plan pages — re-upload the PDF and try again.', 'error');
-    return;
+    say('Could not read the plan pages — re-upload the PDF and try again.', 'error');
+    return null;
   }
-  if (!trialGuardAI()) { ST.toAILoading = null; render(); return; }
+  if (!trialGuardAI()) { ST.toAILoading = null; render(); return null; }
+  let made = null;
   try {
     const p = allProjects().find(x => x.id === pid) || { name: pid };
+    // The shop's catalog rides along so each row can name the price-book item
+    // it is. The model only MATCHES; the price is looked up here, never quoted.
+    const catalog = ((typeof aiPriceList === 'function') ? aiPriceList() : []).map(r => ({ code: r.code, name: r.name, unit: r.unit }));
     // The measurement methodology lives server-side (TASK_PROMPTS.takeoff).
     const text = await aiCompleteText(pid, `Take-off · ${m.type}`, planImages, {
       lean: true, task: 'takeoff',
-      taskData: { projectName: p.name, type: m.type, extra: m.extra || '' },
+      taskData: { projectName: p.name, type: m.type, extra: m.extra || '', catalog },
     });
+    const known = new Set(catalog.map(r => r.code));
     const parsed = parseAIJson(text);
     if (!parsed || !Array.isArray(parsed.rows) || !parsed.rows.length) throw new Error('Could not read take-off rows from the AI. Try again.');
     const CATS_OK = ['WALLS', 'CEILING', 'FLOOR', 'COUNTERTOP', 'FIXTURE', 'OTHER'];
@@ -15306,6 +15505,9 @@ async function takeoffGenerate(pid) {
       // everything" into "spot-check this row against A-2.1 p3". Blank means
       // the AI could not tie it to a sheet — check those first.
       sheetRef: String((r && r.sheetRef) || '').slice(0, 40),
+      // Only a code that really exists in the price book survives — a made-up
+      // one would silently price at $0 or, worse, match the wrong item.
+      code: known.has(String((r && r.code) || '')) ? String(r.code) : '',
       note: String((r && r.note) || '').slice(0, 120),
     })).filter(r => r.dims !== 0 || r.note);
     if (!rows.length) throw new Error('The AI returned no usable rows.');
@@ -15323,14 +15525,523 @@ async function takeoffGenerate(pid) {
     ST.overrides[pid]._takeoffs.push(t);
     saveSt();
     ST.toAI = null;
-    ST.toSheet = { pid, tid: t.id };
+    if (!chat) ST.toSheet = { pid, tid: t.id };
+    made = t;
     aiLogEvent('takeoff', { ok: true, images: planImages.length }).then(id => { t.evt = id; saveSt(); });
   } catch (err) {
     aiLogEvent('takeoff', { ok: false, err: err && err.message, images: planImages.length });
-    showToast('Take-off failed: ' + (err.message || err), 'error');
+    say('Take-off failed: ' + (err.message || err), 'error');
   } finally {
     ST.toAILoading = null; render();
   }
+  if (made && chat) assistantPush('assistant', takeoffChatSummary(pid, made, planImages.length));
+  return made;
+}
+
+// Price a take-off against the shop's own book: rows the AI matched to a
+// catalog code get qty × that code's unit price. Nothing is priced from the
+// model — an unmatched row stays a quantity, and an unpriced code stays $0.
+function takeoffPriced(t) {
+  const book = new Map(((typeof aiPriceList === 'function') ? aiPriceList() : []).map(r => [r.code, r]));
+  const byCode = new Map();
+  let unmatched = 0;
+  for (const r of (t.rows || [])) {
+    const row = r.code ? book.get(r.code) : null;
+    if (!row) { unmatched++; continue; }
+    const cur = byCode.get(r.code) || { code: r.code, name: row.name, unit: row.unit, perUnit: Number(row.perUnit) || 0, qty: 0 };
+    cur.qty += takeoffRowTotal(r);
+    byCode.set(r.code, cur);
+  }
+  const lines = [...byCode.values()].map(l => ({ ...l, qty: Math.round(l.qty * 100) / 100, amount: Math.round(l.qty * l.perUnit * 100) / 100 }));
+  const unpriced = lines.filter(l => !(l.perUnit > 0)).length;
+  return { lines, unmatched, unpriced, total: lines.reduce((s, l) => s + l.amount, 0) };
+}
+
+// What the assistant says when a take-off finishes: the priced summary by
+// division, what could not be matched, what the sheets were missing — and the
+// buttons to open the sheet or put it in the Builder.
+function takeoffChatSummary(pid, t, pages) {
+  const pr = takeoffPriced(t);
+  const L = [`✓ Take-off done — ${t.rows.length} row${t.rows.length === 1 ? '' : 's'} read from ${pages} page${pages === 1 ? '' : 's'}.`];
+  if (pr.lines.length) {
+    const hv = typeof isHvacSub === 'function' && isHvacSub();
+    const buckets = new Map();
+    for (const l of pr.lines) {
+      const k = hv ? hvacCatForLine(l.code, l.name) : 'Priced from your book';
+      const b = buckets.get(k) || { amount: 0, n: 0 }; b.amount += l.amount; b.n++; buckets.set(k, b);
+    }
+    const order = hv ? HVAC_CATEGORIES.map(c => c.cat) : [...buckets.keys()];
+    L.push('');
+    L.push('Cost from your price book (before markup):');
+    for (const k of order) { const b = buckets.get(k); if (b) L.push(`• ${k} — ${b.n} item${b.n === 1 ? '' : 's'} · ${fmt$(b.amount)}`); }
+    L.push(`Total: ${fmt$(pr.total)}`);
+  }
+  if (pr.unpriced) L.push(`△ ${pr.unpriced} matched item${pr.unpriced === 1 ? ' has' : 's have'} no price yet — they count as $0 until you set them in Files → Price book.`);
+  if (pr.unmatched) L.push(`△ ${pr.unmatched} row${pr.unmatched === 1 ? '' : 's'} didn't match anything in your price book — they come in as quantities for you to price.`);
+  if (t.missing && t.missing.length) L.push('', 'Missing / verify on the sheets:', ...t.missing.slice(0, 6).map(x => '• ' + x));
+  const k = pid + '~' + t.id;
+  L.push('', `{{act:tosheet:${k}|▦ Open the sheet}} {{act:topush:${k}|→ Put it in the Builder}} {{act:tocsv:${k}|⬇ Excel}}`);
+  return L.join('\n');
+}
+
+// ============================================================
+// HVAC BID SKILL — upload the mechanical drawings, get the shop's bid.
+// The METHOD (how a commercial HVAC sub reads a set: responsibility schedules
+// first, then equipment, air devices, plan, details, specs — and the six
+// divisions, clauses and cost shape of a real submitted bid) lives server-side
+// in ask-ai (HVAC_BID_METHOD). What lives HERE is the shop's own PROFILE,
+// learned once from one of its past proposals, which rides along on every bid
+// so a new bid reads like the last one it sent.
+// The AI reads and matches; it never prices. Prices come from the price book.
+// ============================================================
+const BID_MAX_IMAGES = 60;
+
+function bidProfileGet() {
+  const p = ST.settings && ST.settings.bidProfile;
+  return (p && typeof p === 'object') ? p : null;
+}
+function bidProfileSet(field, value) {
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  const p = ST.settings.bidProfile = ST.settings.bidProfile || { learnedAt: '', source: '' };
+  const lists = ['inclusions', 'exclusions', 'clarifications', 'terms'];
+  if (lists.includes(field)) p[field] = String(value || '').split('\n').map(s => s.trim()).filter(Boolean);
+  else if (field === 'taxRate') p.taxRate = Math.max(0, parseFloat(value) || 0);
+  else p[field] = String(value || '');
+  saveSt();
+}
+// The profile as the prompt reads it — compact, one fact per line.
+function bidProfileText() {
+  const p = bidProfileGet(); if (!p) return '';
+  const L = [];
+  const c = p.company || {};
+  if (c.name) L.push(`Company: ${[c.name, c.license].filter(Boolean).join(' · ')}`);
+  if (p.numbering) L.push('Proposal numbering: ' + p.numbering);
+  if (Array.isArray(p.divisions) && p.divisions.length) L.push('Their divisions: ' + p.divisions.map(d => d.title + (d.pct ? ` (${d.pct}%)` : '')).join(' | '));
+  if (p.laborPct || p.materialPct) L.push(`Cost shape on their bid: labor ${p.laborPct || 0}% · materials & equipment ${p.materialPct || 0}% · tax ${p.taxPct || 0}%`);
+  if (p.taxRate) L.push(`Sales tax rate they used: ${p.taxRate}%`);
+  if (p.markupNote) L.push('Margin: ' + p.markupNote);
+  if (p.wasteNote) L.push('Waste: ' + p.wasteNote);
+  if (p.voice) L.push('Voice: ' + p.voice);
+  const list = (t, a) => { if (Array.isArray(a) && a.length) { L.push(t + ':'); a.slice(0, 25).forEach(x => L.push('- ' + x)); } };
+  list('Their standard inclusions', p.inclusions);
+  list('Their standard exclusions', p.exclusions);
+  list('Their standard clarifications', p.clarifications);
+  if (p.notes) L.push('Notes: ' + p.notes);
+  if (p.rules) L.push('Estimator rules (always apply): ' + p.rules);
+  return L.join('\n');
+}
+
+// Render a PDF the user just picked (not yet in any project) to page images.
+async function pdfFileToImages(file, maxPages) {
+  if (!window.pdfjsLib) throw new Error('The PDF reader has not loaded — reload the page and try again.');
+  const doc = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const n = Math.min(doc.numPages, maxPages || 12);
+  const out = [];
+  for (let pg = 1; pg <= n; pg++) {
+    const page = await doc.getPage(pg);
+    const v1 = page.getViewport({ scale: 1 });
+    const scale = Math.min(2.2, 1568 / Math.max(v1.width, v1.height));
+    const vp = page.getViewport({ scale });
+    const cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height;
+    await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+    out.push({ discipline: 'BID', name: file.name, pageNum: pg, base64: cv.toDataURL('image/jpeg', 0.8).split(',')[1] });
+  }
+  return out;
+}
+
+// Learn the shop's profile from ONE past proposal. One AI call; the result is
+// saved and stays fully editable in Files → Bid method.
+async function bidProfileLearn(input) {
+  const file = input && input.files && input.files[0];
+  if (input) input.value = '';
+  if (!file || ST.bidLearnLoading) return;
+  if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { showToast('Pick the PDF of a bid you already sent.', 'warn'); return; }
+  if (!trialGuardAI()) return;
+  ST.bidLearnLoading = true; render();
+  try {
+    const images = await pdfFileToImages(file, 14);
+    const text = await aiPostAsk({
+      projectContext: { projectName: '(bid profile)', setup: {}, plans: [], reviewItems: [], derivedCodes: [], openRfis: [], isSub: true },
+      messages: [{ role: 'user', content: 'Learn bid profile' }],
+      task: 'bidprofile', taskData: {}, planImages: images,
+    });
+    const r = parseAIJson(text);
+    if (!r) throw new Error('Could not read that proposal. Try again.');
+    const arr = (x, n) => Array.isArray(x) ? x.map(v => String(v).trim().slice(0, 400)).filter(Boolean).slice(0, n || 30) : [];
+    const num = (x) => Math.max(0, Math.round((Number(x) || 0) * 100) / 100);
+    const old = bidProfileGet() || {};
+    if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+    ST.settings.bidProfile = {
+      source: file.name, learnedAt: new Date().toISOString(),
+      company: { name: String(r.company?.name || ''), license: String(r.company?.license || ''), phone: String(r.company?.phone || ''), email: String(r.company?.email || ''), address: String(r.company?.address || '') },
+      numbering: String(r.numbering || ''),
+      divisions: Array.isArray(r.divisions) ? r.divisions.map(d => ({ title: String(d?.title || '').slice(0, 80), pct: num(d?.pct) })).filter(d => d.title).slice(0, 12) : [],
+      laborPct: num(r.laborPct), materialPct: num(r.materialPct), taxPct: num(r.taxPct), taxRate: num(r.taxRate),
+      markupNote: String(r.markupNote || ''), wasteNote: String(r.wasteNote || ''),
+      inclusions: arr(r.inclusions), exclusions: arr(r.exclusions), clarifications: arr(r.clarifications), terms: arr(r.terms),
+      voice: String(r.voice || ''), sections: arr(r.sections, 15), notes: String(r.notes || ''),
+      rules: old.rules || '',   // the estimator's own rules survive a re-learn
+    };
+    saveSt();
+    aiLogEvent('bidprofile', { ok: true, images: images.length });
+    showToast(`Learned from “${file.name}” — review it below; every new bid will follow it.`, 'success');
+  } catch (err) {
+    aiLogEvent('bidprofile', { ok: false, err: err && err.message });
+    showToast('Could not learn from that PDF: ' + (err.message || err), 'error');
+  } finally {
+    ST.bidLearnLoading = false; render();
+  }
+}
+
+// Put the profile's clauses into the proposal template (workspace default).
+function bidProfileToPrint() {
+  const p = bidProfileGet(); if (!p) return;
+  if (!confirm('Replace the proposal template’s scope, clarifications and terms with the ones from your bid method?')) return;
+  if (!ST.settings.print || typeof ST.settings.print !== 'object') ST.settings.print = {};
+  const pr = ST.settings.print;
+  if ((p.inclusions || []).length || (p.exclusions || []).length) pr.notes = 'INCLUDED:\n' + (p.inclusions || []).join('\n') + '\n\nEXCLUDED:\n' + (p.exclusions || []).join('\n');
+  if ((p.clarifications || []).length) pr.clarifications = p.clarifications.join('\n');
+  if ((p.terms || []).length) pr.terms = p.terms.join('\n');
+  const c = p.company || {};
+  // Company lines only fill blanks — never overwrite what was typed by hand.
+  if (c.license && !pr.companyLicense) pr.companyLicense = String(c.license).replace(/^.*?(\d{5,}).*$/, '$1');
+  if (c.phone && !pr.companyPhone) pr.companyPhone = c.phone;
+  if (c.email && !pr.companyEmail) pr.companyEmail = c.email;
+  if (c.address && !pr.companyAddress) pr.companyAddress = c.address;
+  saveSt(); render();
+  showToast('Proposal template updated from your bid method.', 'success');
+}
+
+// Every sheet as TILES. A 36x24 mechanical sheet sent as one image is shrunk
+// by the vision model until 8-point duct sizes and device tags are unreadable —
+// which is exactly the information a bid is made of. Each sheet goes as one
+// whole-sheet overview (for orientation) plus a 3x2 (or 2x2) grid of
+// overlapping crops at readable resolution. Falls back to whole pages when a
+// set is too big for the image budget.
+async function renderProjectPlansForBid(pid, maxImages) {
+  const { plans } = await getProjectPlanPageInfo(pid);
+  const pages = [];
+  for (const pl of plans) for (let pg = 1; pg <= pl.pages; pg++) pages.push({ pl, pg });
+  if (!pages.length) return { images: [], pages: 0, mode: 'none' };
+  const per = Math.floor((maxImages || BID_MAX_IMAGES) / pages.length);
+  const mode = per >= 7 ? '3x2' : per >= 5 ? '2x2' : 'page';
+  const images = [];
+  const docs = {};
+  for (const { pl, pg } of pages) {
+    if (mode === 'page') {
+      images.push({ discipline: pl.discipline, name: pl.name, pageNum: pg, base64: await renderPlanPage(pl.planId, pg, pl.dataUrl) });
+      continue;
+    }
+    const doc = docs[pl.planId] || (docs[pl.planId] = await pdfjsLib.getDocument({ data: atob(pl.dataUrl.split(',')[1]) }).promise);
+    const page = await doc.getPage(pg);
+    const v1 = page.getViewport({ scale: 1 });
+    const land = v1.width >= v1.height;
+    const cols = mode === '3x2' ? (land ? 3 : 2) : 2;
+    const rows = mode === '3x2' ? (land ? 2 : 3) : 2;
+    // ~1300 px per tile column — under the model's downscale threshold.
+    const scale = Math.min(3, (1300 * cols) / v1.width);
+    const vp = page.getViewport({ scale });
+    const full = document.createElement('canvas'); full.width = Math.round(vp.width); full.height = Math.round(vp.height);
+    await page.render({ canvasContext: full.getContext('2d'), viewport: vp }).promise;
+    const jpeg = (cv) => cv.toDataURL('image/jpeg', 0.72).split(',')[1];
+    // Overview
+    const os = Math.min(1, 1400 / Math.max(full.width, full.height));
+    const ov = document.createElement('canvas'); ov.width = Math.round(full.width * os); ov.height = Math.round(full.height * os);
+    ov.getContext('2d').drawImage(full, 0, 0, ov.width, ov.height);
+    images.push({ discipline: pl.discipline, name: `${pl.name} (whole sheet)`, pageNum: pg, base64: jpeg(ov) });
+    // Tiles with 6% overlap so nothing on a seam is lost
+    const tw = full.width / cols, th = full.height / rows, ox = tw * 0.06, oy = th * 0.06;
+    const where = (r, c) => `${['top', 'middle', 'bottom'][rows === 2 ? (r ? 2 : 0) : r]}-${['left', 'center', 'right'][cols === 2 ? (c ? 2 : 0) : c]}`;
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const sx = Math.max(0, c * tw - ox), sy = Math.max(0, r * th - oy);
+      const sw = Math.min(full.width - sx, tw + 2 * ox), sh = Math.min(full.height - sy, th + 2 * oy);
+      const t = document.createElement('canvas'); t.width = Math.round(sw); t.height = Math.round(sh);
+      t.getContext('2d').drawImage(full, sx, sy, sw, sh, 0, 0, t.width, t.height);
+      images.push({ discipline: pl.discipline, name: `${pl.name} · detail ${where(r, c)}`, pageNum: pg, base64: jpeg(t) });
+    }
+    full.width = full.height = 0;   // free the big canvas now, not at GC time
+  }
+  return { images, pages: pages.length, mode };
+}
+
+async function hvacBidGenerate(pid, extra) {
+  if (ST.bidLoading) return;
+  const p = allProjects().find(x => x.id === pid); if (!p) return;
+  const e = getEstProj(pid);
+  const inChat = ST.tab === 'assistant';
+  const say = (m, kind) => { showToast(m, kind || 'warn'); if (inChat) assistantPush('assistant', '△ ' + m); };
+  if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { say('Attach the mechanical drawings first — 📎 in Ask AI.'); return; }
+  ST.bidLoading = pid; ST.bidStage = 'Preparing the sheets…'; render();
+  let r = null;
+  try { r = await renderProjectPlansForBid(pid, BID_MAX_IMAGES); } catch (err) { console.warn('bid: render failed', err); }
+  if (!r || !r.images.length) { ST.bidLoading = null; ST.bidStage = ''; render(); say('Could not read the plan pages — re-upload the PDF and try again.', 'error'); return; }
+  if (!trialGuardAI()) { ST.bidLoading = null; ST.bidStage = ''; render(); return; }
+  const catalog = aiPriceList().map(x => ({ code: x.code, name: x.name, unit: x.unit }));
+  const s = e.setup || {};
+  const knownText = AGENT_SETUP_FIELDS.filter(f => f !== 'notes' && s[f]).map(f => `${f}: ${s[f]}`).join('\n');
+  const taskData = { projectName: p.name, knownText, extra: extra || '', profile: bidProfileText(), catalog };
+  const call = (imgs) => aiCompleteText(pid, `HVAC bid · ${p.name}`, imgs, { lean: true, task: 'hvacbid', taskData });
+  try {
+    ST.bidStage = `Reading ${r.pages} sheet${r.pages === 1 ? '' : 's'} (${r.images.length} images) and writing the bid…`; render();
+    let text;
+    try { text = await call(r.images); }
+    catch (err) {
+      // A request that big can be refused by the network layer before the AI
+      // ever sees it. Retry once with whole pages rather than failing the bid.
+      if (r.mode === 'page' || !/HTTP (413|500|502|503|504|546)/.test(String(err && err.message))) throw err;
+      ST.bidStage = 'The tiled set was too large — retrying with whole sheets…'; render();
+      const r2 = await renderAllProjectPlans(pid);
+      r = { images: (r2.images || []).slice(0, 25), pages: r.pages, mode: 'page' };
+      text = await call(r.images);
+    }
+    const parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.lines)) throw new Error('Could not read the bid from the AI. Try again.');
+    const d = bidDraftNormalize(pid, parsed, r);
+    if (!ST.overrides[pid]) ST.overrides[pid] = {};
+    ST.overrides[pid]._bidDraft = d;   // saved: an expensive read must survive a reload
+    ST.bidDraftOpen = pid;
+    saveSt();
+    aiLogEvent('hvacbid', { ok: true, images: r.images.length }).then(id => { d.evt = id; saveSt(); });
+    if (inChat) assistantPush('assistant', bidChatSummary(d));
+  } catch (err) {
+    aiLogEvent('hvacbid', { ok: false, err: err && err.message, images: r.images.length });
+    say('The bid failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.bidLoading = null; ST.bidStage = ''; render();
+  }
+}
+
+function bidDraftNormalize(pid, x, r) {
+  const DIVS = HVAC_CATEGORIES.map(c => c.cat);
+  const book = new Map(aiPriceList().map(b => [b.code, b]));
+  const S = (v, n) => String(v == null ? '' : v).trim().slice(0, n || 200);
+  const arr = (v, n) => Array.isArray(v) ? v.map(s => S(s, 400)).filter(Boolean).slice(0, n || 40) : [];
+  const lines = (x.lines || []).map((l, i) => {
+    const code = book.has(S(l && l.code, 40)) ? S(l.code, 40) : '';
+    const name = S(l && l.name, 160);
+    return {
+      id: 'bl' + i,
+      division: DIVS.includes(l && l.division) ? l.division : hvacGuessCat({ name }),
+      code, name,
+      qty: Math.max(0, Math.round((Number(l && l.qty) || 0) * 100) / 100),
+      unit: S(l && l.unit, 6) || 'EA',
+      perUnit: code ? (Number(book.get(code).perUnit) || 0) : 0,
+      basis: S(l && l.basis, 160), sheetRef: S(l && l.sheetRef, 40), est: !!(l && l.est), on: true,
+    };
+  }).filter(l => l.name);
+  const pj = x.project || {};
+  const project = {};
+  ['name', 'address', 'owner', 'storeNumber', 'architect', 'mep', 'bidDate', 'issueDate', 'bidSet', 'prNumber', 'revision', 'jurisdiction', 'projectType', 'sqft'].forEach(k => { const v = S(pj[k], 160); if (v) project[k] = v; });
+  return {
+    pid, ts: new Date().toISOString(), images: r.images.length, pages: r.pages, mode: r.mode,
+    project, mechSheets: arr(pj.mechSheets, 20),
+    responsibility: (Array.isArray(x.responsibility) ? x.responsibility : []).map(q => ({ item: S(q && q.item, 120), furnishedBy: S(q && q.furnishedBy, 40), installedBy: S(q && q.installedBy, 40), inScope: !!(q && q.inScope), note: S(q && q.note, 200) })).filter(q => q.item).slice(0, 40),
+    lines,
+    inclusions: arr(x.inclusions), exclusions: arr(x.exclusions), clarifications: arr(x.clarifications),
+    rfis: arr(x.rfis), missing: arr(x.missing),
+    summary: S(x.summary, 1500), notes: S(x.notes, 600),
+  };
+}
+
+function bidDraftTotals(d) {
+  let priced = 0, unpriced = 0, total = 0;
+  for (const l of d.lines) { if (!l.on) continue; if (l.perUnit > 0) { priced++; total += l.qty * l.perUnit; } else unpriced++; }
+  return { priced, unpriced, total };
+}
+
+function bidChatSummary(d) {
+  const t = bidDraftTotals(d);
+  const L = [`✓ Bid draft ready — ${d.lines.length} line${d.lines.length === 1 ? '' : 's'} in the six divisions, read from ${d.pages} sheet${d.pages === 1 ? '' : 's'}${d.mode !== 'page' ? ' (every sheet in detail tiles)' : ''}.`];
+  for (const c of HVAC_CATEGORIES) { const n = d.lines.filter(l => l.division === c.cat).length; if (n) L.push(`• ${c.cat} — ${n}`); }
+  L.push('', `Priced from your book: ${t.priced} line${t.priced === 1 ? '' : 's'} = ${fmt$(t.total)} (before markup) · ${t.unpriced} to price by hand.`);
+  const others = d.responsibility.filter(q => !q.inScope).map(q => `${q.item} (${q.furnishedBy || '—'}/${q.installedBy || '—'})`);
+  if (others.length) L.push('', 'Not ours per the responsibility schedule → excluded:', ...others.slice(0, 6).map(x => '• ' + x));
+  if (d.rfis.length) L.push('', `RFIs to send before bid day (${d.rfis.length}):`, ...d.rfis.slice(0, 5).map(x => '• ' + x));
+  if (d.notes) L.push('', '△ ' + d.notes);
+  L.push('', `{{act:bidopen:${d.pid}|✎ Review the bid}}`, 'Nothing is in the Builder until you apply it.');
+  return L.join('\n');
+}
+
+function bidDraftToggle(i) { const d = ST.bidDraftOpen && (ST.overrides[ST.bidDraftOpen] || {})._bidDraft; if (d && d.lines[i]) { d.lines[i].on = !d.lines[i].on; saveSt(); render(); } }
+function bidDraftSetQty(i, v) {
+  const d = ST.bidDraftOpen && (ST.overrides[ST.bidDraftOpen] || {})._bidDraft; if (!d || !d.lines[i]) return;
+  d.lines[i].qty = Math.max(0, Number(v) || 0); d.lines[i].est = false; saveSt();
+  if (typeof scheduleIdleRender === 'function') scheduleIdleRender();
+}
+function bidDraftDiscard(pid) {
+  const d = (ST.overrides[pid] || {})._bidDraft;
+  if (d && !confirm('Discard this bid draft? Running it again costs another AI read.')) return;
+  if (d) aiOutcomeOnce(d, false);
+  if (ST.overrides[pid]) delete ST.overrides[pid]._bidDraft;
+  ST.bidDraftOpen = null; saveSt(); render();
+}
+function bidListFromBox(id) { return String(document.getElementById(id)?.value || '').split('\n').map(s => s.replace(/^[-•·*]\s*/, '').trim()).filter(Boolean); }
+
+function bidDraftApply(pid, mode) {
+  const d = (ST.overrides[pid] || {})._bidDraft; if (!d) return;
+  const inc = bidListFromBox('bd-inc'), exc = bidListFromBox('bd-exc'), clar = bidListFromBox('bd-clar');
+  aiOutcomeOnce(d, true);
+  const mk = getSettings().defaultMarkup || {};
+  // Install / service / general-requirement lines are LABOR: the proposal's
+  // cost composition and the sales-tax base both depend on it.
+  const LABOR = /install|\bset\b|labor|start-?up|balanc|supervis|mobiliz|demoli|remov|haul|submittal|closeout|as-built|coordinat|service|clean|relocat|test/i;
+  let seq = 0;
+  const uid = (pfx) => pfx + Date.now().toString(36) + '_' + (seq++).toString(36) + Math.random().toString(36).slice(2, 5);
+  const items = d.lines.filter(l => l.on).map(l => {
+    const ct = LABOR.test(l.name) ? 'Labor' : 'Materials';
+    return {
+      id: uid('i_'), code: l.code, title: l.name,
+      description: [l.basis, l.sheetRef ? `(${l.sheetRef})` : '', l.est ? '~scaled' : ''].filter(Boolean).join(' ').slice(0, 200),
+      qty: l.qty, unit: l.unit, unitCost: l.perUnit, costType: ct, markup: Number(mk[ct]) || 0, taxable: false,
+      _div: l.division,
+    };
+  });
+  // File by the division the AI chose (it read the sheets); fall back to the
+  // price-book category only through hvacFileLines when it is missing.
+  const est = builderEnsure(pid);
+  if (mode === 'replace') est.groups = [];
+  hvacSeedGroups(pid);
+  for (const it of items) { const div = it._div; delete it._div; hvacGroupFor(pid, div).items.push(it); }
+  // Project fields: fill blanks only — what the estimator typed stays.
+  const setup = getEstProj(pid).setup;
+  const pj = d.project || {};
+  const map = { address: 'address', jurisdiction: 'jurisdiction', projectType: 'projectType', sqft: 'sqft', architect: 'architect', mep: 'mep', bidSet: 'bidSet', prNumber: 'prNumber', revision: 'revision' };
+  for (const [src, f] of Object.entries(map)) {
+    if (!pj[src] || setup[f]) continue;
+    const snap = agentSnapEnum(f, pj[src]);
+    if (snap.ok) setup[f] = snap.value;
+  }
+  // This project's proposal text — its own scope, not the workspace default.
+  if (!ST.overrides[pid]) ST.overrides[pid] = {};
+  ST.overrides[pid]._proposal = {
+    notes: 'INCLUDED:\n' + inc.join('\n') + '\n\nEXCLUDED:\n' + exc.join('\n'),
+    clarifications: clar.join('\n'),
+    summary: d.summary || '',
+  };
+  ST.overrides[pid]._bid = { ts: d.ts, rfis: d.rfis, missing: d.missing, responsibility: d.responsibility, mechSheets: d.mechSheets, bidDate: pj.bidDate || '' };
+  delete ST.overrides[pid]._bidDraft;
+  ST.bidDraftOpen = null;
+  saveSt();
+  ST.builderSelProj = pid;
+  setTab('builder');
+  const t = { n: items.length, unp: items.filter(i => !(i.unitCost > 0)).length };
+  showToast(`Bid applied — ${t.n} lines in the six divisions${t.unp ? `, ${t.unp} still need a price` : ''}. The proposal now carries this project's scope.`, t.unp ? 'warn' : 'success');
+}
+
+function bidCopyRfis(pid) {
+  const d = (ST.overrides[pid] || {})._bidDraft || (ST.overrides[pid] || {})._bid; if (!d) return;
+  const p = allProjects().find(x => x.id === pid) || { name: '' };
+  const txt = `RFIs — ${p.name}\n\n` + (d.rfis || []).map((r, i) => `${i + 1}. ${r}`).join('\n');
+  try { navigator.clipboard.writeText(txt); showToast('RFIs copied — paste them into your email to the GC.', 'success'); }
+  catch (_e) { showToast('Could not copy — select the text and copy it by hand.', 'warn'); }
+}
+
+function buildBidDraftModal() {
+  const pid = ST.bidDraftOpen; if (!pid) return '';
+  const d = (ST.overrides[pid] || {})._bidDraft;
+  if (!d) { ST.bidDraftOpen = null; return ''; }
+  const p = allProjects().find(x => x.id === pid) || { name: pid };
+  const t = bidDraftTotals(d);
+  const label = { name: 'Project', address: 'Address', owner: 'Owner', storeNumber: 'Store / job no.', architect: 'Architect', mep: 'MEP engineer', bidDate: 'Bid date', issueDate: 'Issued', bidSet: 'Drawing status', prNumber: 'PR no.', revision: 'Revision', jurisdiction: 'Jurisdiction', projectType: 'Type', sqft: 'Area (sf)' };
+  const facts = Object.entries(d.project || {}).map(([k, v]) => `<div style="border:1px solid var(--border);background:var(--bg1);padding:6px 9px"><div style="font-family:var(--mono);font-size:8.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3)">${esc(label[k] || k)}</div><div style="font-size:12px;color:var(--ink-900);margin-top:2px">${esc(v)}</div></div>`).join('');
+  const box = (id, title, arr, rows) => `<div style="flex:1;min-width:220px"><div class="modal-label" style="margin:0 0 4px">${title}</div><textarea id="${id}" class="minp" rows="${rows || 6}" style="width:100%;box-sizing:border-box;font-size:11.5px;line-height:1.45;resize:vertical">${esc((arr || []).join('\n'))}</textarea></div>`;
+  const listBlock = (title, arr, color) => (arr && arr.length) ? `<div style="margin-top:12px"><div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${color};font-weight:600;margin-bottom:4px">${title}</div>${arr.map(x => `<div style="font-size:12px;color:var(--ink-900);line-height:1.5">• ${esc(x)}</div>`).join('')}</div>` : '';
+  const divHtml = HVAC_CATEGORIES.map(c => {
+    const rows = d.lines.map((l, i) => ({ l, i })).filter(({ l }) => l.division === c.cat);
+    if (!rows.length) return '';
+    const sub = rows.reduce((s, { l }) => s + (l.on ? l.qty * l.perUnit : 0), 0);
+    return `<div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--ink-700);padding-bottom:3px;margin-bottom:3px">
+        <div style="font-size:12px;font-weight:600;color:var(--ink-900)">${esc(c.code)} ${esc(c.title)}</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--text2)">${fmt$(sub)}</div>
+      </div>
+      ${rows.map(({ l, i }) => `<div style="display:grid;grid-template-columns:22px 1fr 76px 40px 86px 90px;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);${l.on ? '' : 'opacity:.45'}">
+        <input type="checkbox" ${l.on ? 'checked' : ''} onclick="bidDraftToggle(${i})" title="Include this line">
+        <div style="min-width:0"><div style="font-size:12px;color:var(--ink-900);line-height:1.35">${esc(l.name)}</div>
+          <div style="font-family:var(--mono);font-size:9px;color:var(--text3);line-height:1.4">${l.code ? `<span style="color:var(--green)">▤ ${esc(l.code)}</span> · ` : ''}${esc(l.basis)}${l.sheetRef ? ` · ${esc(l.sheetRef)}` : ' · <span style="color:var(--amber)">unsourced</span>'}</div></div>
+        <input type="number" min="0" step="any" value="${esc(String(l.qty))}" onchange="bidDraftSetQty(${i},this.value)" title="${l.est ? 'Scaled from the drawing — verify' : ''}" style="background:var(--bg2);border:1px solid ${l.est ? 'var(--amber)' : 'var(--border)'};border-radius:var(--r2);padding:4px 6px;font-family:var(--mono);font-size:12px;text-align:right;color:var(--text);outline:none;width:100%;box-sizing:border-box">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text3)">${l.est ? '~' : ''}${esc(l.unit)}</div>
+        <div style="font-family:var(--mono);font-size:11px;text-align:right;color:${l.perUnit > 0 ? 'var(--text3)' : 'var(--amber)'}">${l.perUnit > 0 ? fmt$(l.perUnit) : 'price it'}</div>
+        <div style="font-family:var(--mono);font-size:12px;text-align:right;color:var(--ink-900)">${l.perUnit > 0 ? fmt$(l.qty * l.perUnit) : '—'}</div>
+      </div>`).join('')}
+    </div>`;
+  }).join('');
+  const resp = d.responsibility.length ? `<div style="margin-top:14px"><div class="modal-label" style="margin:0 0 4px">Responsibility — what is ours</div>
+    <div style="border:1px solid var(--border);max-height:160px;overflow:auto">${d.responsibility.map(q => `<div style="display:grid;grid-template-columns:1fr 90px 90px 60px;gap:8px;padding:5px 9px;border-bottom:1px solid var(--border);font-size:11.5px;align-items:center">
+      <span style="color:var(--ink-900)">${esc(q.item)}${q.note ? `<span style="font-family:var(--mono);font-size:9px;color:var(--text3)"> · ${esc(q.note)}</span>` : ''}</span>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--text3)" title="Furnished by">F: ${esc(q.furnishedBy || '—')}</span>
+      <span style="font-family:var(--mono);font-size:10px;color:var(--text3)" title="Installed by">I: ${esc(q.installedBy || '—')}</span>
+      <span style="font-family:var(--mono);font-size:10px;font-weight:600;color:${q.inScope ? 'var(--green)' : 'var(--text3)'}">${q.inScope ? 'OURS' : 'not ours'}</span></div>`).join('')}</div></div>` : '';
+  return `<div class="backdrop" onclick="if(event.target===this){ST.bidDraftOpen=null;render()}">
+    <div class="modal modal-wide" style="max-width:940px" onclick="event.stopPropagation()">
+      <div class="modal-title">✦ Bid draft — ${esc(p.name)}</div>
+      <div class="modal-sub">${d.lines.length} lines · read ${d.pages} sheet${d.pages === 1 ? '' : 's'} as ${d.images} image${d.images === 1 ? '' : 's'}${d.mode !== 'page' ? ' (detail tiles)' : ''} · <b>${t.priced}</b> priced from your book = <b>${fmt$(t.total)}</b> before markup${t.unpriced ? ` · <span style="color:var(--amber)">${t.unpriced} to price</span>` : ''} — nothing is in the Builder yet</div>
+      ${d.summary ? `<div style="font-size:12.5px;color:var(--text2);line-height:1.55;margin-top:10px">${esc(d.summary)}</div>` : ''}
+      ${d.notes ? `<div style="margin-top:8px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:8px 11px;font-size:12px;color:var(--ink-900)">△ ${esc(d.notes)}</div>` : ''}
+      <div style="max-height:56vh;overflow:auto;margin-top:12px;padding-right:4px">
+        ${facts ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-bottom:12px">${facts}</div>` : ''}
+        ${resp}
+        <div class="modal-label" style="margin:14px 0 6px">The bid — tick off what you won't carry, correct any quantity (amber = scaled from the drawing)</div>
+        ${divHtml || '<div style="font-family:var(--mono);font-size:11px;color:var(--text3)">No lines.</div>'}
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+          ${box('bd-inc', 'Inclusions', d.inclusions)}
+          ${box('bd-exc', 'Exclusions', d.exclusions)}
+        </div>
+        <div style="margin-top:10px">${box('bd-clar', 'Clarifications', d.clarifications, 4)}</div>
+        ${d.rfis.length ? `<div style="margin-top:12px;display:flex;align-items:center;gap:8px"><span style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--plano,#c44a2c);font-weight:600">RFIs to send before bid day</span><button class="edit-btn" onclick="bidCopyRfis('${pid}')">⧉ Copy</button></div>${d.rfis.map(x => `<div style="font-size:12px;color:var(--ink-900);line-height:1.5">• ${esc(x)}</div>`).join('')}` : ''}
+        ${listBlock('⚠ Missing from the set', d.missing, 'var(--amber)')}
+      </div>
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" style="color:var(--red)" onclick="bidDraftDiscard('${pid}')">Discard</button>
+        <button class="btn btn-ghost" onclick="ST.bidDraftOpen=null;render()" title="Keep the draft — reopen it from Ask AI or the project">Later</button>
+        <button class="btn btn-ghost" onclick="bidDraftApply('${pid}','append')" title="Add these lines to what the Builder already has">+ Add to Builder</button>
+        <button class="btn btn-amber" onclick="if(confirm('Replace this project’s Builder estimate with the bid?'))bidDraftApply('${pid}','replace')">✓ Use as the estimate</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildBidMethodPane() {
+  const p = bidProfileGet();
+  const learning = !!ST.bidLearnLoading;
+  const ta = (field, title, val, rows, ph) => `<div style="margin-bottom:12px"><div class="modal-label" style="margin:0 0 4px">${title}</div><textarea class="minp" rows="${rows || 5}" placeholder="${esc(ph || '')}" onchange="bidProfileSet('${field}',this.value)" style="width:100%;box-sizing:border-box;font-size:12px;line-height:1.45;resize:vertical">${esc(Array.isArray(val) ? val.join('\n') : (val || ''))}</textarea></div>`;
+  const inp = (field, title, val, ph) => `<div style="flex:1;min-width:200px"><div class="modal-label" style="margin:0 0 4px">${title}</div><input class="minp" value="${esc(val == null ? '' : String(val))}" placeholder="${esc(ph || '')}" onchange="bidProfileSet('${field}',this.value)" style="width:100%;box-sizing:border-box;margin:0"></div>`;
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:1px solid var(--ink-700);margin-bottom:18px;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">[ FILES / BID METHOD ]${p && p.source ? ` · LEARNED FROM ${esc(p.source.toUpperCase())}` : ''}</div>
+        <h1 style="font-size:28px;font-weight:600;letter-spacing:-0.02em;color:var(--ink-900);margin:0">How the AI bids</h1>
+      </div>
+      <label class="btn ${p ? 'btn-ghost' : 'btn-amber'} btn-sm" style="cursor:pointer;margin:0;${learning ? 'pointer-events:none;opacity:.6' : ''}" title="Upload one proposal you already sent — the AI learns its structure, clauses and cost shape">${learning ? '<span class="rp-spinner"></span> Learning…' : (p ? '↻ Learn again from a bid PDF' : '⬆ Learn from a past bid (PDF)')}
+        <input type="file" accept="application/pdf,.pdf" onchange="bidProfileLearn(this)" style="display:none"></label>
+    </div>
+
+    <div style="font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:16px;max-width:720px">
+      Attach the mechanical drawings in <b>Ask AI</b> and ask for the bid. The AI reads the set the way an HVAC estimator does — <b>responsibility schedules first</b> (what's furnished by the owner or landlord is install-only or excluded), then equipment and air-device schedules, the plan and keynotes, details (skipping "NOT USED"), notes and specs — and writes the bid in your six divisions with your clauses. It <b>reads and matches</b>; prices come only from your price book. Counts come from schedules; <b>lengths scaled off the drawing are marked ~</b> — every quantity is yours to confirm before it goes out.
+    </div>
+
+    ${!p ? `<div style="padding:14px 16px;border:1px dashed var(--border);background:var(--bg1);font-size:12.5px;color:var(--text2);line-height:1.6;max-width:720px">No bid of yours learned yet — the AI is using the built-in commercial-HVAC method. Upload one proposal you already sent and every new bid will copy its divisions, clauses, voice and numbering.</div>` : `
+    <div style="max-width:860px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+        ${inp('numbering', 'Proposal numbering', p.numbering, 'EMC-{PROJ}-R{rev}')}
+        ${inp('taxRate', 'Sales tax rate on their bid (%)', p.taxRate || '', '7.5')}
+      </div>
+      ${(p.laborPct || p.materialPct) ? `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);margin-bottom:12px">Cost shape of the learned bid: labor ${p.laborPct}% · materials & equipment ${p.materialPct}% · tax ${p.taxPct}% — used as a sanity check, never forced.</div>` : ''}
+      ${(p.divisions || []).length ? `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text2);margin-bottom:12px">Divisions on the learned bid: ${p.divisions.map(dv => esc(dv.title) + (dv.pct ? ` (${dv.pct}%)` : '')).join(' · ')}</div>` : ''}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:0">
+        ${inp('markupNote', 'How margin is shown', p.markupNote)}
+        ${inp('wasteNote', 'Waste factor', p.wasteNote, 'e.g. 10% on duct LF, in the quantity')}
+      </div>
+      <div style="height:12px"></div>
+      ${ta('voice', 'Voice & structure of the write-up', p.voice, 3)}
+      ${ta('inclusions', 'Standard inclusions — one per line', p.inclusions, 6)}
+      ${ta('exclusions', 'Standard exclusions — one per line', p.exclusions, 8)}
+      ${ta('clarifications', 'Standard clarifications — one per line', p.clarifications, 4)}
+      ${ta('terms', 'Commercial terms — "Label: text", one per line', p.terms, 5)}
+      ${ta('rules', 'Your rules — the AI applies these on every bid', p.rules, 3, 'e.g. Mall jobs: always carry after-hours premium. Landlord RTUs: carry filters, coil cleaning and a start-up check per unit.')}
+      <button class="btn btn-ghost btn-sm" onclick="bidProfileToPrint()" title="Copy these clauses into the proposal template">→ Use these clauses in my proposal template</button>
+    </div>`}
+  `;
 }
 
 // Cell edits update totals in place (no full render — keeps input focus).
@@ -15412,21 +16123,39 @@ function takeoffCSV(pid, tid) {
 function takeoffPushToBuilder(pid, tid) {
   const t = takeoffFind(pid, tid); if (!t) return;
   aiOutcomeOnce(t, true);   // pushed into the estimate → the take-off was kept
-  const { byMat } = takeoffTotals(t);
   builderEnsure(pid);
   const mk = (typeof getSettings === 'function' && getSettings().defaultMarkup) ? getSettings().defaultMarkup : {};
   const baseMarkup = Number(mk.Materials) || 0;
   let seq = 0;
   const uid = (pfx) => pfx + Date.now().toString(36) + '_' + (seq++).toString(36) + Math.random().toString(36).slice(2, 5);
-  const items = Object.entries(byMat).map(([k, v]) => {
+  const hv = typeof isHvacSub === 'function' && isHvacSub();
+  // 1. Rows matched to the price book → one priced line per catalog item.
+  const pr = takeoffPriced(t);
+  const priced = pr.lines.map(l => ({ id: uid('i_'), code: l.code, title: l.name, description: 'From take-off', qty: l.qty, unit: l.unit, unitCost: l.perUnit, costType: 'Materials', markup: baseMarkup, taxable: false }));
+  // 2. Everything else → one line per material total, quantity set, you price it.
+  const rest = { rows: (t.rows || []).filter(r => !r.code) };
+  const { byMat } = takeoffTotals(rest);
+  // A tag alone ("CD-1", "EF-2") says nothing about what it is — carry the
+  // row's note ("supply diffuser 24x24") so the line can be read and filed.
+  const noteOf = {};
+  for (const r of rest.rows) { const k = (r.material || '(untagged)') + '|' + r.unit; if (!noteOf[k] && r.note) noteOf[k] = r.note; }
+  const loose = Object.entries(byMat).map(([k, v]) => {
     const [mat, unit] = k.split('|');
-    return { id: uid('i_'), code: mat, title: (t.label.split('·')[0].trim() + ' — ' + mat).slice(0, 120), description: '', qty: Math.round(v * 100) / 100, unit, unitCost: 0, costType: 'Materials', markup: baseMarkup, taxable: false };
+    return { id: uid('i_'), code: '', title: (t.label.split('·')[0].trim() + ' — ' + mat).slice(0, 120), description: String(noteOf[k] || '').slice(0, 120), qty: Math.round(v * 100) / 100, unit, unitCost: 0, costType: 'Materials', markup: baseMarkup, taxable: false };
   });
-  ST.estimates[pid].groups.push({ id: uid('g_'), code: 'TO', title: 'Take-off — ' + t.label.split('·')[0].trim(), items });
+  if (hv) {
+    // HVAC: both kinds land in their division, the way the proposal prints.
+    hvacSeedGroups(pid);
+    hvacFileLines(pid, priced.concat(loose));
+  } else {
+    const items = priced.concat(loose);
+    if (items.length) ST.estimates[pid].groups.push({ id: uid('g_'), code: 'TO', title: 'Take-off — ' + t.label.split('·')[0].trim(), items });
+  }
   saveSt();
   ST.toSheet = null;
+  ST.builderSelProj = pid;
   setTab('builder');
-  showToast('Take-off totals added to the Builder — set your unit costs there.', 'success');
+  showToast(`Take-off added to the Builder — ${priced.length} line${priced.length === 1 ? '' : 's'} priced from your book${loose.length ? `, ${loose.length} to price by hand` : ''}.`, 'success');
 }
 
 // ============================================================
@@ -15499,6 +16228,7 @@ async function detailsRead(pid) {
   } catch (err) {
     aiLogEvent('details', { ok: false, err: err && err.message, images: planImages.length });
     showToast('Reading the plans failed: ' + (err.message || err), 'error');
+    if (ST.tab === 'assistant') assistantPush('assistant', '△ Reading the plans failed: ' + (err.message || err));
   } finally {
     ST.detailsLoading = null; render();
   }
@@ -15717,7 +16447,7 @@ function buildTakeoffSheetModal() {
               <td style="padding:3px 6px;font-family:var(--mono);font-size:9.5px;color:var(--text3)">${esc(r.cat)}</td>
               <td style="padding:3px 6px">${inp(idx, 'level', r.level, '78px')}</td>
               <td style="padding:3px 6px">${inp(idx, 'space', r.space, '130px')}</td>
-              <td style="padding:3px 6px">${inp(idx, 'material', r.material, '90px')}</td>
+              <td style="padding:3px 6px">${inp(idx, 'material', r.material, '90px')}${r.code ? `<div title="Matched to this price-book item — priced from your book" style="font-family:var(--mono);font-size:9px;color:var(--green);margin-top:2px">▤ ${esc(r.code)}</div>` : ''}</td>
               <td style="padding:3px 6px">${inp(idx, 'dims', r.dims, '74px', true)}</td>
               <td style="padding:3px 6px">${r.unit === 'SF' ? inp(idx, 'height', r.height, '58px', true) : ''}</td>
               <td style="padding:3px 6px;font-family:var(--mono);font-size:10px;color:var(--text3)">${esc(r.unit)}</td>
@@ -16191,7 +16921,7 @@ function aiCmdExamples() {
   if (isSubAccount()) {
     return [
       { ic: '✎', label: 'Ask for an estimate', fill: `Generate an estimate for ${pn} — read the plans and use my prices` },
-      { ic: '▦', label: 'Ask for a take-off', fill: `Take off quantities from the plans of ${pn}` },
+      { ic: '▦', label: 'Take-off with costs', fill: `Take off quantities from the plans of ${pn}` },
       { ic: '✉', label: 'Ask to send a follow-up', fill: `Send a follow-up for ${pn}` },
       { ic: '▤', label: 'Ask for a schedule (Gantt)', fill: `Create a construction schedule for ${pn} — keep in mind demolition goes first` },
       { ic: '✦', label: 'Ask for design advice', fill: `What size system would you design for ${pn}?` },
@@ -16225,7 +16955,7 @@ function aiCmdIntent(msg) {
   if (has('follow', 'seguimiento', 'correo', 'email', 'mail', 'chase')) return 'followup';
   if (has('schedule', 'gantt', 'cronograma', 'calendario')) return 'schedule';
   if (has('status', 'estado', 'resumen', 'summary', 'avance', 'progress', 'como va', 'cómo va', 'how many', 'cuantas', 'cuántas', 'cuantos', 'cuántos')) return 'status';
-  if (has('estimate', 'estimado', 'presupuesto', 'cotiza', 'quote', 'design-build', 'design/build', 'precio')) return 'estimate';
+  if (has('estimate', 'estimado', 'presupuesto', 'cotiza', 'quote', 'design-build', 'design/build', 'precio', 'bid', 'licita', 'propuesta', 'proposal')) return 'estimate';
   // Agent mode is checked LAST on purpose: "create a construction schedule" and
   // "create a budget estimate" must reach their own tools first. What lands
   // here is a creation/setup request that no dedicated tool owns.
@@ -16590,6 +17320,7 @@ async function asstPlanRun() {
         // allProjects() memoizes until the next render — without this, every
         // following action in this same plan would fail to find the project.
         _invalidateProjectSubCache();
+        if (typeof hvacSeedGroups === 'function') hvacSeedGroups(id);
         addActivity('project_added', '', a.name, '', null, null, 'Created by the AI assistant');
         refs[a.ref] = id; ST.selProj = id;
         done.push(`Created “${a.name}”`);
@@ -16603,7 +17334,10 @@ async function asstPlanRun() {
         done.push(`Added group ${a.code}`);
       } else if (a.op === 'add_item') {
         const est = builderEnsure(rp(a.pid));
-        let g = est.groups.find(x => (x.code || '') === a.groupCode) || est.groups[est.groups.length - 1];
+        let g = est.groups.find(x => (x.code || '') === a.groupCode) || null;
+        // HVAC: a line with no valid group goes to its division, not "the last group".
+        if (!g && typeof isHvacSub === 'function' && isHvacSub()) g = hvacGroupFor(rp(a.pid), hvacCatForLine(a.code, a.title));
+        if (!g) g = est.groups[est.groups.length - 1];
         if (!g) { g = { id: 'g_' + Date.now(), code: a.groupCode || 'GEN', title: '', items: [] }; est.groups.push(g); }
         const mk = (typeof getSettings === 'function' && getSettings().defaultMarkup) ? getSettings().defaultMarkup : {};
         g.items.push({
@@ -16639,10 +17373,13 @@ async function asstPlanRun() {
 async function aiCmdSend() {
   const inp = document.getElementById('ai-cmd-input');
   const msg = (inp && inp.value || '').trim();
-  if (!msg || ST.assistantBusy) return;
+  if (!msg || asstBusyLabel()) return;
   if (inp) inp.value = '';
   assistantPush('user', msg);
-  const intent = aiCmdIntent(msg);
+  let intent = aiCmdIntent(msg);
+  // "How many diffusers are on level 2?" is a question about the DRAWINGS, not
+  // a status report — the 0-token status card would answer the wrong thing.
+  if (intent === 'status' && !/status|estado|avance|progress|c[oó]mo va/i.test(msg) && asstWantsPlans(msg)) intent = 'chat';
 
   // A selected project overrides everything: no guessing from the wording, no
   // "which project?" round-trip, and no way to land on a neighbouring job
@@ -16672,6 +17409,13 @@ function aiCmdPickProject(pid) {
   ST.assistantPending = null;
   const p = allProjects().find(x => x.id === pid); if (!p) return;
   assistantPush('user', p.name);
+  if (pend.intent === 'attach') {
+    // Files attached in general mode: lock to the chosen project, then save.
+    const files = _ASST_PENDING_FILES || []; _ASST_PENDING_FILES = null;
+    if (asstScopePid() !== pid) asstSetScope(pid);
+    if (files.length) asstAttachToProject(p, files, true);
+    return;
+  }
   aiCmdDispatch(pend.intent, p, pend.msg + ' — project: ' + p.name);
 }
 
@@ -16699,7 +17443,14 @@ async function aiCmdDispatch(intent, p, msg) {
     const hasPlans = (e.plans || []).some(pl => hasPlanBinary(pl));
     const words = msg.replace(/[^a-z0-9áéíóúñ ]/gi, ' ').split(/\s+/).filter(Boolean).length;
     if (!hasPlans && words < 8) {
-      assistantPush('assistant', `I don't have plans for “${p.name}” yet, and the request doesn't describe the job. Two ways forward:\n• Upload the plans (Estimator → Plan Sets or Take-off) and ask me again — I'll read them.\n• Or describe the work right here (systems, sizes, rooms, materials…) and I'll generate the estimate anyway from your catalog, with notes on everything I assumed.`);
+      assistantPush('assistant', `I don't have plans for “${p.name}” yet, and the request doesn't describe the job. Two ways forward:\n• Attach the plans with 📎 below and ask me again — I'll read them.\n• Or describe the work right here (systems, sizes, rooms, materials…) and I'll generate the estimate anyway from your catalog, with notes on everything I assumed.`);
+      return;
+    }
+    // HVAC shop + drawings on file → the full bid skill: reads every sheet in
+    // detail tiles, applies the shop's bid method, returns the bid for review.
+    if (hasPlans && typeof isHvacSub === 'function' && isHvacSub()) {
+      assistantPush('assistant', `✦ Building the bid for “${p.name}” from the drawings — responsibility schedules first, then equipment, air devices, plan & keynotes, details and specs — in your six divisions${bidProfileGet() ? ', following the bid method learned from your past proposal' : ''}. A full mechanical set takes a few minutes. You review everything before it touches the Builder.`);
+      await hvacBidGenerate(pid, msg);
       return;
     }
     if (isSubAccount()) {
@@ -16740,7 +17491,7 @@ async function aiCmdDispatch(intent, p, msg) {
 
   if (intent === 'details') {
     const e = getEstProj(pid);
-    if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { assistantPush('assistant', `No plans uploaded for “${p.name}” yet — attach the plan set and ask me again, and I'll read the project off it.`); return; }
+    if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { assistantPush('assistant', `No plans on “${p.name}” yet — attach the PDF with 📎 below and ask me again, and I'll read the project off it.`); return; }
     assistantPush('assistant', `✦ Reading the plan set for “${p.name}” — title block, cover and code table. You'll get the building described in plain language, the code requirements it triggers, and the project fields filled in for your review.`);
     detailsRead(pid);
     return;
@@ -16748,16 +17499,25 @@ async function aiCmdDispatch(intent, p, msg) {
 
   if (intent === 'takeoff') {
     const e = getEstProj(pid);
-    if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { assistantPush('assistant', `No plans uploaded for “${p.name}” yet — add the plan set (Estimator → Plan Sets) and ask me again.`); return; }
-    assistantPush('assistant', `✦ Opening the take-off tool for “${p.name}” — pick what to quantify (interior walls, tile & countertops, plumbing fixtures, or describe it). You get an editable sheet with totals by material and level → Excel or straight into the Builder.`);
-    takeoffOpen(pid);
+    if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { assistantPush('assistant', `No plans on “${p.name}” yet — attach the PDF with 📎 below and ask me again.`); return; }
+    // The take-off runs right here in the conversation when it's clear what to
+    // measure; the answer comes back priced from the shop's book, with buttons
+    // to open the sheet or send it to the Builder.
+    const type = takeoffTypeFromMsg(msg);
+    if (!type) {
+      assistantPush('assistant', `✦ What should I quantify on “${p.name}”? Say it like “take-off of the walls”, “tile and countertops”, “plumbing fixtures” — or describe anything else. Opening the picker too.`);
+      takeoffOpen(pid);
+      return;
+    }
+    assistantPush('assistant', `✦ Running the ${TAKEOFF_PRESETS[type].label.toLowerCase()} take-off on “${p.name}” — reading every sheet, then pricing what matches your price book. This can take a minute or two on a large set.`);
+    await takeoffGenerate(pid, { type, extra: msg, chat: true });
     return;
   }
 
   if (intent === 'breakdown') {
     if (isSubAccount()) { assistantPush('assistant', `Plan breakdown → RFPs is a GC tool. As a sub, ask me for an estimate instead — I'll read the plans and price from your catalog.`); return; }
     const e = getEstProj(pid);
-    if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { assistantPush('assistant', `No plans uploaded for “${p.name}” yet — add the plan set (Estimator → Plan Sets) and ask me again.`); return; }
+    if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { assistantPush('assistant', `No plans on “${p.name}” yet — attach the PDF with 📎 below and ask me again.`); return; }
     assistantPush('assistant', `✦ Reading the plans of “${p.name}” and breaking the scope into your bid categories — then you can RFP the subs per category, with my item list per trade.`);
     await gcPlanBreakdown(pid);
     return;
@@ -16766,32 +17526,179 @@ async function aiCmdDispatch(intent, p, msg) {
   // Anything else → a normal AI question with this project's context, carrying
   // the thread so far so follow-ups like "and the second floor?" make sense.
   if (!trialGuardAI()) return;
-  ST.assistantBusy = true; render();
+  ST.assistantBusy = true; ST.asstBusyLabel = ''; render();
   try {
-    const reply = await aiCompleteText(pid, msg, null, { history: asstHistory(true) });
-    assistantPush('assistant', reply || '(no answer)');
+    // A question about the drawings is answered FROM the drawings: the pages go
+    // along as images and the answer cites the sheet. Only when the question is
+    // about them (or a file was just attached) — pages cost tokens, and "what's
+    // our usual markup?" doesn't need a mechanical set in front of it.
+    let planImages = null;
+    const e = getEstProj(pid);
+    const hot = ST.asstPlansHot === pid;
+    ST.asstPlansHot = null;   // "just attached" covers the NEXT question only
+    if ((e.plans || []).some(pl => hasPlanBinary(pl)) && (hot || asstWantsPlans(msg))) {
+      ST.asstBusyLabel = 'Reading the drawings…'; render();
+      try {
+        const r = await renderAllProjectPlans(pid);
+        planImages = (r.images || []).slice(0, ASST_QA_MAX_PAGES);
+      } catch (err) { console.warn('assistant: plan render failed', err); }
+      ST.asstBusyLabel = ''; render();
+    }
+    const reply = await aiCompleteText(pid, msg, planImages, { history: asstHistory(true) });
+    assistantPush('assistant', (reply || '(no answer)') + (planImages && planImages.length ? `\n\n▦ Read ${planImages.length} page${planImages.length === 1 ? '' : 's'} of the plans.` : ''));
   } catch (err) {
     assistantPush('assistant', '△ ' + (err.message || err));
   } finally {
-    ST.assistantBusy = false; render();
+    ST.assistantBusy = false; ST.asstBusyLabel = ''; render();
   }
 }
+
+// How many plan pages ride along on a free question. The front of a set holds
+// the schedules and notes most questions are about; the whole take-off pass
+// (which reads everything) is the tool for exhaustive answers.
+const ASST_QA_MAX_PAGES = 16;
+function asstWantsPlans(msg) {
+  return /plan|pdf|sheet|drawing|plano|hoja|l[aá]mina|dibujo|archivo|file|document|schedule|duct|diffuser|grille|register|\brtu\b|\bahu\b|equipment|equipo|cfm|\bton|level|nivel|floor|piso|roof|techo|detail|detalle|note|nota|spec|m-\d|a-\d|ducto|rejilla|difusor|tama[ñn]o|size|how many|cu[aá]nt[oa]s|where|d[oó]nde/i.test(String(msg || ''));
+}
+// Which take-off a chat request is asking for. HVAC shops get the mechanical
+// take-off unless they clearly asked for something else.
+function takeoffTypeFromMsg(msg) {
+  const m = String(msg || '').toLowerCase();
+  if (/wall|pared|muro|ceiling|cielo|drywall|plaster|yeso|stucco/.test(m)) return 'walls';
+  if (/tile|azulejo|baldosa|counter|encimera|meson|mes[oó]n|floor finish|piso/.test(m)) return 'tiles';
+  if (/plumb|fixture|plomer|sanitari/.test(m)) return 'plumbing';
+  if (/hvac|duct|ducto|mechanical|mec[aá]nic|diffuser|difusor|grille|rejilla|\brtu\b|\bahu\b|equipment|equipo|refrigerant/.test(m)) return 'hvac';
+  if (typeof isHvacSub === 'function' && isHvacSub()) return 'hvac';
+  // Something specific was described → custom; a bare "take-off" → ask.
+  const words = m.replace(/take[\s-]?off|metrado|cuantifica\w*|quantit\w*|quantify|\b(of|de|the|los|las|el|la|for|para|with|con|and|y|run|haz|hazme|do|make|a|an|un|una)\b|plans?|planos?|project|proyecto|costs?|costos?|prices?|precios?/g, ' ').split(/\s+/).filter(w => w.length > 2);
+  return words.length >= 2 ? 'custom' : null;
+}
+
+// ── Attach files in the chat ─────────────────────────────────────────────────
+// The paperclip is the Estimator's "Plan Sets" upload, moved to where the work
+// is asked for. A file always lands in a PROJECT's plan set (same storage, same
+// limits as before) — the chat never holds a file of its own, so everything the
+// other tools read (details, take-off, estimate) sees it immediately.
+let _ASST_PENDING_FILES = null;
+function asstAttachPick() { const el = document.getElementById('ai-cmd-file'); if (el) el.click(); }
+async function asstAttachFiles(input) {
+  const files = Array.from((input && input.files) || []);
+  if (input) input.value = '';
+  if (!files.length || asstBusyLabel()) return;
+  const p = asstScopeProject();
+  if (p) { await asstAttachToProject(p, files); return; }
+  const projs = allProjects();
+  if (!projs.length) {
+    assistantPush('assistant', 'A file has to belong to a project. Create one first — e.g. “Create a project called Oak Street” — then attach it again.');
+    return;
+  }
+  // General mode: ask where it goes, then carry on with the same files.
+  _ASST_PENDING_FILES = files;
+  ST.assistantPending = { intent: 'attach', msg: '' };
+  assistantPush('user', '📎 ' + files.map(f => f.name).join(', '));
+  assistantPush('assistant', 'Which project do these plans belong to?\n' + projs.slice(0, 12).map(x => `[[${x.id}|${x.name}]]`).join(' '));
+}
+async function asstAttachToProject(p, files, alreadyShown) {
+  if (!alreadyShown) assistantPush('user', '📎 ' + files.map(f => f.name).join(', '));
+  ST.asstUploading = files.length; render();
+  const saved = [], failed = [], warns = [];
+  try {
+    for (const f of files) {
+      const r = await estAddPlanFile(p.id, f, planGuessDiscipline(f.name));
+      if (r.ok) { saved.push(r.meta); if (r.warn) warns.push(r.warn); } else failed.push(r.err);
+    }
+  } finally {
+    ST.asstUploading = 0;
+  }
+  if (saved.length) ST.asstPlansHot = p.id;   // the next question reads them
+  const disc = (id) => (EST_DISCIPLINES.find(d => d.id === id) || {}).label || id;
+  const L = [];
+  if (saved.length) {
+    L.push(`✓ Saved to “${p.name}” → project plans:`);
+    saved.forEach(m => L.push(`• ${m.name} (${disc(m.discipline)})`));
+    L.push('', 'What should I do with it? Or just ask me anything about the drawings.');
+    L.push(isHvacSub()
+      ? `{{act:estimate:${p.id}|✎ Full bid from the drawings}} {{act:details:${p.id}|▦ Read the plans — summary & codes}} {{act:takeoff:${p.id}|⊟ Take-off only}}`
+      : `{{act:details:${p.id}|▦ Read the plans — summary & codes}} {{act:takeoff:${p.id}|⊟ Take-off with costs}} {{act:estimate:${p.id}|✎ Estimate from my price book}}`);
+  }
+  if (warns.length) L.push('', ...warns.map(w => '△ ' + w));
+  if (failed.length) L.push('', ...failed.map(w => '△ ' + w));
+  assistantPush('assistant', L.join('\n'));
+}
+
+// Buttons inside assistant messages ({{act:kind:arg|label}}). They only ever
+// open or run something the user can already reach by hand, and every one of
+// them lands in a review step — nothing is sent or overwritten by a click here.
+async function asstAct(kind, arg) {
+  if (asstBusyLabel()) return;
+  const [pid, tid] = String(arg || '').split('~');
+  const p = allProjects().find(x => x.id === pid);
+  if (!p) { showToast('That project no longer exists.', 'warn'); return; }
+  if (kind === 'tosheet') { if (takeoffFind(pid, tid)) { ST.toSheet = { pid, tid }; render(); } else showToast('That take-off was deleted.', 'warn'); return; }
+  if (kind === 'topush')  { if (takeoffFind(pid, tid)) takeoffPushToBuilder(pid, tid); else showToast('That take-off was deleted.', 'warn'); return; }
+  if (kind === 'tocsv')   { if (takeoffFind(pid, tid)) takeoffCSV(pid, tid); else showToast('That take-off was deleted.', 'warn'); return; }
+  if (kind === 'bidopen') {
+    if ((ST.overrides[pid] || {})._bidDraft) { ST.bidDraftOpen = pid; render(); }
+    else showToast('That bid draft was already applied or discarded.', 'warn');
+    return;
+  }
+  const label = { details: 'Read the plans', takeoff: 'Take-off with costs', estimate: (typeof isHvacSub === 'function' && isHvacSub()) ? 'Full bid from the drawings' : 'Estimate from my price book' }[kind];
+  if (!label) return;
+  // A click on a project's button means that project — lock to it, exactly as
+  // if it had been picked in "Working on".
+  if (asstScopePid() !== pid) asstSetScope(pid);
+  assistantPush('user', label);
+  await aiCmdDispatch(kind, p, label);
+}
+
+// What the assistant is busy with, in words — "Loading…" plus the task, so a
+// two-minute take-off doesn't look like a frozen screen.
+let _ASST_BUSY_T0 = 0;
+function asstBusyLabel() {
+  if (ST.asstUploading) return `Uploading ${ST.asstUploading > 1 ? ST.asstUploading + ' files' : 'the file'} to the project…`;
+  if (ST.bidLoading) return ST.bidStage || 'Building the bid from the drawings…';
+  if (ST.bidLearnLoading) return 'Learning your bid method from the PDF…';
+  if (ST.detailsLoading) return 'Reading the plans — summary, project fields and code requirements…';
+  if (ST.toAILoading) return 'Running the take-off — reading every sheet, then pricing from your book…';
+  if (ST.dbeLoading) return 'Building the estimate from your price book…';
+  if (ST.estimatorDraftLoading) return 'Drafting the estimate…';
+  if (ST.schedAILoading) return 'Drafting the schedule…';
+  if (ST.gcBreakdownLoading) return 'Breaking the plans down by trade…';
+  if (ST.fuComposeLoading) return 'Writing the follow-up…';
+  if (ST.awardLoading) return 'Writing the letters…';
+  if (ST.coDraftLoading) return 'Drafting the change order…';
+  if (ST.assistantBusy) return ST.asstBusyLabel || 'Thinking…';
+  return '';
+}
+setInterval(() => {
+  const el = document.getElementById('asst-elapsed');
+  if (el && _ASST_BUSY_T0) el.textContent = Math.max(0, Math.round((Date.now() - _ASST_BUSY_T0) / 1000)) + 's';
+}, 1000);
 
 function buildAssistantTab() {
   const log = ST.assistantLog || [];
   const examples = aiCmdExamples();
-  const busy = !!ST.assistantBusy;
+  // Busy = ANY AI task, not just a chat reply: a take-off or a plan read kicked
+  // off from here used to run with no sign of life in the conversation.
+  const busyLabel = asstBusyLabel();
+  const busy = !!busyLabel;
+  if (busy && !_ASST_BUSY_T0) _ASST_BUSY_T0 = Date.now();
+  if (!busy) _ASST_BUSY_T0 = 0;
   const scopeP = asstScopeProject();
-  // Assistant text: escape, then turn [[pid|name]] tokens into project chips.
+  // Read-only peek — getEstProj() would create a state entry just to render.
+  const scopePlans = scopeP ? (((ST.estimator && ST.estimator[scopeP.id] && ST.estimator[scopeP.id].plans) || []).filter(pl => hasPlanBinary(pl))) : [];
+  // Assistant text: escape, then turn [[pid|name]] tokens into project chips
+  // and {{act:kind:arg|label}} tokens into action buttons.
   const fmtA = (t) => esc(t)
     .replace(/\[\[([a-zA-Z0-9_.-]+)\|([^\]]+)\]\]/g, `<button onclick="aiCmdPickProject('$1')" style="display:inline-block;margin:2px 4px 2px 0;background:var(--bg1);border:1px solid var(--amber-border);color:var(--amber);border-radius:var(--r2);padding:4px 10px;font-family:var(--mono);font-size:11px;cursor:pointer">$2</button>`)
+    .replace(/\{\{act:([a-z]+):([a-zA-Z0-9_.~-]+)\|([^}]+)\}\}/g, `<button onclick="asstAct('$1','$2')" ${busy ? 'disabled' : ''} style="display:inline-block;margin:4px 4px 2px 0;background:var(--bg);border:1px solid var(--amber);color:var(--amber);border-radius:var(--r2);padding:5px 11px;font-family:var(--mono);font-size:11px;cursor:pointer">$3</button>`)
     .replace(/\n/g, '<br>');
 
   return `<div class="overview-panel" style="max-width:840px;margin:0 auto">
     <div style="padding-bottom:14px;border-bottom:1px solid var(--rule);margin-bottom:16px">
       <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">[ AI ASSISTANT ]</div>
       <h1 style="font-size:26px;font-weight:600;letter-spacing:-0.02em;color:var(--ink-900);margin:0">Ask the platform to do it.</h1>
-      <div style="font-family:var(--sans);font-size:13px;color:var(--text2);margin-top:6px;line-height:1.5">Estimates, schedules, follow-ups, RFPs, award letters — name the project and what you need. Everything opens for your review before it lands anywhere or sends to anyone.</div>
+      <div style="font-family:var(--sans);font-size:13px;color:var(--text2);margin-top:6px;line-height:1.5">Attach plans with 📎, then ask — read the plans, take-off with costs from your price book, estimates, schedules, follow-ups. Everything opens for your review before it lands anywhere or sends to anyone.</div>
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:16px">
@@ -16807,7 +17714,7 @@ function buildAssistantTab() {
         ? `<div style="align-self:flex-end;max-width:86%;background:var(--bg3);border:1px solid var(--border);border-radius:10px 2px 10px 10px;padding:8px 12px;font-size:12.5px;color:var(--text)">${esc(m.text)}</div>`
         : `<div style="align-self:flex-start;max-width:92%;background:var(--bg1);border:1px solid var(--border);border-radius:2px 10px 10px 10px;padding:9px 13px;font-size:12.5px;color:var(--text);line-height:1.55">${fmtA(m.text)}</div>`
       ).join('') : `<div style="margin:auto;text-align:center;font-family:var(--mono);font-size:11px;color:var(--text3);line-height:1.8">Tap an example above, or just type —<br>“Create a schedule for [project], demolition first” · “Generate an estimate for [project]” · “Send the follow-up for [project]”</div>`}
-      ${busy ? `<div style="align-self:flex-start;font-family:var(--mono);font-size:11px;color:var(--text3)"><span class="rp-spinner"></span> thinking…</div>` : ''}
+      ${busy ? `<div style="align-self:flex-start;max-width:92%;background:var(--bg1);border:1px solid var(--amber-border);border-radius:2px 10px 10px 10px;padding:9px 13px;font-family:var(--mono);font-size:11.5px;color:var(--ink-900);line-height:1.5"><span class="rp-spinner"></span> <b style="color:var(--amber)">Loading…</b> ${esc(busyLabel)} <span id="asst-elapsed" style="color:var(--text3)"></span></div>` : ''}
     </div>
 
     <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap">
@@ -16822,7 +17729,13 @@ function buildAssistantTab() {
         : `<span style="font-family:var(--mono);font-size:9.5px;color:var(--text3)">ask across all projects · pick one to make changes</span>`}
     </div>
 
+    ${scopeP ? `<div style="font-family:var(--mono);font-size:9.5px;color:var(--text3);margin-top:6px;line-height:1.5">▦ ${scopePlans.length
+      ? `${scopePlans.length} plan file${scopePlans.length === 1 ? '' : 's'} on this project: ${scopePlans.slice(0, 4).map(pl => esc(pl.name)).join(' · ')}${scopePlans.length > 4 ? ' …' : ''} — ask about them, or ask for a take-off`
+      : 'No plans on this project yet — attach the PDF with 📎'}</div>` : ''}
+
     <div style="display:flex;gap:8px;margin-top:8px">
+      <input id="ai-cmd-file" type="file" accept="application/pdf,.pdf" multiple onchange="asstAttachFiles(this)" style="display:none">
+      <button class="btn btn-ghost" ${busy ? 'disabled' : ''} onclick="asstAttachPick()" title="Attach plan PDFs — they're saved to the selected project's plans">📎</button>
       <input id="ai-cmd-input" type="text" placeholder="${scopeP ? esc('Ask or tell me what to do on ' + scopeP.name + '…') : 'Ask across the workspace, or name a project…'}" ${busy ? 'disabled' : ''}
         onkeydown="if(event.key==='Enter')aiCmdSend()"
         style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--r2);padding:11px 14px;font-family:var(--sans);font-size:13px;color:var(--text);outline:none" onfocus="this.style.borderColor='var(--amber)'" onblur="this.style.borderColor='var(--border)'">
@@ -18856,7 +19769,10 @@ const SUB_TRADE_PACKS = {
   fire_sprinklers: { label: 'Fire Sprinklers', categories: ['DESIGN & SUBMITTALS','UNDERGROUND SUPPLY','OVERHEAD PIPING','BRANCH LINES','SPRINKLER HEADS','FIRE PUMP','BACKFLOW PREVENTER','INSPECTOR TEST & DRAIN','HANGERS & SEISMIC BRACING','INSPECTION & SIGN-OFF'], calculators: ['fire_sprinklers'] },
   concrete: { label: 'Concrete', categories: ['FOOTINGS','FOUNDATION WALLS','SLAB ON GRADE','ELEVATED SLABS','COLUMNS & BEAMS','REINFORCING STEEL','FORMWORK','PUMP & PLACE','FINISHING','CURING & SEALING'], calculators: ['concrete'] },
   drywall: { label: 'Drywall & Framing', categories: ['METAL FRAMING','INSULATION','BOARD HANGING','TAPE & MUD','LEVEL-5 FINISH','CEILINGS','SOFFITS & BULKHEADS','ACCESS PANELS','PATCH & REPAIR'], calculators: ['gypsum'] },
-  hvac: { label: 'HVAC', categories: ['LOAD CALCS & PERMITS','AIR HANDLERS','CONDENSERS / HEAT PUMPS','REFRIGERANT LINE SETS','DUCTWORK','LINEAR DIFFUSER BOXES','SUPPLY & RETURN GRILLES','CUSTOM PLENUMS','CONDENSATE DRAINS','CONTROLS & THERMOSTATS','EXHAUST & VENTILATION','CRANE / RIGGING','INSTALLATION LABOR','TEST, BALANCE & START-UP'], calculators: ['hvac'] },
+  // The six divisions a commercial HVAC bid is priced and presented under — the
+  // SAME list as HVAC_CATEGORIES below (kept literal here: that const is declared
+  // later in the file). The project tab shows these; the Builder holds the lines.
+  hvac: { label: 'HVAC', categories: ['GENERAL REQUIREMENTS','MECHANICAL DEMOLITION','DUCTWORK','INSULATION & PIPING','EQUIPMENT & CONTROLS','AIR DISTRIBUTION & STARTUP'], calculators: ['hvac'] },
   plumbing: { label: 'Plumbing', categories: ['UNDERGROUND ROUGH','WATER SUPPLY ROUGH','DWV ROUGH','GAS PIPING','FIXTURE SET','WATER HEATER','TRIM & FINISH','BACKFLOW & TEST','INSPECTION'], calculators: ['plumbing'] },
   electrical: { label: 'Electrical', categories: ['TEMP POWER','SERVICE & PANELS','BRANCH ROUGH-IN','LOW VOLTAGE / DATA','DEVICES & TRIM','FIXTURES','PANEL SCHEDULE & LABELING','TEST & SIGN-OFF'], calculators: ['electrical'] },
   roofing: { label: 'Roofing', categories: ['TEAR-OFF','DECK PREP','UNDERLAYMENT','FLASHING & EDGE METAL','FIELD MEMBRANE','PENETRATIONS & CURBS','GUTTERS & DOWNSPOUTS','WARRANTY INSPECTION'], calculators: ['roofing'] },
@@ -18990,6 +19906,139 @@ function proposalLoadDefaults() {
     return k + l.slice(i);
   }).join('\n'));
   showToast('Commercial defaults loaded — edit them to match your voice.', 'success');
+}
+
+// ── HVAC categories — ONE vocabulary for the price book, the project and the Builder ──
+// A commercial HVAC bid is priced and presented in six divisions (the layout of
+// the shop's own submitted proposals). Every price-book item belongs to one of
+// them; the project tab shows only these six totals; the Builder holds one cost-
+// code group per division with the line-by-line breakdown underneath; and the
+// printed proposal prints the same six headings. Change an item's category in
+// the price book and every future insert, take-off and AI estimate follows it.
+const HVAC_CATEGORIES = [
+  { cat: 'GENERAL REQUIREMENTS',       code: '01 00.00', title: 'General Requirements' },
+  { cat: 'MECHANICAL DEMOLITION',      code: '23 05.05', title: 'Mechanical Demolition' },
+  { cat: 'DUCTWORK',                   code: '23 31.00', title: 'Ductwork, Fittings, Dampers & Supports' },
+  { cat: 'INSULATION & PIPING',        code: '23 07.13', title: 'Mechanical Insulation & Piping' },
+  { cat: 'EQUIPMENT & CONTROLS',       code: '23 81.00', title: 'HVAC Equipment & Controls' },
+  { cat: 'AIR DISTRIBUTION & STARTUP', code: '23 37.00', title: 'Air Distribution, Startup & Closeout' },
+];
+// Built-in items, placed explicitly. Anything else (items the shop adds, or a
+// renamed code) falls through to hvacGuessCat() until the user picks one.
+const HVAC_CAT_BY_CODE = (() => {
+  const m = {};
+  const put = (cat, codes) => codes.forEach(c => { m[c] = cat; });
+  put('GENERAL REQUIREMENTS', ['hv-mobilization','hv-submittals','hv-supervision','hv-bonds','hv-closeout','hv-permit','hv-labor']);
+  put('MECHANICAL DEMOLITION', ['hv-demo-duct','hv-demo-cond','hv-demo-haul']);
+  put('DUCTWORK', ['hv-rect-12x10','hv-rect-14x10','hv-rect-14x12','hv-rect-16x10','hv-rect-16x12','hv-rect-16x14','hv-rect-20x10','hv-rect-20x12','hv-rect-20x14',
+    'hv-rnd-06','hv-rnd-08','hv-rnd-10','hv-rnd-12','hv-rnd-16','hv-flex-08','hv-flex-10','hv-flex-12','hv-flex-16',
+    'hv-hanger-rect','hv-hanger-rnd','hv-elbow-90','hv-reducer','hv-transition','hv-tap-rect','hv-tap-rnd','hv-mvd','hv-endcap','hv-adapter','hv-duct','hv-plenum']);
+  put('INSULATION & PIPING', ['hv-ductwrap-15','hv-ref-liq-38','hv-ref-suc-58','hv-cond-34','hv-lineset','hv-condensate']);
+  put('EQUIPMENT & CONTROLS', ['hv-ahu-35','hv-ahu-4','hv-cond-35','hv-minisplit','hv-ahu-comm','hv-hp-out-4t','hv-hp-out-3t','hv-rtu-3t','hv-rtu-2t','hv-ef-comm','hv-roofcurb',
+    'hv-tstat','hv-tstat-wire','hv-tstat-comm','hv-lowvolt','hv-crane']);
+  put('AIR DISTRIBUTION & STARTUP', ['hv-linbox-4','hv-linbox-2','hv-supply-reg','hv-return','hv-diff-24','hv-lin-diff','hv-return-24','hv-exh-grille','hv-startup','hv-balance-coord','hv-tab']);
+  return m;
+})();
+// Order matters: "duct insulation" is insulation, "condensing unit removal" is
+// demolition, "condensate" is piping before "condens…" can read as equipment.
+function hvacGuessCat(row) {
+  const s = [row && row.name, row && row.sub, row && row.code].filter(Boolean).join(' ').toLowerCase();
+  if (/demo|remov|haul|disposal/.test(s)) return 'MECHANICAL DEMOLITION';
+  if (/insul|wrap|refrig|line ?set|liquid|suction|condensate|pipe|piping/.test(s)) return 'INSULATION & PIPING';
+  if (/diffuser|grille|register|linear|louver|balanc|start-?up|commission|\btab\b/.test(s)) return 'AIR DISTRIBUTION & STARTUP';
+  // "14x12" / 10" RD — take-off rows name ductwork by its printed size alone.
+  if (/duct|elbow|reducer|transition|\btap\b|damper|hanger|plenum|end cap|adapter|flex|sheet metal|\b\d+\s*x\s*\d+\b|\d+"?\s*(rd|round)\b/.test(s)) return 'DUCTWORK';
+  if (/rtu|rooftop|air handler|\bahu\b|heat pump|condens|mini.?split|\bfan\b|curb|thermostat|tstat|control|wiring|vrf|furnace|crane|rigging|equipment/.test(s)) return 'EQUIPMENT & CONTROLS';
+  return 'GENERAL REQUIREMENTS';
+}
+function tradeCategoriesFor(typeId) { return typeId === 'hvac' ? HVAC_CATEGORIES : null; }
+function pricingRowCat(typeId, row) {
+  const cats = tradeCategoriesFor(typeId);
+  if (!cats) return '';
+  const c = String((row && row.cat) || '').toUpperCase();
+  if (cats.some(x => x.cat === c)) return c;
+  return HVAC_CAT_BY_CODE[row && row.code] || hvacGuessCat(row);
+}
+function isHvacSub() { return isSubAccount() && wsSubTrade() === 'hvac'; }
+function hvacCatDef(cat) { return HVAC_CATEGORIES.find(x => x.cat === cat) || null; }
+// Which division a Builder line belongs to — by its price-book code first, then
+// by what it says it is.
+function hvacCatForLine(code, title) {
+  const row = code ? getPricingForType('hvac').find(r => r && r.code === code) : null;
+  return row ? pricingRowCat('hvac', row) : hvacGuessCat({ name: title || '', code: code || '' });
+}
+// The Builder group for a division — found by its cost code, created in its
+// canonical position if missing. Never reorders or renames a group the user has.
+function hvacGroupFor(pid, cat) {
+  const est = builderEnsure(pid);
+  const def = hvacCatDef(cat) || HVAC_CATEGORIES[0];
+  let g = est.groups.find(x => (x.code || '') === def.code);
+  if (g) return g;
+  g = { id: 'g_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), code: def.code, title: def.title, items: [] };
+  const rank = (grp) => HVAC_CATEGORIES.findIndex(x => x.code === (grp.code || ''));
+  const me = HVAC_CATEGORIES.indexOf(def);
+  const at = est.groups.findIndex(x => rank(x) > me);
+  if (at < 0) est.groups.push(g); else est.groups.splice(at, 0, g);
+  return g;
+}
+// A new HVAC estimate starts already laid out the way the shop bids: all six
+// divisions in place, empty. Only on an estimate with NO groups — never on top
+// of work that exists.
+function hvacSeedGroups(pid) {
+  if (!isHvacSub() || !pid) return false;
+  const est = builderEnsure(pid);
+  if ((est.groups || []).length) return false;
+  HVAC_CATEGORIES.forEach(c => hvacGroupFor(pid, c.cat));
+  return true;
+}
+// File an AI- or take-off-produced line list into the six divisions. Used by
+// every path that writes MANY lines at once, so a generated estimate lands in
+// the same layout the shop's proposals use.
+function hvacFileLines(pid, lines) {
+  let n = 0;
+  for (const it of (lines || [])) {
+    if (!it) continue;
+    hvacGroupFor(pid, hvacCatForLine(it.code, [it.title, it.description].filter(Boolean).join(' '))).items.push(it);
+    n++;
+  }
+  return n;
+}
+
+// One-time set-up of an HVAC subcontractor workspace. Before this, choosing
+// "HVAC" only changed labels: the categories stayed residential, and printing
+// still produced the INTERNAL cost sheet until someone found "Table style" and
+// switched it to Proposal by hand. Versioned so a future change re-runs once.
+const HVAC_SETUP_VERSION = 1;
+function hvacSubDefaultsOnce() {
+  if (!isHvacSub()) return;
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  const s = ST.settings;
+  if ((Number(s.hvacSetupVer) || 0) >= HVAC_SETUP_VERSION) return;
+  s.hvacSetupVer = HVAC_SETUP_VERSION;
+  // 1. The project tab's categories → the six divisions (old ones that already
+  //    hold an amount are kept after them, nothing is erased).
+  try { wsApplyTradePack(ST.activeWorkspace); } catch (_e) {}
+  // 2. Print = the client-facing proposal, with the commercial clauses filled
+  //    in when the shop hasn't written its own yet.
+  if (!s.print || typeof s.print !== 'object') s.print = {};
+  s.print.layoutStyle = 'proposal';
+  const find = (n) => HVAC_SCOPE_PRESETS.find(p => p.name === n);
+  if (!String(s.print.clarifications || '').trim() && find('Bid basis & clarifications')) {
+    s.print.clarifications = find('Bid basis & clarifications').included;
+  }
+  if (!String(s.print.terms || '').trim() && find('Commercial terms')) {
+    s.print.terms = String(find('Commercial terms').included || '').split('\n').map(l => {
+      const i = l.indexOf(':');
+      if (i <= 0) return l;
+      return l.slice(0, i).toLowerCase().replace(/\b\w/g, c => c.toUpperCase()) + l.slice(i);
+    }).join('\n');
+  }
+  if (!String(s.print.notes || '').trim()) {
+    const base = find('Commercial HVAC — base scope');
+    // The proposal splits its Scope field on these two markers — see proposalSplitScope.
+    if (base) s.print.notes = 'INCLUDED:\n' + base.included + '\n\nEXCLUDED:\n' + base.excluded;
+  }
+  saveSt();
 }
 
 // Presets for the "Add cost code" picker: HVAC subs get HVAC codes, other subs
@@ -25010,7 +26059,7 @@ function getPricingEditorTypes() {
   return TAKEOFF_TYPES;
 }
 
-function addPricingItem(typeId) {
+function addPricingItem(typeId, cat) {
   // Building out the catalog is part of the paid personalized set-up — the trial
   // can edit existing prices but not add products (keeps the set-up valuable).
   if (isTrialPlan()) { ST.upsellModal = { reason: 'catalog' }; render(); return; }
@@ -25020,7 +26069,9 @@ function addPricingItem(typeId) {
   const used = new Set(list.map(r => r && r.code));
   let code, n = 0;
   do { code = typeId.slice(0, 4) + '-' + (Date.now() + n).toString(36).slice(-4); n++; } while (used.has(code) && n < 5000);
-  list.push({ code, name: 'New item', sub: '', unit: 'EA', perUnit: 0, matchTags: [] });
+  const row = { code, name: 'New item', sub: '', unit: 'EA', perUnit: 0, matchTags: [] };
+  if (cat) row.cat = String(cat);   // born in the division it was added from
+  list.push(row);
   ST.settingsPricingOpen = typeId;
   saveSt();
   render();
@@ -26291,6 +27342,7 @@ function confirmAddProj() {
   ST.selProj = id;
   addActivity('project_added', '', name, '', null, null, 'New project added');
   if (typeof _invalidateProjectSubCache === 'function') _invalidateProjectSubCache();
+  if (typeof hvacSeedGroups === 'function') hvacSeedGroups(id);
   saveSt();
   ST.addProjModal = false;
   render();
