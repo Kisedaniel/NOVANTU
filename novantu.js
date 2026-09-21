@@ -95,7 +95,7 @@
     enterprise: { sub:{m:350,y:4000}, gc:{m:400,y:4650} },
   };
   const PLAN_LABEL = { starter:'Standard', pro:'Pro', enterprise:'Enterprise' };
-  const CHECKOUT_URL = 'https://link.payoneer.com/Token?t=E0F7E37A9D134121AADA20D6647E0B4E&src=pl';
+  const CHECKOUT_URL = 'https://link.payoneer.com/Token?t=0BE4BE9CCC2B44E0BD14F59D80894F12&src=mobile';
   let pAcct='sub', pCycle='m', _coSel=null;
   const money = n => '$' + n.toLocaleString();
 
