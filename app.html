@@ -539,6 +539,79 @@ body.page-landscape { --page-w: 11in; --page-h: 8.5in; }
    styling bug but was really the content overflowing the sheet. */
 .print-page { min-height: var(--page-h); }
 
+/* THE PROPOSAL IS A DOCUMENT, NOT APP CHROME.
+   ------------------------------------------------------------------
+   It renders inside .app-shell, so two pieces of ordinary app styling were
+   reaching in and vandalising it — neither of them anything to do with print:
+
+   1. `.app-shell table thead th { background: var(--bone-100); color: var(--ink-500) }`
+      painted BEIGE over the proposal's own black header rows. The row carried
+      `background:#111;color:#fff` inline, but a `th` paints its own background
+      on top of its row, and nothing set the th's background inline — so the
+      app's skin won and every header bar came out beige with grey text.
+
+   2. The phone breakpoint turned every table into
+      `display:block; white-space:nowrap; overflow-x:auto`. A printed Letter
+      page is 816px wide, which is UNDER the 900px breakpoint, so the phone
+      layout fired on paper: tables stopped wrapping, grew past the sheet and
+      were clipped at the right edge, and the cover's info table collapsed to
+      shrink-to-fit in the left corner. On screen the window is wider than
+      900px, which is exactly why the preview looked right and the print did
+      not. Those breakpoints are now `@media screen`, and the reset below is
+      the belt to that braces.
+
+   table-layout:fixed is deliberate: it makes the explicit column widths in the
+   template authoritative and forces long prose (Details, Procurement Notes) to
+   WRAP inside its column instead of widening the table off the page.
+
+   HOW this wins, and why NOT with !important: `:not(#_)` contributes an id's
+   weight, so these selectors score (1,1,3) and beat `.app-shell table …` at
+   (0,1,3) whatever the source order — while still losing to the template's own
+   inline styles, which is exactly right. An earlier attempt used !important
+   here and silently flattened every coloured cell in the document to black: the
+   blue composition total, the accent Category column, the grey procurement
+   notes. An author !important outranks an inline declaration, so "reset the app
+   skin" quietly became "delete the design". Specificity says what was meant;
+   !important says more than was meant. */
+.print-page:not(#_) table {
+  display: table;
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  overflow: visible;
+  white-space: normal;
+}
+.print-page:not(#_) table tr,
+.print-page:not(#_) table th,
+.print-page:not(#_) table td {
+  white-space: normal;
+  overflow-wrap: break-word;
+  /* NEVER break-all: it chops ordinary words mid-syllable, which is the very
+     artifact being fixed ("material rel…", "changes in equ…"). */
+  word-break: normal;
+}
+/* Let each row's own colour show through its cells, and hand every other
+   decision back to the template's inline styles.
+   !important is load-bearing here, not laziness: `.app-shell table thead th`
+   has IDENTICAL specificity to `.print-page table thead th` (one class, three
+   elements), and it is declared ~2,700 lines further down the stylesheet — so
+   on source order alone the app skin wins and the header stays beige. Raising
+   specificity with `.app-shell .print-page …` would work too, but it would
+   silently stop working the day this document is rendered outside .app-shell
+   (a portal, a preview window, an export). This says what is meant: app chrome
+   does not style this document, wherever it is mounted. */
+.print-page:not(#_) table thead th {
+  background: transparent;   /* the row's own colour shows through the cell */
+  color: inherit;            /* … and so does the row's text colour */
+  font-family: inherit;
+  font-weight: 700;
+  border-top: 0;
+  border-bottom: 0;
+}
+.print-page:not(#_) table tbody td { color: inherit; border-bottom: 0; }
+.print-page:not(#_) table tbody tr:hover { background: transparent; }
+
 @media print {
   body { background: #fff !important; }
   .app-sidebar, .app-topbar, .no-print, .backdrop, .modal { display: none !important; }
@@ -578,11 +651,24 @@ body.page-landscape { --page-w: 11in; --page-h: 8.5in; }
     page-break-after: avoid;
   }
   .print-page, .print-page * { outline: none !important; }
-  /* A table wider than the text column is the one thing that silently pushes
-     content off the sheet — hold every one of them inside the page box. */
-  .print-page table { width: 100% !important; max-width: 100% !important; table-layout: auto; }
+  /* Width and layout are set once, in the document-isolation block above, and
+     NOT restated here: an earlier version repeated the rule with
+     `table-layout: auto`, which — being later in source order at equal
+     specificity — quietly undid the `fixed` layout that makes long prose wrap
+     inside its column instead of running off the sheet. */
   .print-page img, .print-page svg { max-width: 100% !important; height: auto !important; }
-  .cover-page { page-break-after: always; }
+  /* PAGINATION: each page STARTS a sheet, rather than each page ENDING one.
+     Stated as "break after" (which is what the cover and every page used to
+     do), a page whose content overran by a millimetre emitted a sheet holding
+     nothing but its spilled bottom padding — a BLANK page — and then forced a
+     break to the next. That is where the blank sheets between pages 3/5 and
+     5/7 came from. Stated as "break before", a page that fits takes exactly one
+     sheet, a page that genuinely cannot fit simply continues onto the next, and
+     nothing empty is ever produced. The first page needs no break before it,
+     and the last must not force one after it. */
+  .print-page + .print-page { break-before: page; page-break-before: always; }
+  .print-page:first-child { break-before: avoid; page-break-before: avoid; }
+  .print-page:last-child { break-after: auto; page-break-after: auto; }
   /* margin 0: the white page above owns its own margin, so the two can never
      be added together and squeeze the content twice. */
   @page { size: letter portrait; margin: 0; }
@@ -594,7 +680,7 @@ body.page-landscape { --page-w: 11in; --page-h: 8.5in; }
    it, so they are set together in one function and nowhere else. */
 
 /* MOBILE — sidebar drawer + stacked list/detail + responsive internals */
-@media (max-width: 900px) {
+@media screen and (max-width: 900px) {
   .app-shell { grid-template-columns: 1fr !important; grid-template-rows: 48px 1fr; }
   .app-sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 82vw; max-width: 300px; transform: translateX(-100%); transition: transform 180ms cubic-bezier(.2,0,0,1); z-index: 200; }
   .app-sidebar.open { transform: translateX(0); box-shadow: 4px 0 24px rgba(20,18,15,.18); }
@@ -722,7 +808,7 @@ body[data-theme="hc"] {
 
 .est-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:14px 18px}
 .est-grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px 18px}
-@media (max-width:900px){.est-grid-2,.est-grid-3{grid-template-columns:1fr}}
+@media screen and (max-width:900px){.est-grid-2,.est-grid-3{grid-template-columns:1fr}}
 
 .est-field label{display:block;font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);margin-bottom:5px}
 .est-field input, .est-field select, .est-field textarea{width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:8px 11px;font-family:var(--sans);font-size:13px;color:var(--text);outline:none;transition:border-color .12s}
@@ -2460,8 +2546,8 @@ body[data-theme="hc"] {
   font-size:12px;font-weight:600;color:var(--ink-900);text-align:right;
 }
 
-@media (max-width:1100px){.to-detail{display:none}}
-@media (max-width:800px){.to-sidebar{width:200px}}
+@media screen and (max-width:1100px){.to-detail{display:none}}
+@media screen and (max-width:800px){.to-sidebar{width:200px}}
 
 /* ──────── Read Plans AI ──────── */
 .rp-card{
@@ -2551,7 +2637,7 @@ body[data-theme="hc"] {
 }
 .to-ai-btn:not(.disabled):hover::before{transform:translateX(100%)}
 
-@media (max-width:900px){
+@media screen and (max-width:900px){
   .est-topbar{padding:0 10px;gap:4px}
   .est-projsel{max-width:140px;padding:0 6px}
   .est-projsel-kicker{display:none}
@@ -3845,7 +3931,7 @@ a:hover{opacity:.7}
 .today-marker-soon{background:var(--amber)}
 .today-marker-info{background:var(--linea-500);opacity:.8}
 
-@media (max-width: 920px){
+@media screen and (max-width: 920px){
   .nv-td-cells{grid-template-columns:repeat(2,1fr)}
   .nv-td-grid{grid-template-columns:1fr}
 }
@@ -8226,7 +8312,17 @@ function buildProposalPages(o) {
   // (11in less the 0.5in padding top and bottom); everything below is tuned to
   // land inside it with margin to spare, and it reads closer to the reference
   // proposal, which is dense on purpose.
-  const page = (inner, extra) => `<div class="print-page" style="background:#fff;color:#000;padding:44px 52px;margin:0 auto 26px;font-family:${fontStack};page-break-after:always;${extra || ''}">${runHead}${inner}${runFoot}</div>`;
+  // NOTE: no page-break-after here. It used to carry `page-break-after:always`,
+  // which asserts "this element is exactly one sheet". When a page's content ran
+  // even slightly past the printable band, the overflow spilled onto a second
+  // sheet carrying nothing but the bottom padding — a BLANK page — and the
+  // forced break then started a third. That is where the blank sheets between
+  // pages 3/5 and 5/7 came from. Pagination is now expressed as "each page
+  // STARTS a new sheet" (`.print-page + .print-page` in the print CSS), which
+  // is the same thing for pages that fit and degrades honestly for the ones
+  // that genuinely cannot — a long scope or a 40-row BOQ simply continues onto
+  // the next sheet instead of manufacturing an empty one.
+  const page = (inner, extra) => `<div class="print-page" style="background:#fff;color:#000;padding:44px 52px;margin:0 auto 26px;font-family:${fontStack};${extra || ''}">${runHead}${inner}${runFoot}</div>`;
   const h2 = (t) => `<div style="font-size:17px;font-weight:700;color:${accent};margin:0 0 8px;letter-spacing:-0.01em">${esc(t)}</div>`;
   const cell = (label, val) => `<td style="padding:7px 9px;border:1px solid #d9e6ef;vertical-align:top">
       <div style="font-family:var(--mono);font-size:7.5px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:3px">${esc(label)}</div>
@@ -8304,14 +8400,19 @@ function buildProposalPages(o) {
       ${bullets(clarifications)}` : ''}`);
 
   // ── PAGE 4 · Pricing, terms, signatures ────────────────────────────────────
+  // Measured: at the previous padding/size this page came to 10.47in of body
+  // against a 10.00in printable band, so it spilled a sheet carrying little
+  // more than the footer — the "blank page" between 3 and 5. Everything on this
+  // page is tightened to land inside the band with headroom for a job that has
+  // more divisions than this one.
   const money = (l, v, bold) => `<tr style="${bold ? `background:${accent};color:#fff;font-weight:700` : ''}">
-      <td style="padding:8px 12px;border-bottom:1px solid #e6eef4;font-size:11px">${esc(l)}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #e6eef4;text-align:right;font-family:var(--mono);font-size:11px">${fmt$(v)}</td></tr>`;
+      <td style="padding:6px 10px;border-bottom:1px solid #e6eef4;font-size:10.5px">${esc(l)}</td>
+      <td style="padding:6px 10px;border-bottom:1px solid #e6eef4;text-align:right;font-family:var(--mono);font-size:10.5px">${fmt$(v)}</td></tr>`;
   const pricing = page(`
     ${h2('4. Pricing and Base Bid Summary')}
-    <div style="font-size:10.5px;color:#444;line-height:1.6;margin-bottom:12px">All contractor costs are incorporated into the owner-facing values below. No separate contractor fee or percentage is presented.${n.taxRate ? ' Sales tax on furnished materials is included in the total base bid.' : ''}</div>
-    <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
-      <thead><tr style="background:#111;color:#fff"><th style="padding:8px 12px;text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase">Description</th><th style="padding:8px 12px;text-align:right;font-size:10px;letter-spacing:.06em;text-transform:uppercase;width:160px">Owner Price</th></tr></thead>
+    <div style="font-size:10px;color:#444;line-height:1.5;margin-bottom:9px">All contractor costs are incorporated into the owner-facing values below. No separate contractor fee or percentage is presented.${n.taxRate ? ' Sales tax on furnished materials is included in the total base bid.' : ''}</div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:11px">
+      <thead><tr style="background:#111;color:#fff"><th style="padding:6px 10px;text-align:left;font-size:9.5px;letter-spacing:.06em;text-transform:uppercase">Description</th><th style="padding:6px 10px;text-align:right;font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;width:160px">Owner Price</th></tr></thead>
       <tbody>
         ${liveGroups.map(g => money(`${g.code || ''}${g.code && g.title ? ' — ' : ''}${g.title || ''}`, builderGroupTotals(pid, g.id).client)).join('')}
         ${n.taxAmt > 0 ? money(`Applicable Sales Tax on Furnished Materials (${n.taxRate}%)`, n.taxAmt) : ''}
@@ -8319,35 +8420,35 @@ function buildProposalPages(o) {
       </tbody>
     </table>
 
-    <div style="font-size:13px;font-weight:700;color:${accent};margin-bottom:6px">Owner-Facing Cost Composition</div>
-    <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
+    <div style="font-size:12px;font-weight:700;color:${accent};margin-bottom:5px">Owner-Facing Cost Composition</div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:11px">
       <tbody>
         ${money('Labor, installation, supervision & project requirements', n.laborAmt)}
         ${money('Materials, equipment' + (n.taxAmt > 0 ? ' & applicable sales tax' : ''), n.otherAmt + n.taxAmt)}
-        <tr style="font-weight:700;background:#f7fbfd"><td style="padding:8px 12px;border-top:1px solid #d9e6ef;font-size:11px">TOTAL BASE BID</td><td style="padding:8px 12px;border-top:1px solid #d9e6ef;text-align:right;font-family:var(--mono);font-size:11px;color:${accent}">${fmt$(n.grand)}</td></tr>
+        <tr style="font-weight:700;background:#f7fbfd"><td style="padding:6px 10px;border-top:1px solid #d9e6ef;font-size:10.5px">TOTAL BASE BID</td><td style="padding:6px 10px;border-top:1px solid #d9e6ef;text-align:right;font-family:var(--mono);font-size:10.5px;color:${accent}">${fmt$(n.grand)}</td></tr>
       </tbody>
     </table>
 
     ${terms.length ? `
-      <div style="font-size:13px;font-weight:700;color:${accent};margin-bottom:6px">Commercial Terms</div>
-      <table style="width:100%;border-collapse:collapse;margin-bottom:18px">
-        <thead><tr style="background:#111;color:#fff"><th style="padding:7px 12px;text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;width:190px">Term</th><th style="padding:7px 12px;text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase">Details</th></tr></thead>
-        <tbody>${terms.map(t => `<tr><td style="padding:8px 12px;border-bottom:1px solid #e6eef4;font-size:10.5px;font-weight:700;color:#111">${esc(t.k)}</td><td style="padding:8px 12px;border-bottom:1px solid #e6eef4;font-size:10.5px;color:#222;line-height:1.55">${esc(t.v)}</td></tr>`).join('')}</tbody>
+      <div style="font-size:12px;font-weight:700;color:${accent};margin-bottom:5px">Commercial Terms</div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:11px">
+        <thead><tr style="background:#111;color:#fff"><th style="padding:6px 10px;text-align:left;font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;width:190px">Term</th><th style="padding:6px 10px;text-align:left;font-size:9.5px;letter-spacing:.06em;text-transform:uppercase">Details</th></tr></thead>
+        <tbody>${terms.map(t => `<tr><td style="padding:6px 10px;border-bottom:1px solid #e6eef4;font-size:10px;font-weight:700;color:#111">${esc(t.k)}</td><td style="padding:6px 10px;border-bottom:1px solid #e6eef4;font-size:10px;color:#222;line-height:1.45">${esc(t.v)}</td></tr>`).join('')}</tbody>
       </table>` : ''}
 
-    <div style="font-size:13px;font-weight:700;color:${accent};margin-bottom:6px">Authorization</div>
-    <div style="font-size:10.5px;color:#444;line-height:1.6;margin-bottom:10px">By signing below, the client authorizes ${esc(company)} to proceed with the agreed scope, pricing, schedule, and commercial terms described in this proposal, subject to written revisions accepted by both parties.</div>
+    <div style="font-size:12px;font-weight:700;color:${accent};margin-bottom:5px">Authorization</div>
+    <div style="font-size:10px;color:#444;line-height:1.5;margin-bottom:8px">By signing below, the client authorizes ${esc(company)} to proceed with the agreed scope, pricing, schedule, and commercial terms described in this proposal, subject to written revisions accepted by both parties.</div>
     <div style="display:flex;gap:12px">
-      <div style="flex:1;border:1px solid #d9e6ef;padding:14px">
-        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:12px">Client Authorization</div>
-        ${['Name', 'Title', 'Signature', 'Date'].map(l => `<div style="font-size:10.5px;color:#222;margin-bottom:11px">${l}: ______________________________</div>`).join('')}
+      <div class="pp-panel" style="flex:1;border:1px solid #d9e6ef;padding:11px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:9px">Client Authorization</div>
+        ${['Name', 'Title', 'Signature', 'Date'].map(l => `<div style="font-size:10px;color:#222;margin-bottom:8px">${l}: ______________________________</div>`).join('')}
       </div>
-      <div style="flex:1;border:1px solid #d9e6ef;padding:14px">
-        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:12px">${esc(company.toUpperCase())} Authorization</div>
-        <div style="font-size:10.5px;color:#222;margin-bottom:11px">Name: ${esc(pi.contactName || '______________________________')}</div>
-        <div style="font-size:10.5px;color:#222;margin-bottom:11px">Title: ${esc(company)}</div>
-        <div style="font-size:10.5px;color:#222;margin-bottom:11px">Signature: ___________________________</div>
-        <div style="font-size:10.5px;color:#222;margin-bottom:11px">Date: ______________________________</div>
+      <div class="pp-panel" style="flex:1;border:1px solid #d9e6ef;padding:11px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:9px">${esc(company.toUpperCase())} Authorization</div>
+        <div style="font-size:10px;color:#222;margin-bottom:8px">Name: ${esc(pi.contactName || '______________________________')}</div>
+        <div style="font-size:10px;color:#222;margin-bottom:8px">Title: ${esc(company)}</div>
+        <div style="font-size:10px;color:#222;margin-bottom:8px">Signature: ___________________________</div>
+        <div style="font-size:10px;color:#222;margin-bottom:8px">Date: ______________________________</div>
       </div>
     </div>`);
 
