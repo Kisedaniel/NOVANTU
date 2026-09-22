@@ -533,6 +533,12 @@ body.page-landscape { --page-w: 11in; --page-h: 8.5in; }
   print-color-adjust: exact !important;
 }
 
+/* Every preview page is exactly one sheet tall, so the builder shows what the
+   printer will do. Before this the boxes grew to fit their content and the
+   preview was a column of pages of different heights — which looked like a
+   styling bug but was really the content overflowing the sheet. */
+.print-page { min-height: var(--page-h); }
+
 @media print {
   body { background: #fff !important; }
   .app-sidebar, .app-topbar, .no-print, .backdrop, .modal { display: none !important; }
@@ -540,12 +546,36 @@ body.page-landscape { --page-w: 11in; --page-h: 8.5in; }
   .app-main, .content, .detail-panel, .list-panel { display: block !important; overflow: visible !important; padding: 0 !important; border: none !important; width: 100% !important; }
   .print-page {
     width: var(--page-w) !important;
-    min-height: var(--page-h) !important;
+    /* min-height is deliberately NOT forced in print. On screen it makes every
+       preview page one sheet tall; in print, forcing 11in on a page whose
+       content is even slightly over would push a nearly-empty extra sheet out
+       of the printer. page-break-after already ends each page. */
+    min-height: 0 !important;
     max-width: none !important;
     padding: var(--page-pad-y) var(--page-pad-x) !important;
     margin: 0 !important;
     box-sizing: border-box !important;
     box-shadow: none !important;
+  }
+  /* A bordered panel is a unit. Without this a page break slices one in half,
+     closing its border mid-sentence and reopening it on the next sheet — the
+     artifact that made the proposal look broken. If a panel genuinely cannot
+     fit, the browser moves the whole panel down rather than cutting it. */
+  .pp-panel, .print-page tr, .print-page li {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  /* NOT the table itself. The material order list is 40+ rows and legitimately
+     spans sheets; forcing the whole table to stay together would push it off
+     the page instead of breaking it between rows, which is the one place a
+     break is correct. `tr` above keeps individual rows intact, and the header
+     repeats on each sheet. */
+  .print-page table { break-inside: auto; page-break-inside: auto; }
+  .print-page thead { display: table-header-group; }
+  /* Never strand a heading at the foot of a page from the block it introduces. */
+  .print-page h1, .print-page h2, .print-page h3 {
+    break-after: avoid;
+    page-break-after: avoid;
   }
   .print-page, .print-page * { outline: none !important; }
   /* A table wider than the text column is the one thing that silently pushes
@@ -8189,13 +8219,20 @@ function buildProposalPages(o) {
       ${esc(company)}${pi.companyLicense ? ` &nbsp;|&nbsp; CA Contractor License No. ${esc(pi.companyLicense)}` : ''}${pi.sinceYear ? ` &nbsp;|&nbsp; Since ${esc(pi.sinceYear)}` : ''}<br>
       ${[pi.companyPhone, pi.companyEmail, addressLines.join(', ')].filter(Boolean).map(esc).join(' &nbsp; ')}
     </div>`;
+  // DENSITY IS A PAGINATION DECISION, not a taste one. Measured: the old
+  // settings put page 2 at 11.76in of content inside an 11in sheet, so the
+  // Inclusions/Exclusions panels were sliced in half by the page break and the
+  // remainder reflowed onto a ragged extra sheet. The printable band is 10.0in
+  // (11in less the 0.5in padding top and bottom); everything below is tuned to
+  // land inside it with margin to spare, and it reads closer to the reference
+  // proposal, which is dense on purpose.
   const page = (inner, extra) => `<div class="print-page" style="background:#fff;color:#000;padding:44px 52px;margin:0 auto 26px;font-family:${fontStack};page-break-after:always;${extra || ''}">${runHead}${inner}${runFoot}</div>`;
-  const h2 = (t) => `<div style="font-size:20px;font-weight:700;color:${accent};margin:0 0 10px;letter-spacing:-0.01em">${esc(t)}</div>`;
-  const cell = (label, val) => `<td style="padding:8px 10px;border:1px solid #d9e6ef;vertical-align:top">
+  const h2 = (t) => `<div style="font-size:17px;font-weight:700;color:${accent};margin:0 0 8px;letter-spacing:-0.01em">${esc(t)}</div>`;
+  const cell = (label, val) => `<td style="padding:7px 9px;border:1px solid #d9e6ef;vertical-align:top">
       <div style="font-family:var(--mono);font-size:7.5px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:3px">${esc(label)}</div>
-      <div style="font-size:11px;color:#111;line-height:1.4">${esc(val || '—')}</div></td>`;
+      <div style="font-size:10.5px;color:#111;line-height:1.35">${esc(val || '—')}</div></td>`;
   const bullets = (arr, color) => arr.length
-    ? `<ul style="margin:0;padding-left:16px">${arr.map(x => `<li style="font-size:10.5px;color:#222;line-height:1.55;margin-bottom:5px">${esc(x)}</li>`).join('')}</ul>`
+    ? `<ul style="margin:0;padding-left:15px">${arr.map(x => `<li style="font-size:9.8px;color:#222;line-height:1.45;margin-bottom:3px">${esc(x)}</li>`).join('')}</ul>`
     : `<div style="font-family:var(--mono);font-size:10px;color:#999;font-style:italic">Nothing recorded — add it in the template's Scope field.</div>`;
 
   // ── PAGE 1 · Cover ─────────────────────────────────────────────────────────
@@ -8217,37 +8254,37 @@ function buildProposalPages(o) {
 
   // ── PAGE 2 · Summary + inclusions/exclusions ───────────────────────────────
   const summaryText = pov.summary || (ai && ai.summary ? ai.summary : '');
-  const infoPanel = (title, rows) => `<div style="flex:1;min-width:240px;border:1px solid #d9e6ef;background:#f7fbfd;padding:12px 14px">
-      <div style="font-size:12px;font-weight:700;color:${accent};margin-bottom:8px">${esc(title)}</div>
-      ${rows.filter(r => r[1]).map(r => `<div style="font-size:10.5px;color:#222;line-height:1.7"><b>${esc(r[0])}:</b> ${esc(r[1])}</div>`).join('') || '<div style="font-size:10.5px;color:#999;font-style:italic">—</div>'}
+  const infoPanel = (title, rows) => `<div class="pp-panel" style="flex:1;min-width:240px;border:1px solid #d9e6ef;background:#f7fbfd;padding:10px 12px">
+      <div style="font-size:11.5px;font-weight:700;color:${accent};margin-bottom:6px">${esc(title)}</div>
+      ${rows.filter(r => r[1]).map(r => `<div style="font-size:10px;color:#222;line-height:1.55"><b>${esc(r[0])}:</b> ${esc(r[1])}</div>`).join('') || '<div style="font-size:10px;color:#999;font-style:italic">—</div>'}
     </div>`;
   const summary = page(`
     ${h2('1. Project Summary')}
-    <div style="font-size:11px;color:#222;line-height:1.7;margin-bottom:14px">${summaryText
+    <div style="font-size:10.5px;color:#222;line-height:1.55;margin-bottom:11px">${summaryText
       ? esc(summaryText)
       : `${esc(company)} is pleased to submit this proposal for the scope at <b>${esc(proj.name || '')}</b>${setup.address ? ` located at <b>${esc(setup.address)}</b>` : ''}. Quantities and commercial values have been developed from the project drawings and specifications.`}</div>
 
-    <div style="display:flex;gap:12px;margin-bottom:16px">
-      <div style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:12px;text-align:center">
+    <div style="display:flex;gap:12px;margin-bottom:12px">
+      <div class="pp-panel" style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:10px;text-align:center">
         <div style="font-family:var(--mono);font-size:8px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700">Total Base Bid</div>
-        <div style="font-size:19px;font-weight:700;color:#111;margin-top:4px">${fmt$(n.grand)}</div></div>
-      <div style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:12px;text-align:center">
+        <div style="font-size:18px;font-weight:700;color:#111;margin-top:3px">${fmt$(n.grand)}</div></div>
+      <div class="pp-panel" style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:10px;text-align:center">
         <div style="font-family:var(--mono);font-size:8px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700">Drawing Status</div>
-        <div style="font-size:14px;font-weight:700;color:#111;margin-top:6px">${esc(setup.bidSet || '—')}</div></div>
+        <div style="font-size:13px;font-weight:700;color:#111;margin-top:5px">${esc(setup.bidSet || '—')}</div></div>
     </div>
 
-    <div style="display:flex;gap:12px;margin-bottom:18px;flex-wrap:wrap">
+    <div style="display:flex;gap:12px;margin-bottom:13px;flex-wrap:wrap;align-items:flex-start">
       ${infoPanel(company + ' Contact', [['Primary Contact', pi.contactName], ['Email', pi.companyEmail], ['Phone', pi.companyPhone], ['License', pi.companyLicense ? 'CA Contractor License No. ' + pi.companyLicense : ''], ['Address', addressLines.join(', ')]])}
       ${infoPanel('Project Information', [['Project', proj.name], ['Site Address', setup.address], ['Revision', 'Revision (' + rev + ')'], ['PR Number', setup.prNumber], ['Drawing Status', setup.bidSet], ['Issue Date', dateStr]])}
     </div>
 
     ${h2('2. Inclusions and Exclusions')}
-    <div style="display:flex;gap:12px">
-      <div style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:12px 14px">
-        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:8px">Inclusions</div>
+    <div style="display:flex;gap:12px;align-items:flex-start">
+      <div class="pp-panel" style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:10px 12px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:6px">Inclusions</div>
         ${bullets(scope.inc)}</div>
-      <div style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:12px 14px">
-        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:8px">Exclusions</div>
+      <div class="pp-panel" style="flex:1;border:1px solid #d9e6ef;background:#f7fbfd;padding:10px 12px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:6px">Exclusions</div>
         ${bullets(scope.exc)}</div>
     </div>`);
 
