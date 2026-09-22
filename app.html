@@ -612,6 +612,10 @@ body.page-landscape { --page-w: 11in; --page-h: 8.5in; }
 .print-page:not(#_) table tbody td { color: inherit; border-bottom: 0; }
 .print-page:not(#_) table tbody tr:hover { background: transparent; }
 
+/* The print-only running chrome is invisible on screen; the per-page copies
+   inside each .print-page are what the preview shows instead. */
+.pp-run { display: none; }
+
 @media print {
   body { background: #fff !important; }
   .app-sidebar, .app-topbar, .no-print, .backdrop, .modal { display: none !important; }
@@ -669,6 +673,27 @@ body.page-landscape { --page-w: 11in; --page-h: 8.5in; }
   .print-page + .print-page { break-before: page; page-break-before: always; }
   .print-page:first-child { break-before: avoid; page-break-before: avoid; }
   .print-page:last-child { break-after: auto; page-break-after: auto; }
+
+  /* RUNNING CHROME. The per-page copies are for the on-screen preview only;
+     in print a single fixed pair repeats on every sheet, which is the whole
+     point — a section that runs onto a second sheet still gets its header and
+     its footer. The page padding below reserves the two bands so body text can
+     never print underneath them. */
+  .pp-chrome { display: none !important; }
+  .pp-run { display: block !important; position: fixed; left: var(--page-pad-x); right: var(--page-pad-x); }
+  .pp-run-head { top: 0.34in; }
+  .pp-run-foot { bottom: 0.30in; }
+  /* Reserve exactly what the chrome occupies and no more — every tenth of an
+     inch given away here comes straight out of the printable band, and the
+     pricing page only clears it by about half an inch as it is.
+     Header: 0.34in offset + one 8.5px line ≈ 0.12in → 0.60in with breathing room.
+     Footer: 0.30in offset + two lines at 1.7 ≈ 0.30in + rule and padding → 0.80in.
+     Band = 11 − 0.60 − 0.80 = 9.60in, against measured bodies of 7.83in
+     (summary) and 8.90in (pricing). */
+  .print-page {
+    padding-top: 0.60in !important;
+    padding-bottom: 0.80in !important;
+  }
   /* margin 0: the white page above owns its own margin, so the two can never
      be added together and squeeze the content twice. */
   @page { size: letter portrait; margin: 0; }
@@ -4376,6 +4401,7 @@ let ST = {
   // Price book — reusable cost line items (a sub/GC's catalog), inserted into estimates
   priceBook: [],             // [{id, cat, title, desc, unit, unitCost, costType}]
   priceBookModal: null,      // {pid} when open
+  scopeNarrLoading: null,    // pid while the proposal scope is being written (ephemeral)
   pastePrices: null,         // {rows,bad} — zero-token price paste awaiting review
   pasteItems: null,          // {rows,bad,pid} — zero-token line paste awaiting review
   pbHuntLoading: false,      // a price refresh is running (ephemeral — never persisted)
@@ -5106,6 +5132,7 @@ async function loadSt() {
     // across would write one shop's prices into another's book.
     ST.pastePrices = null;
     ST.pasteItems = null;
+    ST.scopeNarrLoading = null;
     ST.bidLearnLoading = false;
     ST.workerInbox = {};
     ST.dlogCompile = null;
@@ -8300,11 +8327,30 @@ function buildProposalPages(o) {
   const preparedFor = pi.preparedFor || proj.builder || '';
 
   // ── shared chrome ──────────────────────────────────────────────────────────
-  const runHead = `<div style="display:flex;justify-content:flex-end;font-family:var(--mono);font-size:8.5px;letter-spacing:.06em;color:${accent};font-weight:600;margin-bottom:14px">${esc(company)} &nbsp;|&nbsp; ${esc(propNo)} &nbsp;|&nbsp; Revision (${esc(rev)})</div>`;
-  const runFoot = `<div style="margin-top:26px;padding-top:10px;border-top:1px solid #ddd;font-family:var(--mono);font-size:8.5px;color:#777;text-align:center;line-height:1.7">
-      ${esc(company)}${pi.companyLicense ? ` &nbsp;|&nbsp; CA Contractor License No. ${esc(pi.companyLicense)}` : ''}${pi.sinceYear ? ` &nbsp;|&nbsp; Since ${esc(pi.sinceYear)}` : ''}<br>
-      ${[pi.companyPhone, pi.companyEmail, addressLines.join(', ')].filter(Boolean).map(esc).join(' &nbsp; ')}
-    </div>`;
+  // RUNNING CHROME — the same header and footer on EVERY printed sheet.
+  //
+  // These used to live inside each page div as ordinary content, which quietly
+  // assumed "one page div == one sheet". The moment a section ran long, that
+  // assumption broke: the header printed once at the top of the first sheet and
+  // the footer once at the bottom of the last, so the middle sheets came out
+  // bare and the footer looked cut adrift. The screen preview never showed it,
+  // because on screen each page div really is one box.
+  //
+  // So the markup is emitted TWICE and each copy is shown in exactly one
+  // medium: `pp-chrome` sits inside every page for the on-screen preview, and a
+  // single `pp-run` pair is position:fixed for print, where the browser repeats
+  // fixed elements on every sheet. The print page padding reserves the bands
+  // they occupy, so body text can never run underneath them.
+  const headInner = `${esc(company)} &nbsp;|&nbsp; ${esc(propNo)} &nbsp;|&nbsp; Revision (${esc(rev)})`;
+  const footInner = `${esc(company)}${pi.companyLicense ? ` &nbsp;|&nbsp; CA Contractor License No. ${esc(pi.companyLicense)}` : ''}${pi.sinceYear ? ` &nbsp;|&nbsp; Since ${esc(pi.sinceYear)}` : ''}<br>
+      ${[pi.companyPhone, pi.companyEmail, addressLines.join(', ')].filter(Boolean).map(esc).join(' &nbsp; ')}`;
+  const HEAD_CSS = `font-family:var(--mono);font-size:8.5px;letter-spacing:.06em;color:${accent};font-weight:600;text-align:right`;
+  const FOOT_CSS = `font-family:var(--mono);font-size:8.5px;color:#777;text-align:center;line-height:1.7`;
+  const runHead = `<div class="pp-chrome" style="${HEAD_CSS};margin-bottom:14px">${headInner}</div>`;
+  const runFoot = `<div class="pp-chrome" style="${FOOT_CSS};margin-top:26px;padding-top:10px;border-top:1px solid #ddd">${footInner}</div>`;
+  // The print-only pair, emitted once for the whole document.
+  const runFixed = `<div class="pp-run pp-run-head" style="${HEAD_CSS}">${headInner}</div>`
+    + `<div class="pp-run pp-run-foot" style="${FOOT_CSS};padding-top:8px;border-top:1px solid #ddd">${footInner}</div>`;
   // DENSITY IS A PAGINATION DECISION, not a taste one. Measured: the old
   // settings put page 2 at 11.76in of content inside an 11in sheet, so the
   // Inclusions/Exclusions panels were sliced in half by the page break and the
@@ -8385,19 +8431,36 @@ function buildProposalPages(o) {
     </div>`);
 
   // ── PAGE 3 · Scope of work, by cost-code division ──────────────────────────
+  // `_scopeNarrative` is the AI-written prose version (scopeNarrativeGenerate).
+  // When it exists it replaces the line-item dump division by division, matched
+  // on the cost code so a division the estimator added afterwards still falls
+  // back to its items rather than silently disappearing from the proposal.
+  const narr = (ST.overrides[pid] || {})._scopeNarrative || null;
+  const narrByCode = new Map((narr && narr.divisions || []).map(d => [String(d.code || ''), d]));
+  // The written clarifications win over the template's, same as the scope.
+  const clarText = (narr && narr.clarifications && narr.clarifications.length) ? narr.clarifications : clarifications;
   const scopePage = page(`
     ${h2('3. Detailed Scope of Work (by Trade Division)')}
     <div style="font-size:10.5px;color:#444;line-height:1.6;margin-bottom:14px">The following scope is organized by construction trade division. Work is intended to provide a complete and operable installation within the limits shown on the contract documents, subject to the clarifications in this proposal.</div>
-    ${liveGroups.length ? liveGroups.map(g => `
-      <div style="margin-bottom:14px">
+    ${liveGroups.length ? liveGroups.map(g => {
+      // Prefer the WRITTEN scope when the estimator has generated it: prose per
+      // division, quantities inside the sentences. The line-item list below is
+      // the fallback — honest, but it duplicates the Material Order List at the
+      // back, so it is what you get until section 3 has been written.
+      const nar = narrByCode.get(String(g.code || ''));
+      return `
+      <div class="pp-panel" style="margin-bottom:${nar ? 11 : 14}px">
         <div style="font-size:12.5px;font-weight:700;color:${accent};margin-bottom:5px">${esc(g.code || '')}${g.code && g.title ? ' — ' : ''}${esc(g.title || '')}</div>
-        <ul style="margin:0;padding-left:16px">
+        ${nar
+          ? `<ul style="margin:0;padding-left:15px">${nar.bullets.map(b => `<li style="font-size:10px;color:#222;line-height:1.5;margin-bottom:4px">${esc(b)}</li>`).join('')}</ul>`
+          : `<ul style="margin:0;padding-left:16px">
           ${(g.items || []).map(it => `<li style="font-size:10.5px;color:#222;line-height:1.55;margin-bottom:4px">${esc(it.title || '')}${(Number(it.qty) > 0) ? ` — approximately <b>${Number(it.qty).toLocaleString()} ${esc(it.unit || '')}</b>` : ''}${it.description ? `. ${esc(it.description)}` : ''}</li>`).join('') || '<li style="font-size:10.5px;color:#999;font-style:italic">No line items in this division yet.</li>'}
-        </ul>
-      </div>`).join('') : '<div style="font-family:var(--mono);font-size:10.5px;color:#999;font-style:italic">No cost-code groups in the estimate yet — the scope section fills itself from the Builder.</div>'}
-    ${clarifications.length ? `
-      <div style="font-size:13px;font-weight:700;color:${accent};margin:18px 0 6px">Bid Basis, Assumptions &amp; Technical Clarifications</div>
-      ${bullets(clarifications)}` : ''}`);
+        </ul>`}
+      </div>`;
+    }).join('') : '<div style="font-family:var(--mono);font-size:10.5px;color:#999;font-style:italic">No cost-code groups in the estimate yet — the scope section fills itself from the Builder.</div>'}
+    ${clarText.length ? `
+      <div style="font-size:12px;font-weight:700;color:${accent};margin:14px 0 5px">Bid Basis, Assumptions &amp; Technical Clarifications</div>
+      ${bullets(clarText)}` : ''}`);
 
   // ── PAGE 4 · Pricing, terms, signatures ────────────────────────────────────
   // Measured: at the previous padding/size this page came to 10.47in of body
@@ -8481,12 +8544,10 @@ function buildProposalPages(o) {
       </tr>`).join('')}</tbody>
     </table>`) : '';
 
-  const all = cover + summary + scopePage + pricing + boq;
-  // Whichever page ends up last must NOT force a break, or every print comes
-  // out with a blank sheet on the end.
-  const BRK = 'page-break-after:always';
-  const last = all.lastIndexOf(BRK);
-  const doc = last < 0 ? all : all.slice(0, last) + 'page-break-after:auto' + all.slice(last + BRK.length);
+  // The running chrome goes FIRST so the fixed pair exists before the pages
+  // paint. (The old trailing-break fixup that used to live here is gone with
+  // page-break-after itself — pagination is break-before now.)
+  const doc = runFixed + cover + summary + scopePage + pricing + boq;
 
   return doc +
     ((pi.hidePoweredBy && hasWhitelabel()) ? '' : `<div style="width:var(--page-w);max-width:100%;margin:0 auto 26px;font-family:'JetBrains Mono',monospace;font-size:8.5px;letter-spacing:.12em;color:#999;text-align:center">POWERED BY NOVANTU</div>`);
@@ -8823,6 +8884,12 @@ function buildBuilderPrintView() {
       <button onclick="ST.builderPrintMode=false;ST.builderPrintEditPanel=false;render()" style="background:var(--ink-900);color:var(--bone-50);border:0;padding:7px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase">← Exit</button>
       <button onclick="printDoc('${pid}')" style="background:var(--bg);color:var(--ink-900);border:1px solid var(--ink-900);padding:6px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase" title="Opens your printer dialog — pick a printer, or Save as PDF">▤ Print</button>
       <button onclick="printDoc('${pid}', true)" style="background:var(--ink-900);color:var(--bone-50);border:1px solid var(--ink-900);padding:6px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase" title="Same dialog — choose “Save as PDF” (or Microsoft Print to PDF) as the destination. The file is named for you.">⬇ PDF</button>
+      ${layout === 'proposal' ? (() => {
+        const has = !!((ST.overrides[pid] || {})._scopeNarrative);
+        const busy = ST.scopeNarrLoading === pid;
+        return `<button onclick="scopeNarrativeGenerate('${pid}')" ${busy ? 'disabled' : ''} style="background:var(--bg);color:var(--ink-900);border:1px solid var(--ink-900);padding:6px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase" title="Write section 3 as prose from what you priced — quantities inside the sentences, standards named, instead of repeating the material list">${busy ? '⋯ Writing…' : (has ? '✦ Rewrite scope' : '✦ Write scope')}</button>`
+          + (has && !busy ? `<button onclick="scopeNarrativeClear('${pid}')" style="background:var(--bg);color:var(--text3);border:1px solid var(--border);padding:6px 10px;font-family:var(--mono);font-size:11px;cursor:pointer" title="Go back to listing the priced line items">✕</button>` : '');
+      })() : ''}
       <div style="flex:1"></div>
       <button onclick="ST.builderPrintEditPanel=${panelOpen?'false':'true'};render()" style="background:${panelOpen?'var(--ink-900)':'var(--bg)'};color:${panelOpen?'var(--bone-50)':'var(--ink-900)'};border:1px solid var(--ink-900);padding:6px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase" title="Edit template settings">✎ Edit template</button>
     </div>
@@ -17143,6 +17210,82 @@ function buildPasteItemsModal() {
       </div>
     </div>
   </div>`;
+}
+
+// ── SCOPE NARRATIVE — section 3 of the proposal, written as prose ────────────
+// The scope page used to print the Builder's line items with their quantities,
+// which is the same content the Material Order List carries at the back: the
+// proposal said everything twice, and neither time in a contractor's voice.
+// This asks the model to write each division the way the shop's own past
+// proposal reads — quantities inside the sentences, standards named, the
+// coordination risk called out — and stores the result so printing is free.
+// Regenerating is explicit, because the estimator edits this text by hand.
+async function scopeNarrativeGenerate(pid) {
+  if (ST.scopeNarrLoading) return;
+  const p = allProjects().find(x => x.id === pid); if (!p) return;
+  const est = ST.estimates[pid] || { groups: [] };
+  const divisions = (est.groups || [])
+    .filter(g => (g.items || []).length)
+    .map(g => ({
+      code: g.code || '', title: g.title || '',
+      items: (g.items || []).map(it => ({ title: it.title || '', qty: Number(it.qty) || 0, unit: it.unit || '', description: it.description || '' })),
+    }));
+  if (!divisions.length) { showToast('Add line items to the Builder first — the scope is written from what you priced.', 'warn'); return; }
+  if (!trialGuardAI()) return;
+
+  ST.scopeNarrLoading = pid; render();
+  try {
+    const e = getEstProj(pid);
+    const s = e.setup || {};
+    const ov = ST.overrides[pid] || {};
+    const knownText = AGENT_SETUP_FIELDS.filter(f => f !== 'notes' && s[f]).map(f => `${f}: ${s[f]}`).join('\n');
+    const out = await aiCompleteText(pid, `Scope narrative · ${p.name}`, null, {
+      lean: true, task: 'scopenarrative',
+      taskData: {
+        projectName: p.name, knownText, divisions,
+        summary: (ov._proposal && ov._proposal.summary) || (ov._aiDetails && ov._aiDetails.summary) || '',
+        rules: (typeof bidRulesText === 'function') ? bidRulesText() : '',
+        profile: (typeof bidProfileText === 'function') ? bidProfileText() : '',
+      },
+      onBeat: () => { scheduleIdleRender && scheduleIdleRender(); },
+    });
+    let parsed = parseAIJson(out);
+    if (!parsed || !Array.isArray(parsed.divisions)) parsed = parseJsonObjectWith(out, 'divisions');
+    if (!parsed || !Array.isArray(parsed.divisions)) throw new Error('The AI answered, but not in the shape the scope page needs.');
+    // Only divisions that exist in the Builder are kept, matched by code — the
+    // model may not invent a division the estimate does not price.
+    const byCode = new Map(divisions.map(g => [String(g.code), g]));
+    const kept = parsed.divisions
+      .map(d => ({
+        code: String((d && d.code) || '').trim(),
+        title: String((d && d.title) || '').trim().slice(0, 120),
+        bullets: (Array.isArray(d && d.bullets) ? d.bullets : []).map(x => String(x).slice(0, 400)).filter(Boolean).slice(0, 6),
+      }))
+      .filter(d => d.bullets.length && byCode.has(d.code));
+    if (!kept.length) throw new Error('The AI wrote nothing that matched your divisions. Try again.');
+    if (!ST.overrides[pid]) ST.overrides[pid] = {};
+    ST.overrides[pid]._scopeNarrative = {
+      ts: new Date().toISOString(),
+      divisions: kept,
+      clarifications: (Array.isArray(parsed.clarifications) ? parsed.clarifications : []).map(x => String(x).slice(0, 400)).filter(Boolean).slice(0, 8),
+      notes: String((parsed && parsed.notes) || '').slice(0, 400),
+    };
+    saveSt();
+    aiLogEvent('scopenarrative', { ok: true });
+    showToast(`Scope written for ${kept.length} division${kept.length === 1 ? '' : 's'} — section 3 now reads as prose. Edit it any time in the proposal template.`, 'success');
+  } catch (err) {
+    aiLogEvent('scopenarrative', { ok: false, err: err && err.message });
+    showToast('Could not write the scope: ' + ((err && err.message) || err), 'error');
+  } finally {
+    ST.scopeNarrLoading = null; render();
+  }
+}
+
+function scopeNarrativeClear(pid) {
+  if (!confirm('Delete the written scope and go back to listing the priced line items?')) return;
+  if (ST.overrides[pid]) delete ST.overrides[pid]._scopeNarrative;
+  saveSt(); render();
+  showToast('Written scope removed — section 3 lists the line items again.', 'success');
 }
 
 // ── BID FROM A WRITTEN BREAKDOWN — no PDF, no vision ─────────────────────────
