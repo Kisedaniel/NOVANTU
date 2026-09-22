@@ -493,17 +493,56 @@ i[data-lucide]{display:inline-flex;align-items:center;justify-content:center}
 svg.lucide{width:1em;height:1em}
 
 
-/* PRINT */
+/* PRINT — ANSI A (US Letter, 8.5 x 11in)
+   ------------------------------------------------------------------
+   This used to print wrong for a simple reason: the pages are BUILT at
+   1100px wide (1400px landscape), but the printable area of a Letter sheet
+   with the old 16mm/14mm margins is about 710px. Everything was therefore
+   either shrink-to-fit by the browser or clipped at the right edge, and
+   nothing on screen told you which.
+
+   The fix is to stop mixing units. The sheet is 8.5 x 11 INCHES, the page
+   box has no margin of its own, and the white page carries its own margin
+   as padding — so what is measured on screen is what comes out of the
+   printer. `--page-w` is redefined for landscape by the rule below, which
+   the app sets from the Print settings orientation.                        */
+:root { --page-w: 8.5in; --page-h: 11in; --page-pad-y: 0.5in; --page-pad-x: 0.6in; }
+body.page-landscape { --page-w: 11in; --page-h: 8.5in; }
+
+/* On screen the page is shown at its true printed width, so the preview is
+   the proof. Without this the estimator approves a layout that only exists
+   in the browser. */
+.print-page { width: var(--page-w); max-width: 100%; box-sizing: border-box; margin-left: auto; margin-right: auto; }
+
 @media print {
   body { background: #fff !important; }
   .app-sidebar, .app-topbar, .no-print, .backdrop, .modal { display: none !important; }
   .app-shell { display: block !important; height: auto !important; overflow: visible !important; }
   .app-main, .content, .detail-panel, .list-panel { display: block !important; overflow: visible !important; padding: 0 !important; border: none !important; width: 100% !important; }
-  .print-page { padding: 0 !important; max-width: 100% !important; }
+  .print-page {
+    width: var(--page-w) !important;
+    min-height: var(--page-h) !important;
+    max-width: none !important;
+    padding: var(--page-pad-y) var(--page-pad-x) !important;
+    margin: 0 !important;
+    box-sizing: border-box !important;
+    box-shadow: none !important;
+  }
   .print-page, .print-page * { outline: none !important; }
+  /* A table wider than the text column is the one thing that silently pushes
+     content off the sheet — hold every one of them inside the page box. */
+  .print-page table { width: 100% !important; max-width: 100% !important; table-layout: auto; }
+  .print-page img, .print-page svg { max-width: 100% !important; height: auto !important; }
   .cover-page { page-break-after: always; }
-  @page { margin: 16mm 14mm; size: letter; }
+  /* margin 0: the white page above owns its own margin, so the two can never
+     be added together and squeeze the content twice. */
+  @page { size: letter portrait; margin: 0; }
 }
+/* `@page { size }` cannot be driven by a class, so the orientation rule is
+   written into <style id="page-size"> by applyPageSize() instead. The body
+   class above switches the page BOX; that style switches the SHEET. If the two
+   ever disagree the browser prints a portrait sheet with landscape content on
+   it, so they are set together in one function and nowhere else. */
 
 /* MOBILE — sidebar drawer + stacked list/detail + responsive internals */
 @media (max-width: 900px) {
@@ -4202,6 +4241,8 @@ let ST = {
   // Price book — reusable cost line items (a sub/GC's catalog), inserted into estimates
   priceBook: [],             // [{id, cat, title, desc, unit, unitCost, costType}]
   priceBookModal: null,      // {pid} when open
+  pastePrices: null,         // {rows,bad} — zero-token price paste awaiting review
+  pasteItems: null,          // {rows,bad,pid} — zero-token line paste awaiting review
   pbHuntLoading: false,      // a price refresh is running (ephemeral — never persisted)
   pbHuntStage: '',           // what it is doing right now, for the button label
 
@@ -4926,6 +4967,10 @@ async function loadSt() {
     // switch would leave the Refresh button disabled with nothing running.
     ST.pbHuntLoading = false;
     ST.pbHuntStage = '';
+    // A pending paste belongs to the workspace it was pasted into — carrying it
+    // across would write one shop's prices into another's book.
+    ST.pastePrices = null;
+    ST.pasteItems = null;
     ST.bidLearnLoading = false;
     ST.workerInbox = {};
     ST.dlogCompile = null;
@@ -6111,6 +6156,8 @@ function render() {
   try { if (typeof hvacSubDefaultsOnce === 'function') hvacSubDefaultsOnce(); } catch (_e) {}
   // Retired tab → Ask AI (protects a saved ST.tab from an older session).
   if (typeof estTabRetire === 'function') estTabRetire();
+  // Keep the printed sheet size in step with the Print settings orientation.
+  if (typeof applyPageSize === 'function') applyPageSize();
   // Invalidate memoization caches at the start of each render
   _invalidateProjectSubCache();
   // Reset the take-off skip flag; buildEstTakeoff() re-asserts it this pass if
@@ -6146,6 +6193,8 @@ function render() {
     ST.templateSaveDialog ? 'tplsave' : '',
     ST.templatePicker ? 'tplpick' : '',
     ST.priceBookModal ? 'pbook' : '',
+    ST.pastePrices ? 'pasteprices' : '',
+    ST.pasteItems ? 'pasteitems' : '',
     ST.scopeTemplatesModal ? 'scopetpl' : '',
     ST.tradeCalcModal ? 'tradecalc' : '',
     ST.coEdit ? 'coedit' : '',
@@ -6546,6 +6595,22 @@ function pbAgeTip(r) {
   return L.join('\n');
 }
 
+// Keep the printed SHEET and the on-screen PAGE BOX in agreement. Called on
+// every render, because the orientation lives in Print settings and can change
+// under a preview that is already open. Both halves are set here and nowhere
+// else — split across two places, they drift, and the symptom is content
+// printed sideways off the edge of the paper.
+function applyPageSize() {
+  try {
+    const land = (((getSettings() || {}).print || {}).pageOrientation || 'portrait') === 'landscape';
+    document.body.classList.toggle('page-landscape', land);
+    let el = document.getElementById('page-size');
+    if (!el) { el = document.createElement('style'); el.id = 'page-size'; document.head.appendChild(el); }
+    const want = `@media print{@page{size: letter ${land ? 'landscape' : 'portrait'}; margin: 0;}}`;
+    if (el.textContent !== want) el.textContent = want;   // writing it unchanged forces a restyle
+  } catch (_e) {}
+}
+
 function buildPriceBookPane() {
   const { types, total, unpriced, stale } = priceBookStats();
   const q = (ST.pbQuery || '').toLowerCase();
@@ -6577,12 +6642,13 @@ function buildPriceBookPane() {
               <td style="padding:3px 6px;width:62px">${inp('unit', r.unit, 'font-family:var(--mono);text-align:center')}</td>
               <td style="padding:3px 6px;width:104px"><input class="minp" type="number" min="0" step="0.01" value="${Number(r.perUnit) || 0}" onchange="pbSetPrice('${t.id}',${idx},this)" title="${zero ? 'No price yet — the AI will show this item at $0 until you set it' : ''}" style="width:100%;box-sizing:border-box;font-size:11.5px;padding:4px 6px;font-family:var(--mono);text-align:right;${zero ? 'border-color:var(--amber);color:var(--amber)' : ''}"></td>
               <td style="padding:3px 6px;width:86px;font-family:var(--mono);font-size:9.5px;color:${pbAgeColor(r)}" title="${esc(pbAgeTip(r))}">${esc(priceAgeLabel(r))}</td>
+              <td style="padding:3px 6px;width:32px"><button class="edit-btn" onclick="priceBookHuntOne('${t.id}',${idx})" ${ST.pbHuntLoading ? 'disabled' : ''} title="Look up this one item's current Los Angeles price — researches just this row">🔎</button></td>
               <td style="padding:3px 6px;width:30px"><button class="edit-btn" style="color:var(--red);border-color:var(--red-border);padding:2px 6px" onclick="if(confirm(${esc(JSON.stringify('Delete “' + String(r.name || '') + '”?'))}))deletePricingItem('${t.id}',${idx})">✕</button></td>
             </tr>`;
     };
     const table = (list) => `<table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr>
-          ${['Code', 'Item', 'Detail'].concat(cats ? ['Category'] : [], ['Unit', '$ / unit', 'Age', '']).map(h => `<th style="text-align:${h === '$ / unit' ? 'right' : 'left'};font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:5px 6px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
+          ${['Code', 'Item', 'Detail'].concat(cats ? ['Category'] : [], ['Unit', '$ / unit', 'Age', '', '']).map(h => `<th style="text-align:${h === '$ / unit' ? 'right' : 'left'};font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:5px 6px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
         </tr></thead>
         <tbody>${list.map(rowHtml).join('')}</tbody>
       </table>`;
@@ -6623,7 +6689,7 @@ function buildPriceBookPane() {
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr>
-          ${['Code', 'Item', 'Detail', 'Unit', '$ / unit', 'Age', ''].map((h, i) => `<th style="text-align:${i === 4 ? 'right' : 'left'};font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:5px 6px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
+          ${['Code', 'Item', 'Detail', 'Unit', '$ / unit', 'Age', '', ''].map((h, i) => `<th style="text-align:${i === 4 ? 'right' : 'left'};font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:5px 6px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
         </tr></thead>
         <tbody>
           ${rows.map(({ r, idx }) => {
@@ -6636,6 +6702,7 @@ function buildPriceBookPane() {
               <td style="padding:3px 6px;width:62px">${inp('unit', r.unit, 'font-family:var(--mono);text-align:center')}</td>
               <td style="padding:3px 6px;width:104px"><input class="minp" type="number" min="0" step="0.01" value="${Number(r.perUnit) || 0}" onchange="pbSetPrice('${t.id}',${idx},this)" title="${zero ? 'No price yet — the AI will show this item at $0 until you set it' : ''}" style="width:100%;box-sizing:border-box;font-size:11.5px;padding:4px 6px;font-family:var(--mono);text-align:right;${zero ? 'border-color:var(--amber);color:var(--amber)' : ''}"></td>
               <td style="padding:3px 6px;width:86px;font-family:var(--mono);font-size:9.5px;color:${pbAgeColor(r)}" title="${esc(pbAgeTip(r))}">${esc(priceAgeLabel(r))}</td>
+              <td style="padding:3px 6px;width:32px"><button class="edit-btn" onclick="priceBookHuntOne('${t.id}',${idx})" ${ST.pbHuntLoading ? 'disabled' : ''} title="Look up this one item's current Los Angeles price — researches just this row">🔎</button></td>
               <td style="padding:3px 6px;width:30px"><button class="edit-btn" style="color:var(--red);border-color:var(--red-border);padding:2px 6px" onclick="if(confirm(${esc(JSON.stringify('Delete “' + String(r.name || '') + '”?'))}))deletePricingItem('${t.id}',${idx})">✕</button></td>
             </tr>`;
           }).join('')}
@@ -8069,7 +8136,7 @@ function buildProposalPages(o) {
       ${esc(company)}${pi.companyLicense ? ` &nbsp;|&nbsp; CA Contractor License No. ${esc(pi.companyLicense)}` : ''}${pi.sinceYear ? ` &nbsp;|&nbsp; Since ${esc(pi.sinceYear)}` : ''}<br>
       ${[pi.companyPhone, pi.companyEmail, addressLines.join(', ')].filter(Boolean).map(esc).join(' &nbsp; ')}
     </div>`;
-  const page = (inner, extra) => `<div class="print-page" style="background:#fff;color:#000;padding:44px 52px;max-width:1100px;margin:0 auto 26px;font-family:${fontStack};page-break-after:always;${extra || ''}">${runHead}${inner}${runFoot}</div>`;
+  const page = (inner, extra) => `<div class="print-page" style="background:#fff;color:#000;padding:44px 52px;margin:0 auto 26px;font-family:${fontStack};page-break-after:always;${extra || ''}">${runHead}${inner}${runFoot}</div>`;
   const h2 = (t) => `<div style="font-size:20px;font-weight:700;color:${accent};margin:0 0 10px;letter-spacing:-0.01em">${esc(t)}</div>`;
   const cell = (label, val) => `<td style="padding:8px 10px;border:1px solid #d9e6ef;vertical-align:top">
       <div style="font-family:var(--mono);font-size:7.5px;letter-spacing:.1em;text-transform:uppercase;color:${accent};font-weight:700;margin-bottom:3px">${esc(label)}</div>
@@ -8231,7 +8298,7 @@ function buildProposalPages(o) {
   const doc = last < 0 ? all : all.slice(0, last) + 'page-break-after:auto' + all.slice(last + BRK.length);
 
   return doc +
-    ((pi.hidePoweredBy && hasWhitelabel()) ? '' : `<div style="max-width:1100px;margin:0 auto 26px;font-family:'JetBrains Mono',monospace;font-size:8.5px;letter-spacing:.12em;color:#999;text-align:center">POWERED BY NOVANTU</div>`);
+    ((pi.hidePoweredBy && hasWhitelabel()) ? '' : `<div style="width:var(--page-w);max-width:100%;margin:0 auto 26px;font-family:'JetBrains Mono',monospace;font-size:8.5px;letter-spacing:.12em;color:#999;text-align:center">POWERED BY NOVANTU</div>`);
 }
 
 function buildBuilderPrintView() {
@@ -8570,7 +8637,7 @@ function buildBuilderPrintView() {
     <div style="${contentMargin};padding-top:52px;transition:margin-right .15s">
     ${layout === 'proposal' ? buildProposalPages({ pid, proj, est, totals, pi, brand, accent, fontStack, showLogo, logoH, dateStr }) : `
     ${pi.coverPage ? `
-    <div class="print-page cover-page" style="background:#fff;color:#000;padding:${compact?'40px 48px':'80px 64px'};max-width:${pi.pageOrientation==='landscape'?'1400px':'1100px'};margin:0 auto 30px;font-family:${fontStack};min-height:${pi.pageOrientation==='landscape'?'500px':'800px'};display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;page-break-after:always;${pi.showGridLines?'outline:1px dashed rgba(0,0,0,.15);outline-offset:-12px;':''}">
+    <div class="print-page cover-page" style="background:#fff;color:#000;padding:${compact?'40px 48px':'80px 64px'};max-width:100%;margin:0 auto 30px;font-family:${fontStack};min-height:${pi.pageOrientation==='landscape'?'500px':'800px'};display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;page-break-after:always;${pi.showGridLines?'outline:1px dashed rgba(0,0,0,.15);outline-offset:-12px;':''}">
       ${showLogo ? `<img src="${brand.logoData}" style="max-height:${Math.max(140, logoH*2)}px;max-width:60%;margin-bottom:48px">` : ''}
       <div style="font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:#666;margin-bottom:16px">${esc(titleLabel)} · ESTIMATE</div>
       <div style="font-size:${compact?28:36}px;font-weight:700;letter-spacing:-0.02em;color:#000;margin-bottom:12px;line-height:1.2">${esc(projDisplayName)}</div>
@@ -8578,7 +8645,7 @@ function buildBuilderPrintView() {
       <div style="font-family:var(--mono);font-size:12px;color:#666;letter-spacing:.06em">${dateStr}</div>
       ${infoLines.length ? `<div style="margin-top:40px;text-align:center">${renderInfo(11)}</div>` : ''}
     </div>` : ''}
-    <div class="print-page" style="background:#fff;color:#000;padding:${compact?'24px 36px':'36px 48px'};max-width:${pi.pageOrientation==='landscape'?'1400px':'1100px'};margin:0 auto;font-family:${fontStack};${pi.showGridLines?'outline:1px dashed rgba(0,0,0,.15);outline-offset:-12px;':''}">
+    <div class="print-page" style="background:#fff;color:#000;padding:${compact?'24px 36px':'36px 48px'};max-width:100%;margin:0 auto;font-family:${fontStack};${pi.showGridLines?'outline:1px dashed rgba(0,0,0,.15);outline-offset:-12px;':''}">
       <div data-logo-wrapper style="${pi.showGridLines?'outline:1px dashed rgba(255,80,80,.4);':''}${(pi.logoOffsetX||pi.logoOffsetY)?`transform:translate(${Number(pi.logoOffsetX)||0}px, ${Number(pi.logoOffsetY)||0}px);`:''}">
       ${headerHTML}
       </div>
@@ -11535,6 +11602,8 @@ function buildApp() {
       ${ST.templateSaveDialog ? buildTemplateSaveDialog() : ''}
       ${ST.templatePicker ? buildTemplatePicker() : ''}
       ${ST.priceBookModal ? buildPriceBookModal() : ''}
+      ${ST.pastePrices ? buildPastePricesModal() : ''}
+      ${ST.pasteItems ? buildPasteItemsModal() : ''}
       ${ST.scopeTemplatesModal ? buildScopeTemplatesModal() : ''}
       ${ST.tradeCalcModal ? buildTradeCalcModal() : ''}
       ${ST.wsWizard && typeof buildWsWizard === 'function' ? buildWsWizard() : ''}
@@ -15024,37 +15093,97 @@ async function aiCompleteText(pid, userPrompt, planImages, opts) {
   // stays as a short placeholder for logs/fallback.
   if (opts && opts.task) { body.task = opts.task; body.taskData = opts.taskData || {}; }
   if (Array.isArray(planImages) && planImages.length) body.planImages = planImages;
-  return aiPostAsk(body);
+  return aiPostAsk(body, opts && opts.onBeat);
 }
 
 // The raw ask-ai call. Split out of aiCompleteText because the agent has to be
 // able to run with NO project selected — an empty workspace is exactly the case
 // where the user most needs it to act.
-async function aiPostAsk(body) {
+// The one in-flight AI request, so the estimator can stop it. Module-level and
+// never persisted: an abort handle has no meaning after a reload.
+let AI_ABORT = null;
+// True while a request is being cancelled on purpose, so the abort surfaces as
+// "you stopped it" rather than as a network failure.
+let AI_STOPPED = false;
+
+// Stop whatever is running. Called by the ■ Stop button. The trial credit is
+// handed back: a request the estimator killed before it answered bought nothing.
+function aiStop() {
+  if (!AI_ABORT) return false;
+  AI_STOPPED = true;
+  try { AI_ABORT.abort(); } catch (_e) {}
+  AI_ABORT = null;
+  if (typeof trialRefundAI === 'function') trialRefundAI();
+  return true;
+}
+function aiIsRunning() { return !!AI_ABORT; }
+
+// `out` is an optional object this call fills with its own usage record. The
+// module-level AI_LAST is still written for the many callers that read it, but
+// it is a single global: with two requests in flight it holds whichever
+// finished last. Any caller that runs requests CONCURRENTLY must pass `out` and
+// read that instead, or it will attribute one batch's searches to another.
+async function aiPostAsk(body, onBeat, out) {
   const t0 = Date.now();
   AI_LAST = null;
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
-    method: 'POST',
-    headers: aiEdgeHeaders(),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
+  // One request at a time is the real contract here — every call site awaits —
+  // so a single handle is enough, and it makes Stop unambiguous.
+  const ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+  AI_ABORT = ctrl; AI_STOPPED = false;
+  let res;
+  try {
+    res = await fetch(`${SUPABASE_URL}/functions/v1/ask-ai`, {
+      method: 'POST',
+      headers: aiEdgeHeaders(),
+      body: JSON.stringify(body),
+      signal: ctrl ? ctrl.signal : undefined,
+    });
+  } catch (err) {
+    AI_ABORT = null;
+    if (AI_STOPPED || (err && err.name === 'AbortError')) { AI_STOPPED = false; throw new Error('Stopped — nothing was sent to the AI.'); }
+    throw err;
+  }
+  if (!res.ok) { AI_ABORT = null; throw new Error('HTTP ' + res.status); }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '', full = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
-      if (evt.type === 'delta') full += evt.text;
-      else if (evt.type === 'usage') AI_LAST = { ...(evt.usage || {}), ms: Date.now() - t0 };
-      else if (evt.type === 'error') throw new Error(evt.message || 'AI error');
+  // THE STREAM-COMPLETENESS FLAG. Without it, a stream that DIED — edge function
+  // wall-clock kill, gateway idle cut, dropped connection — ended this loop in
+  // exactly the same way as one that finished, and the caller was handed a
+  // half-written JSON document as though it were the model's answer. The bid
+  // then failed with "Could not read the bid from the AI", which blamed the
+  // model for a sentence it never got to finish writing.
+  let sawEnd = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        let evt; try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+        if (evt.type === 'delta') full += evt.text;
+        else if (evt.type === 'usage') { AI_LAST = { ...(evt.usage || {}), ms: Date.now() - t0 }; if (out) Object.assign(out, AI_LAST); }
+        else if (evt.type === 'done') sawEnd = true;
+        // A contentless heartbeat while the model reasons. It carries nothing to
+        // show; its job is to keep bytes moving so the connection is not cut,
+        // and to let a caller prove the request is still alive.
+        else if (evt.type === 'thinking') { if (typeof onBeat === 'function') onBeat(evt.n || 0); }
+        else if (evt.type === 'error') throw new Error(evt.message || 'AI error');
+      }
     }
+  } catch (err) {
+    AI_ABORT = null;
+    if (AI_STOPPED || (err && err.name === 'AbortError')) { AI_STOPPED = false; throw new Error('Stopped — the answer was discarded.'); }
+    throw err;
+  }
+  AI_ABORT = null;
+  if (!sawEnd) {
+    const secs = Math.round((Date.now() - t0) / 1000);
+    console.warn('ask-ai: stream ended without a done event', { secs, chars: full.length, task: body && body.task });
+    throw new Error(`The connection to the AI dropped after ${secs}s (${full.length} characters had arrived). This is the connection, not the answer — nothing was wrong with your request. Try again with fewer sheets, or paste the breakdown as text instead.`);
   }
   if (!AI_LAST) AI_LAST = { ms: Date.now() - t0 };
   // A truncated answer is the one failure the schema can't prevent — name it,
@@ -15919,6 +16048,7 @@ function bidProfileToPrint() {
 // ═════════════════════════════════════════════════════════════════════════════
 const PRICE_HUNT_BATCH = 6;      // items per call — MUST stay in step with TASK_CONFIG.pricehunt in ask-ai
 const PRICE_HUNT_MAX   = 48;     // a single hunt never runs away with the budget
+const PRICE_HUNT_LANES = 3;      // batches in flight at once — see the loop at the end of priceHuntFetch
 
 // Material or labor? The bid applies the same split when it files lines into
 // Materials / Labor cost types, so the price researched for a row is the kind
@@ -16014,9 +16144,22 @@ async function priceHuntFetch(pid, targets, specText, onProgress) {
   const rules = (typeof bidRulesText === 'function') ? bidRulesText() : '';
   const projName = (allProjects().find(p => p.id === pid) || {}).name || '';
 
-  for (let i = 0; i < items.length; i += PRICE_HUNT_BATCH) {
-    const batch = items.slice(i, i + PRICE_HUNT_BATCH);
-    if (onProgress) onProgress(Math.min(i + batch.length, items.length), items.length);
+  // Batches run CONCURRENTLY, a few at a time. Each one is a separate web
+  // search plus a model turn, and they are completely independent — there is no
+  // reason batch 7 should wait on batch 1. Sequentially, a 40-item bid was 7
+  // blocking round trips stacked on top of the sheet read, which is most of what
+  // "it takes very long" was.
+  //
+  // Safe because: priceHuntFetch WRITES NOTHING (the caller commits), every
+  // batch carries its own {typeId, idx} captured before any of this started, no
+  // row is appended while they are in flight (priceBookNewRow already ran in
+  // step 1 of bidDraftPriceHunt), and priceHuntCommit re-checks row.code
+  // against the code it asked about before writing. The one real hazard was the
+  // shared AI_LAST global — each batch now reads its OWN usage object instead.
+  const groups = [];
+  for (let i = 0; i < items.length; i += PRICE_HUNT_BATCH) groups.push(items.slice(i, i + PRICE_HUNT_BATCH));
+  let finished = 0;
+  const runBatch = async (batch) => {
     const body = {
       projectContext: pid ? estBuildContext(pid) : {
         projectName: '(price book)', setup: {}, plans: [], reviewItems: [],
@@ -16035,12 +16178,15 @@ async function priceHuntFetch(pid, targets, specText, onProgress) {
     // needed here — the items to price are spelled out in taskData already.
     if (body.projectContext) body.projectContext.priceList = [];
     let parsed = null;
+    // This batch's OWN usage record. Reading the AI_LAST global here would
+    // report whichever concurrent batch happened to finish last.
+    const usage = {};
     try {
-      const text = await aiPostAsk(body);
-      searches += Number(AI_LAST && AI_LAST.searches) || 0;
+      const text = await aiPostAsk(body, null, usage);
+      searches += Number(usage.searches) || 0;
       // A batch that ran out of server-side tool turns comes back half-written.
       // Keep whatever parsed and leave the unanswered codes unpriced.
-      if (AI_LAST && AI_LAST.stop_reason === 'pause_turn') {
+      if (usage.stop_reason === 'pause_turn') {
         notes.push('One batch hit the search limit — some items were left unpriced. Run it again to finish them.');
       }
       parsed = parseAIJson(text);
@@ -16049,9 +16195,11 @@ async function priceHuntFetch(pid, targets, specText, onProgress) {
       failedBatches++;
       console.warn('pricehunt: batch failed', err);
       notes.push('A batch of ' + batch.length + ' item(s) failed: ' + ((err && err.message) || err));
-      continue;
+      if (onProgress) onProgress(Math.min(++finished * PRICE_HUNT_BATCH, items.length), items.length);
+      return;
     }
-    if (!parsed || !Array.isArray(parsed.prices)) { failedBatches++; notes.push('A batch came back unreadable.'); continue; }
+    if (onProgress) onProgress(Math.min(++finished * PRICE_HUNT_BATCH, items.length), items.length);
+    if (!parsed || !Array.isArray(parsed.prices)) { failedBatches++; notes.push('A batch came back unreadable.'); return; }
     if (parsed.notes) notes.push(String(parsed.notes).slice(0, 300));
     // Only codes we ASKED about are accepted. Echoing the code back is how a
     // result is matched to a row; anything else would write a researched price
@@ -16071,6 +16219,13 @@ async function priceHuntFetch(pid, targets, specText, onProgress) {
         note: String((p && p.note) || '').slice(0, 300),
       });
     }
+  };
+
+  // A few at a time, not all at once: each batch is a model turn plus up to 8
+  // web searches, and firing 8 of those together is how you find a rate limit.
+  // Three is well inside every tier and still turns 7 round trips into 3.
+  for (let i = 0; i < groups.length; i += PRICE_HUNT_LANES) {
+    await Promise.all(groups.slice(i, i + PRICE_HUNT_LANES).map(runBatch));
   }
   const found = results.filter(r => r.unitPrice > 0).length;
   return {
@@ -16229,20 +16384,9 @@ async function priceBookRefreshStale() {
   if (!confirm(`Research current Los Angeles prices for ${n} item${n === 1 ? '' : 's'}?\n\n`
     + `Prices you typed or imported yourself are never touched — only items with no price, or whose researched price is more than ${PRICE_TTL_DAYS} days old.`
     + (targets.length > PRICE_HUNT_MAX ? `\n\n${targets.length - PRICE_HUNT_MAX} more will be left for the next run.` : ''))) return;
-  if (!trialGuardAI()) return;
-  ST.pbHuntLoading = true; ST.pbHuntStage = `Pricing ${n} item${n === 1 ? '' : 's'}…`; render();
-  try {
-    const hunt = await priceHuntFetch(null, targets, '',
-      (done, total) => { ST.pbHuntStage = `Pricing item ${done} of ${total} from the Los Angeles market…`; render(); });
-    const wrote = priceHuntCommit(hunt);
-    aiLogEvent('pricehunt', { ok: true });
-    showToast(`${wrote} price${wrote === 1 ? '' : 's'} updated. ${priceHuntSummary(hunt)}`, wrote ? 'success' : 'warn');
-  } catch (err) {
-    aiLogEvent('pricehunt', { ok: false, err: err && err.message });
-    showToast('Price refresh failed: ' + ((err && err.message) || err), 'error');
-  } finally {
-    ST.pbHuntLoading = false; ST.pbHuntStage = ''; render();
-  }
+  // Same runner as the per-row 🔎 and the paste flow: one trial guard, one
+  // telemetry call, one set of words, no chance of the three drifting apart.
+  await priceHuntRunOn(targets.slice(0, PRICE_HUNT_MAX), `Pricing ${n} item${n === 1 ? '' : 's'}…`);
 }
 
 // Every sheet as TILES. A 36x24 mechanical sheet sent as one image is shrunk
@@ -16343,8 +16487,18 @@ async function hvacBidGenerate(pid, extra) {
       r = { images: (r2.images || []).slice(0, 25), pages: r.pages, mode: 'page' };
       text = await call(r.images);
     }
-    const parsed = parseAIJson(text);
-    if (!parsed || !Array.isArray(parsed.lines)) throw new Error('Could not read the bid from the AI. Try again.');
+    // Two parsers, same reason as the price hunt: the greedy first-brace-to-last
+    // -brace match is right for a reply that is nothing but JSON, and wrong the
+    // moment anything sits either side of it. The brace-balanced parser recovers
+    // the object that actually carries `lines`.
+    let parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.lines)) parsed = parseJsonObjectWith(text, 'lines');
+    if (!parsed || !Array.isArray(parsed.lines)) {
+      console.warn('bid: unparseable response', { chars: (text || '').length, head: String(text || '').slice(0, 300) });
+      throw new Error((text || '').trim()
+        ? 'The AI answered, but not in the shape a bid needs. Try again — or paste the breakdown as text, which is more reliable than reading the sheets.'
+        : 'The AI returned nothing at all. Try again with fewer sheets, or paste the breakdown as text.');
+    }
     const d = bidDraftNormalize(pid, parsed, r);
     if (!ST.overrides[pid]) ST.overrides[pid] = {};
     ST.overrides[pid]._bidDraft = d;   // saved: an expensive read must survive a reload
@@ -16374,6 +16528,519 @@ async function hvacBidGenerate(pid, extra) {
   } catch (err) {
     aiLogEvent('hvacbid', { ok: false, err: err && err.message, images: r.images.length });
     say('The bid failed: ' + (err.message || err), 'error');
+  } finally {
+    ST.bidLoading = null; ST.bidStage = ''; render();
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ZERO-TOKEN PASTE — the estimator's own numbers, straight in.
+// ------------------------------------------------------------
+// Two jobs that never needed a model and were costing AI credits anyway:
+//   PRICES  — "here are my prices, put them in the book"
+//   ITEMS   — "put this list of lines in the estimate"
+// Both are pure parsing. No API call, no AI credit, instant, and they work with
+// the trial exhausted or the internet flaky. Both still open a review screen
+// first, because writing to the price book or the Builder unseen is the one
+// thing this product does not do.
+//
+// The leading keyword is deliberate. A heuristic that guessed would eventually
+// guess wrong on a real question and silently rewrite the price book; one word
+// makes it unambiguous, and the estimator types it once per paste.
+// ═════════════════════════════════════════════════════════════════════════════
+const PASTE_PRICES_RE = /^\s*(?:prices?|precios?|price ?book|lista de precios?)\b\s*:?\s*/i;
+const PASTE_ITEMS_RE  = /^\s*(?:items?|lineas?|líneas?|l[ií]nea|lista de items?|builder)\b\s*:?\s*/i;
+
+function pasteKind(msg) {
+  const s = String(msg || '');
+  if (!/\n/.test(s.trim())) return null;         // a single line is a sentence, not a list
+  if (PASTE_PRICES_RE.test(s)) return 'prices';
+  if (PASTE_ITEMS_RE.test(s)) return 'items';
+  return null;
+}
+
+// Split one pasted row into fields. Accepts whatever a spreadsheet, an email or
+// a phone keyboard produces: pipes, tabs, semicolons, commas, or runs of spaces.
+// Commas are only treated as separators when nothing better is present, because
+// "Rooftop unit, 3 ton" is one name, not two fields.
+function pasteFields(line) {
+  const l = String(line).replace(/^\s*(?:[-•*·]|\d+[.)]|\(\d+\))\s+/, '').trim();
+  if (!l) return [];
+  let parts;
+  if (l.includes('|')) parts = l.split('|');
+  else if (l.includes('\t')) parts = l.split('\t');
+  else if (l.includes(';')) parts = l.split(';');
+  else if (/ {2,}/.test(l)) parts = l.split(/ {2,}/);
+  else if (l.includes(',')) parts = l.split(',');
+  else parts = [l];
+  return parts.map(x => x.trim()).filter((x, i, a) => x !== '' || i < a.length - 1);
+}
+
+// "$1,234.50" / "1.234,50" / "4200" → 4200. Returns NaN when it is not a price.
+function pasteMoney(v) {
+  let s = String(v == null ? '' : v).replace(/[^\d.,-]/g, '').trim();
+  if (!s) return NaN;
+  const lastDot = s.lastIndexOf('.'), lastComma = s.lastIndexOf(',');
+  if (lastDot >= 0 && lastComma >= 0) {
+    // Whichever separator is RIGHTMOST is the decimal mark — this is the only
+    // rule that reads both 1,234.50 and 1.234,50 correctly.
+    if (lastComma > lastDot) s = s.replace(/\./g, '').replace(',', '.');
+    else s = s.replace(/,/g, '');
+  } else if (lastComma >= 0) {
+    // A lone comma: decimal mark if it has 1-2 digits after it, else thousands.
+    s = /,\d{1,2}$/.test(s) ? s.replace(',', '.') : s.replace(/,/g, '');
+  }
+  const n = parseFloat(s);
+  return isFinite(n) ? n : NaN;
+}
+
+const PASTE_UNITS = ['EA', 'LF', 'SF', 'LS', 'HR', 'LB', 'CF', 'CY', 'SY', 'TON', 'GAL', 'PC'];
+function pasteUnit(v) {
+  const u = String(v == null ? '' : v).trim().toUpperCase().replace(/\.$/, '');
+  if (PASTE_UNITS.includes(u)) return u;
+  const m = { 'EACH': 'EA', 'UNIT': 'EA', 'UNITS': 'EA', 'C/U': 'EA', 'CU': 'EA', 'UND': 'EA', 'PZA': 'EA', 'PCS': 'PC',
+              'LIN FT': 'LF', 'LINFT': 'LF', 'FT': 'LF', 'PIE': 'LF', 'ML': 'LF',
+              'SQFT': 'SF', 'SQ FT': 'SF', 'M2': 'SF', 'LUMP SUM': 'LS', 'GLOBAL': 'LS', 'HOUR': 'HR', 'HORA': 'HR' };
+  return m[u] || '';
+}
+
+// Find the price-book row a pasted line refers to. Code first (exact, it is the
+// identity), then an exact case-insensitive name match. Never fuzzy: a near
+// match that silently repriced the wrong item would be worse than a new row.
+function pasteFindRow(typeId, key, unit) {
+  const k = String(key || '').trim();
+  if (!k) return -1;
+  const list = getPricingForType(typeId);
+  let i = list.findIndex(r => r && String(r.code || '').toLowerCase() === k.toLowerCase());
+  if (i >= 0) return i;
+  const n = k.toLowerCase();
+  const u = String(unit || '').toUpperCase();
+  i = list.findIndex(r => r && String(r.name || '').trim().toLowerCase() === n && (!u || String(r.unit || '').toUpperCase() === u));
+  if (i >= 0) return i;
+  return list.findIndex(r => r && String(r.name || '').trim().toLowerCase() === n);
+}
+
+function pasteTypeId() {
+  const ts = (typeof getPricingEditorTypes === 'function') ? getPricingEditorTypes() : [];
+  if (typeof isHvacSub === 'function' && isHvacSub()) return 'hvac';
+  return (ts[0] && ts[0].id) || 'hvac';
+}
+
+// ── PRICES → the price book ──────────────────────────────────────────────────
+// Row shapes accepted, in the order they are tried:
+//   code | name | unit | price     name | unit | price     name | price
+function pasteParsePrices(msg) {
+  const typeId = pasteTypeId();
+  const body = String(msg || '').replace(PASTE_PRICES_RE, '');
+  const rows = [], bad = [];
+  for (const raw of body.split('\n')) {
+    if (!raw.trim()) continue;
+    const f = pasteFields(raw);
+    if (!f.length) continue;
+    // The price is the LAST field that reads as money. Everything before the
+    // unit (if any) is the name.
+    let price = NaN, priceAt = -1;
+    for (let i = f.length - 1; i >= 0; i--) { const v = pasteMoney(f[i]); if (isFinite(v) && /\d/.test(f[i])) { price = v; priceAt = i; break; } }
+    // A row with NO price is not an error — it is "add this item, I'll get the
+    // price later". That is how the estimator actually works: he knows what the
+    // job needs long before he knows what it costs. The row is created at $0 and
+    // offered to the price hunt, instead of being thrown away with a complaint.
+    //
+    // Careful: a size in the name IS a number ("Rect duct 20x12", "RTU 3 ton"),
+    // so a field only counts as the price when it is a bare number — a field
+    // with letters in it is part of the name.
+    if (priceAt >= 0 && !/^[\s$€£]*[\d.,]+[\s]*$/.test(f[priceAt])) { price = NaN; priceAt = -1; }
+    const before = priceAt >= 0 ? f.slice(0, priceAt) : f.slice();
+    if (!before.length) { bad.push({ line: raw.trim(), why: 'no item name' }); continue; }
+    let unit = '';
+    if (before.length > 1) { const u = pasteUnit(before[before.length - 1]); if (u) { unit = u; before.pop(); } }
+    let code = '', name = '';
+    if (before.length >= 2 && /^[a-z0-9][a-z0-9._-]{1,39}$/i.test(before[0]) && pasteFindRow(typeId, before[0]) >= 0) {
+      code = before[0]; name = before.slice(1).join(' ').trim();
+    } else {
+      name = before.join(' ').trim();
+    }
+    if (!name && !code) { bad.push({ line: raw.trim(), why: 'no item name' }); continue; }
+    // Now that a line with no price is a legitimate "add this item", a stray
+    // paragraph pasted under the keyword would otherwise become catalog rows.
+    // An item name is short and has letters in it; a sentence is neither.
+    if (price == null || !isFinite(price)) {
+      if (name.length > 120) { bad.push({ line: raw.trim(), why: 'too long to be an item name' }); continue; }
+      if (!/[a-z]/i.test(name)) { bad.push({ line: raw.trim(), why: 'no item name' }); continue; }
+    }
+    const idx = pasteFindRow(typeId, code || name, unit);
+    const cur = idx >= 0 ? getPricingForType(typeId)[idx] : null;
+    rows.push({
+      typeId, idx, code: cur ? cur.code : '', name: name || (cur ? cur.name : ''),
+      unit: unit || (cur ? cur.unit : 'EA'),
+      // null means "no price given" — the row still gets created, and the modal
+      // offers to research it.
+      price: isFinite(price) ? price : null,
+      was: cur ? (Number(cur.perUnit) || 0) : null,
+      isNew: idx < 0, on: true, raw: raw.trim(),
+    });
+  }
+  return { rows, bad };
+}
+
+function pasteOpenPrices(msg) {
+  const { rows, bad } = pasteParsePrices(msg);
+  if (!rows.length) {
+    assistantPush('assistant', `△ I could not read a single item out of that.\n\nOne item per line, starting the message with the word **prices**. The price is optional — leave it off and I'll go and find it:\n• \`Rooftop unit 3 ton heat pump\`  ← just the name, I price it\n• \`Rooftop unit 3 ton | EA | 4200\`  ← your price, kept forever\n• \`Rooftop unit 3 ton  4200\`  (two or more spaces)\n\nThe more specific the name, the better the price I can find — size, capacity, efficiency, gauge.`
+      + (bad.length ? `\n\nWhat I choked on:\n${bad.slice(0, 5).map(b => `• ${b.line} — ${b.why}`).join('\n')}` : ''));
+    return;
+  }
+  ST.pastePrices = { rows, bad, ts: new Date().toISOString() };
+  render();
+}
+function pastePricesToggle(i) { const m = ST.pastePrices; if (m && m.rows[i]) { m.rows[i].on = !m.rows[i].on; render(); } }
+function pastePricesCancel() { ST.pastePrices = null; assistantPush('assistant', 'Cancelled — the price book is unchanged.'); render(); }
+
+// `andResearch` = write the rows, then immediately go and price the ones that
+// came in without a number. That is the whole "I give you the names, you find
+// the prices" flow in one button.
+async function pastePricesApply(andResearch) {
+  const m = ST.pastePrices; if (!m) return;
+  let updated = 0, added = 0;
+  const toHunt = [];
+  for (const r of m.rows) {
+    if (!r.on) continue;
+    let idx = r.idx;
+    if (idx < 0) {
+      const made = priceBookNewRow(r.typeId, { name: r.name, unit: r.unit, cat: (typeof hvacGuessCat === 'function') ? hvacGuessCat({ name: r.name }) : '' });
+      idx = made.idx; added++;
+    } else updated++;
+    if (r.price == null) {
+      // No price given → leave the row unpriced and queue it for research.
+      const row = getPricingForType(r.typeId)[idx];
+      if (row) toHunt.push({ typeId: r.typeId, idx, code: row.code, name: row.name, sub: row.sub || '', unit: row.unit || 'EA', kind: priceKindFor(row) });
+    } else {
+      // origin 'user' — the shop's own number, exempt from the 15-day refresh
+      // for good, exactly like a price typed into the editor.
+      setPricingItem(r.typeId, idx, 'perUnit', r.price, 'user');
+    }
+  }
+  saveSt();
+  ST.pastePrices = null;
+  const typed = updated + added - toHunt.length;
+  assistantPush('assistant', `✓ Price book updated with no AI — ${added} item${added === 1 ? '' : 's'} added, ${typed} price${typed === 1 ? '' : 's'} set from your paste.`
+    + (typed ? ' Those are yours, so nothing will ever overwrite them.' : '')
+    + (toHunt.length ? `\n\n${toHunt.length} item${toHunt.length === 1 ? ' has' : 's have'} no price yet.` : ''));
+  render();
+  if (!toHunt.length) { showToast(`${updated + added} row${updated + added === 1 ? '' : 's'} written · 0 AI`, 'success'); return; }
+  if (!andResearch) {
+    showToast(`${added} item${added === 1 ? '' : 's'} added · ${toHunt.length} still unpriced`, 'warn');
+    assistantPush('assistant', `Open Files → Price book and hit 🔎 on any row to price it, or 🔎 Refresh prices to do them all at once.`);
+    return;
+  }
+  await priceHuntRunOn(toHunt, `Pricing ${toHunt.length} new item${toHunt.length === 1 ? '' : 's'}…`);
+}
+
+// One shared runner for every "go and price these specific rows" entry point:
+// the paste flow, the per-row 🔎 in the price book, and the bulk refresh. Having
+// one place means the trial guard, the telemetry and the wording can never drift
+// apart between them.
+async function priceHuntRunOn(targets, label) {
+  if (!targets || !targets.length) return null;
+  if (ST.pbHuntLoading) { showToast('A price lookup is already running.', 'warn'); return null; }
+  if (!trialGuardAI()) return null;
+  ST.pbHuntLoading = true; ST.pbHuntStage = label || 'Pricing…'; render();
+  try {
+    const hunt = await priceHuntFetch(null, targets, '',
+      (done, total) => { ST.pbHuntStage = `Pricing item ${done} of ${total} from the Los Angeles market…`; render(); });
+    const wrote = priceHuntCommit(hunt);
+    aiLogEvent('pricehunt', { ok: true });
+    const msg = `${wrote} price${wrote === 1 ? '' : 's'} found. ${priceHuntSummary(hunt)}`;
+    showToast(msg, wrote ? 'success' : 'warn');
+    if (ST.tab === 'assistant') assistantPush('assistant', `✓ ${msg}`
+      + (hunt.notes.length ? '\n\n' + hunt.notes.map(n => '△ ' + n).join('\n') : '')
+      + '\n\nUnit costs with waste inside, no markup. Hover any price in Files → Price book to see its sources.');
+    return hunt;
+  } catch (err) {
+    aiLogEvent('pricehunt', { ok: false, err: err && err.message });
+    showToast('Price lookup failed: ' + ((err && err.message) || err), 'error');
+    return null;
+  } finally {
+    ST.pbHuntLoading = false; ST.pbHuntStage = ''; render();
+  }
+}
+
+// 🔎 on a single row — price THIS item, now. The bulk refresh prices everything
+// that is due, which is the wrong tool when you have just added one item and
+// want its number before you carry on.
+async function priceBookHuntOne(typeId, idx) {
+  const row = getPricingForType(typeId)[idx];
+  if (!row) return;
+  await priceHuntRunOn([{ typeId, idx, code: row.code, name: row.name, sub: row.sub || '', unit: row.unit || 'EA', kind: priceKindFor(row) }],
+    `Pricing “${String(row.name || '').slice(0, 40)}”…`);
+}
+
+// ── ITEMS → the Builder ──────────────────────────────────────────────────────
+// Row shapes accepted:
+//   name | qty | unit       name | qty       qty x name       name  qty  unit
+function pasteParseItems(msg) {
+  const typeId = pasteTypeId();
+  const body = String(msg || '').replace(PASTE_ITEMS_RE, '');
+  const rows = [], bad = [];
+  for (const raw of body.split('\n')) {
+    if (!raw.trim()) continue;
+    let line = raw.trim();
+    let qty = NaN, unit = '', name = '';
+    // "12 x Diffuser 24x24" / "12x Diffuser" — the quantity-first shape people
+    // actually type in a hurry.
+    const lead = /^(\d+(?:[.,]\d+)?)\s*(?:x|×)\s+(.+)$/i.exec(line);
+    if (lead) { qty = pasteMoney(lead[1]); name = lead[2].trim(); }
+    else {
+      const f = pasteFields(line);
+      if (!f.length) continue;
+      // Quantity is the last purely-numeric field; a unit may sit after it.
+      let at = -1;
+      for (let i = f.length - 1; i >= 0; i--) {
+        if (pasteUnit(f[i])) { unit = pasteUnit(f[i]); continue; }
+        const v = pasteMoney(f[i]);
+        if (isFinite(v) && /^[\d.,\s]+$/.test(f[i])) { qty = v; at = i; break; }
+      }
+      name = (at >= 0 ? f.slice(0, at) : f).join(' ').trim();
+      if (at < 0) qty = 1;   // a bare name means one of them
+    }
+    if (!name) { bad.push({ line: raw.trim(), why: 'no item name' }); continue; }
+    if (!isFinite(qty) || qty < 0) { bad.push({ line: raw.trim(), why: 'unreadable quantity' }); continue; }
+    const idx = pasteFindRow(typeId, name, unit);
+    const row = idx >= 0 ? getPricingForType(typeId)[idx] : null;
+    rows.push({
+      typeId, idx, name, qty,
+      unit: unit || (row ? row.unit : 'EA'),
+      code: row ? row.code : '',
+      perUnit: row ? (Number(row.perUnit) || 0) : 0,
+      matched: !!row, on: true, raw: raw.trim(),
+    });
+  }
+  return { rows, bad };
+}
+
+function pasteOpenItems(msg) {
+  const { rows, bad } = pasteParseItems(msg);
+  if (!rows.length) {
+    assistantPush('assistant', `△ I could not read a single line out of that.\n\nOne item per line. Any of these work:\n• \`Diffuser 24x24 | 12 | EA\`\n• \`12 x Diffuser 24x24\`\n• \`Rect duct 20x12  140  LF\`\n\nStart the message with the word **items**. Names are matched to your price book exactly — anything I can't match still goes in, at $0, for you to price.`
+      + (bad.length ? `\n\nWhat I choked on:\n${bad.slice(0, 5).map(b => `• ${b.line} — ${b.why}`).join('\n')}` : ''));
+    return;
+  }
+  const p = asstScopeProject();
+  ST.pasteItems = { rows, bad, pid: p ? p.id : null, ts: new Date().toISOString() };
+  render();
+}
+function pasteItemsToggle(i) { const m = ST.pasteItems; if (m && m.rows[i]) { m.rows[i].on = !m.rows[i].on; render(); } }
+function pasteItemsSetQty(i, v) { const m = ST.pasteItems; if (m && m.rows[i]) { m.rows[i].qty = Math.max(0, Number(v) || 0); scheduleIdleRender && scheduleIdleRender(); } }
+function pasteItemsSetPid(pid) { const m = ST.pasteItems; if (m) { m.pid = pid || null; render(); } }
+function pasteItemsCancel() { ST.pasteItems = null; assistantPush('assistant', 'Cancelled — nothing was added to the Builder.'); render(); }
+
+function pasteItemsApply(mode) {
+  const m = ST.pasteItems; if (!m) return;
+  const pid = m.pid;
+  if (!pid) { showToast('Pick which project these lines belong to first.', 'warn'); return; }
+  const est = builderEnsure(pid);
+  if (mode === 'replace') est.groups = [];
+  if (typeof hvacSeedGroups === 'function') hvacSeedGroups(pid);
+  const mk = (typeof getSettings === 'function' && getSettings().defaultMarkup) ? getSettings().defaultMarkup : {};
+  const LABOR = /install|\bset\b|labor|start-?up|balanc|supervis|mobiliz|demoli|remov|haul|submittal|closeout|as-built|coordinat|service|clean|relocat|test/i;
+  let seq = 0, n = 0, unpriced = 0;
+  for (const r of m.rows) {
+    if (!r.on) continue;
+    const ct = LABOR.test(r.name) ? 'Labor' : 'Materials';
+    const it = {
+      id: 'i_' + Date.now().toString(36) + '_' + (seq++).toString(36) + Math.random().toString(36).slice(2, 5),
+      code: r.code, title: r.name, description: r.matched ? '' : 'pasted — not in the price book',
+      qty: r.qty, unit: r.unit, unitCost: r.perUnit,
+      costType: ct, markup: Number(mk[ct]) || 0, taxable: false,
+    };
+    if (!(r.perUnit > 0)) unpriced++;
+    if (typeof isHvacSub === 'function' && isHvacSub()) {
+      hvacGroupFor(pid, hvacCatForLine(r.code, r.name)).items.push(it);
+    } else {
+      let g = est.groups[est.groups.length - 1];
+      if (!g) { g = { id: 'g_' + Date.now().toString(36), code: 'GEN', title: '', items: [] }; est.groups.push(g); }
+      g.items.push(it);
+    }
+    n++;
+  }
+  saveSt();
+  ST.pasteItems = null;
+  ST.builderSelProj = pid;
+  assistantPush('assistant', `✓ ${n} line${n === 1 ? '' : 's'} added to the Builder with no AI${unpriced ? ` — ${unpriced} of them at $0, because your price book doesn't carry them yet` : ', all priced from your book'}.`);
+  showToast(`${n} line${n === 1 ? '' : 's'} in the Builder · 0 AI${unpriced ? ` · ${unpriced} unpriced` : ''}`, unpriced ? 'warn' : 'success');
+  setTab('builder');
+}
+
+// Review screens for the two zero-token pastes. They cost nothing to produce,
+// but they still write to the price book and the Builder — so they get the same
+// look-before-it-lands treatment as everything the AI proposes.
+function buildPastePricesModal() {
+  const m = ST.pastePrices; if (!m) return '';
+  const on = m.rows.filter(r => r.on);
+  const priced = on.filter(r => r.price != null);
+  const unpriced = on.filter(r => r.price == null);
+  const changed = priced.filter(r => !r.isNew && r.was !== r.price).length;
+  const news = on.filter(r => r.isNew).length;
+  const same = priced.filter(r => !r.isNew && r.was === r.price).length;
+  return `<div class="backdrop" onclick="if(event.target===this){pastePricesCancel()}">
+    <div class="modal modal-wide" style="max-width:800px" onclick="event.stopPropagation()">
+      <div class="modal-title">⇩ Items from your paste — no AI used</div>
+      <div class="modal-sub">${m.rows.length} row${m.rows.length === 1 ? '' : 's'} read${news ? ` · <b>${news}</b> new item${news === 1 ? '' : 's'}` : ''}${changed ? ` · <b>${changed}</b> price${changed === 1 ? '' : 's'} to change` : ''}${same ? ` · ${same} already at that price` : ''}${unpriced.length ? ` · <b style="color:var(--amber)">${unpriced.length} with no price</b>` : ''}.<br>A price you gave becomes <b style="color:var(--green)">yours</b> and is never overwritten. A row with no price goes in at $0 — research it here, or later from the price book.</div>
+      <div style="max-height:52vh;overflow:auto;margin-top:12px;border:1px solid var(--border);border-radius:var(--r2)">
+        ${m.rows.map((r, i) => `<div style="display:grid;grid-template-columns:22px 1fr 54px 100px 100px;gap:8px;align-items:center;padding:7px 10px;${i ? 'border-top:1px solid var(--border);' : ''}${r.on ? '' : 'opacity:.45;'}background:var(--bg1)">
+          <input type="checkbox" ${r.on ? 'checked' : ''} onclick="pastePricesToggle(${i})">
+          <div style="min-width:0">
+            <div style="font-size:12.5px;color:var(--ink-900);line-height:1.35">${esc(r.name)}</div>
+            <div style="font-family:var(--mono);font-size:9px;color:var(--text3)">${r.isNew ? '<span style="color:var(--amber)">NEW — added to your book</span>' : `<span style="color:var(--green)">▤ ${esc(r.code)}</span>`}</div>
+          </div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--text3);text-align:center">${esc(r.unit)}</div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--text3);text-align:right">${r.was == null ? '—' : (r.was > 0 ? fmt$(r.was) : '$0')}</div>
+          <div style="font-family:var(--mono);font-size:12px;text-align:right;font-weight:600;color:${r.price == null ? 'var(--amber)' : 'var(--ink-900)'}">${r.price == null ? '🔎 find it' : fmt$(r.price)}</div>
+        </div>`).join('')}
+      </div>
+      ${m.bad.length ? `<div style="margin-top:10px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:8px 11px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--amber);font-weight:600;margin-bottom:4px">△ ${m.bad.length} line${m.bad.length === 1 ? '' : 's'} I could not read</div>
+        ${m.bad.slice(0, 6).map(b => `<div style="font-size:11.5px;color:var(--ink-900);line-height:1.5">• ${esc(b.line)} <span style="color:var(--text3)">— ${esc(b.why)}</span></div>`).join('')}
+      </div>` : ''}
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="pastePricesCancel()">Cancel</button>
+        <button class="btn ${unpriced.length ? 'btn-ghost' : 'btn-amber'}" onclick="pastePricesApply(false)" ${on.length ? '' : 'disabled'}>✓ Write ${on.length} to the price book${unpriced.length ? ' · 0 AI' : ''}</button>
+        ${unpriced.length ? `<button class="btn btn-amber" onclick="pastePricesApply(true)">✓ Write, then find the ${unpriced.length} missing price${unpriced.length === 1 ? '' : 's'} →</button>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
+function buildPasteItemsModal() {
+  const m = ST.pasteItems; if (!m) return '';
+  const on = m.rows.filter(r => r.on);
+  const total = on.reduce((s, r) => s + r.qty * r.perUnit, 0);
+  const unmatched = on.filter(r => !r.matched).length;
+  return `<div class="backdrop" onclick="if(event.target===this){pasteItemsCancel()}">
+    <div class="modal modal-wide" style="max-width:820px" onclick="event.stopPropagation()">
+      <div class="modal-title">⇩ Lines from your paste — no AI used</div>
+      <div class="modal-sub">${m.rows.length} line${m.rows.length === 1 ? '' : 's'} read · priced from your book = <b>${fmt$(total)}</b> before markup${unmatched ? ` · <span style="color:var(--amber)">${unmatched} not in your book (they go in at $0)</span>` : ''}</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">
+        <span style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Into project</span>
+        <select class="msel" onchange="pasteItemsSetPid(this.value)" style="margin:0;min-width:240px">
+          <option value=""${m.pid ? '' : ' selected'}>— pick a project —</option>
+          ${allProjects().map(p => `<option value="${esc(p.id)}"${m.pid === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div style="max-height:50vh;overflow:auto;margin-top:12px;border:1px solid var(--border);border-radius:var(--r2)">
+        ${m.rows.map((r, i) => `<div style="display:grid;grid-template-columns:22px 1fr 82px 44px 92px 96px;gap:8px;align-items:center;padding:7px 10px;${i ? 'border-top:1px solid var(--border);' : ''}${r.on ? '' : 'opacity:.45;'}background:var(--bg1)">
+          <input type="checkbox" ${r.on ? 'checked' : ''} onclick="pasteItemsToggle(${i})">
+          <div style="min-width:0">
+            <div style="font-size:12.5px;color:var(--ink-900);line-height:1.35">${esc(r.name)}</div>
+            <div style="font-family:var(--mono);font-size:9px;color:var(--text3)">${r.matched ? `<span style="color:var(--green)">▤ ${esc(r.code)}</span>` : '<span style="color:var(--amber)">not in your price book</span>'}</div>
+          </div>
+          <input type="number" min="0" step="any" value="${esc(String(r.qty))}" onchange="pasteItemsSetQty(${i},this.value)" style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:4px 6px;font-family:var(--mono);font-size:12px;text-align:right;color:var(--text);outline:none;width:100%;box-sizing:border-box">
+          <div style="font-family:var(--mono);font-size:10px;color:var(--text3)">${esc(r.unit)}</div>
+          <div style="font-family:var(--mono);font-size:11px;text-align:right;color:${r.perUnit > 0 ? 'var(--text3)' : 'var(--amber)'}">${r.perUnit > 0 ? fmt$(r.perUnit) : 'price it'}</div>
+          <div style="font-family:var(--mono);font-size:12px;text-align:right;color:var(--ink-900)">${r.perUnit > 0 ? fmt$(r.qty * r.perUnit) : '—'}</div>
+        </div>`).join('')}
+      </div>
+      ${m.bad.length ? `<div style="margin-top:10px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:8px 11px">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--amber);font-weight:600;margin-bottom:4px">△ ${m.bad.length} line${m.bad.length === 1 ? '' : 's'} I could not read</div>
+        ${m.bad.slice(0, 6).map(b => `<div style="font-size:11.5px;color:var(--ink-900);line-height:1.5">• ${esc(b.line)} <span style="color:var(--text3)">— ${esc(b.why)}</span></div>`).join('')}
+      </div>` : ''}
+      <div class="modal-btns" style="margin-top:14px">
+        <button class="btn btn-ghost" onclick="pasteItemsCancel()">Cancel</button>
+        <button class="btn btn-ghost" onclick="pasteItemsApply('append')" ${on.length && m.pid ? '' : 'disabled'}>+ Add to Builder</button>
+        <button class="btn btn-amber" onclick="if(confirm('Replace this project\\u2019s Builder estimate with these lines?'))pasteItemsApply('replace')" ${on.length && m.pid ? '' : 'disabled'}>✓ Use as the estimate</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── BID FROM A WRITTEN BREAKDOWN — no PDF, no vision ─────────────────────────
+// The estimator has already read the Title-24 form and the mechanical notes and
+// typed out what the job needs. Reading a JPEG of the same table is slower, more
+// expensive and less accurate than reading what they typed, so this path skips
+// the drawings entirely and goes straight to lines → price book → Builder.
+//
+// It lands in the SAME review screen as a bid read from drawings, because it
+// returns the same shape: one modal, one set of habits, one place to correct a
+// number. The only visible difference is that every line says where it came
+// from — the estimator's own words instead of a sheet reference.
+// A floor, not a threshold. Below this it is a fragment; above it, the SHAPE
+// decides. An early version used 120 and silently rejected a tight four-line
+// list — which is exactly how a busy estimator writes a small job.
+const TEXTBID_MIN_CHARS = 60;
+
+// Does this message look like a written scope breakdown rather than a question?
+// Deliberately conservative: a false positive spends an AI credit and opens a
+// modal the estimator did not ask for.
+function textBidLooksLike(msg) {
+  const s = String(msg || '').trim();
+  if (s.length < TEXTBID_MIN_CHARS) return false;
+  if (bidImportLooksLike(s)) return false;            // that is the 0-token JSON path
+  const lines = s.split('\n').filter(l => l.trim());
+  // Either it is laid out as a list, or it is long prose that names real scope.
+  const listish = lines.filter(l => /^\s*(?:[-•*·]|\d+[.)]|\(\d+\))\s+/.test(l)).length;
+  const hasQty = /\b\d+(?:\.\d+)?\s*(?:ea|each|lf|sf|ln\.?\s*ft|sq\.?\s*ft|ton|tons?|cfm|mbh|kw|unit|units|pcs?)\b/i.test(s);
+  const hasTrade = /duct|ducto|diffuser|difusor|grille|rejilla|register|rtu|ahu|heat pump|bomba de calor|condens|thermostat|termostato|damper|plenum|insulat|aisl|refriger|exhaust|extracci[oó]n|curb|\btab\b|balanc|title ?-?24/i.test(s);
+  if (!hasTrade) return false;
+  // Any ONE of these is enough: it is laid out as a list, or it is several
+  // lines carrying real quantities, or it is simply a lot of prose about the
+  // trade. Length alone never qualifies a message, and never disqualifies one.
+  return listish >= 3 || (hasQty && lines.length >= 3) || s.length >= 600;
+}
+
+async function textBidGenerate(pid, breakdown) {
+  if (ST.bidLoading) return;
+  const p = allProjects().find(x => x.id === pid); if (!p) return;
+  const inChat = ST.tab === 'assistant';
+  const say = (m, kind) => { showToast(m, kind || 'warn'); if (inChat) assistantPush('assistant', '△ ' + m); };
+  const text = String(breakdown || '').trim();
+  if (text.length < TEXTBID_MIN_CHARS) { say('Write out the breakdown first — what equipment, what duct, what devices, with quantities where you have them.'); return; }
+  if (!trialGuardAI()) return;
+
+  ST.bidLoading = pid; ST.bidStage = 'Reading your breakdown and building the bid…'; render();
+  const e = getEstProj(pid);
+  const s = e.setup || {};
+  const knownText = AGENT_SETUP_FIELDS.filter(f => f !== 'notes' && s[f]).map(f => `${f}: ${s[f]}`).join('\n');
+  const taskData = {
+    projectName: p.name,
+    knownText,
+    breakdown: text,
+    profile: bidProfileText(),
+    catalog: aiPriceList().map(x => ({ code: x.code, name: x.name, unit: x.unit })),
+  };
+  try {
+    const out = await aiCompleteText(pid, `Bid from written breakdown · ${p.name}`, null, {
+      lean: true, task: 'textbid', taskData,
+      onBeat: () => { ST.bidStage = 'Working through your breakdown…'; scheduleIdleRender && scheduleIdleRender(); },
+    });
+    let parsed = parseAIJson(out);
+    if (!parsed || !Array.isArray(parsed.lines)) parsed = parseJsonObjectWith(out, 'lines');
+    if (!parsed || !Array.isArray(parsed.lines)) throw new Error('The AI answered, but not in the shape a bid needs. Try again.');
+    // Same normaliser, same review modal, same six divisions as a bid read from
+    // drawings — this path adds a source, not a second pipeline.
+    const d = bidDraftNormalize(pid, parsed, { images: [], pages: 0, mode: 'text' });
+    if (!ST.overrides[pid]) ST.overrides[pid] = {};
+    ST.overrides[pid]._bidDraft = d;
+    saveSt();
+    aiLogEvent('textbid', { ok: true }).then(id => { d.evt = id; saveSt(); });
+    try {
+      if (trialGuardAI()) {
+        await bidDraftPriceHunt(pid, d, (m) => { ST.bidStage = m; render(); });
+        aiLogEvent('pricehunt', { ok: true });
+      } else if (inChat) {
+        assistantPush('assistant', '△ The breakdown became a bid, but pricing it needs another AI action and the trial is out.');
+      }
+    } catch (err) {
+      aiLogEvent('pricehunt', { ok: false, err: err && err.message });
+      d.huntError = (err && err.message) || String(err);
+      showToast('The bid was built, but prices could not be researched: ' + d.huntError, 'warn');
+    }
+    ST.overrides[pid]._bidDraft = d;
+    ST.bidDraftOpen = pid;
+    saveSt();
+    if (inChat) assistantPush('assistant', bidChatSummary(d));
+  } catch (err) {
+    aiLogEvent('textbid', { ok: false, err: err && err.message });
+    say('Could not build the bid: ' + ((err && err.message) || err), 'error');
   } finally {
     ST.bidLoading = null; ST.bidStage = ''; render();
   }
@@ -18105,8 +18772,18 @@ async function aiCmdSend() {
     await bidImportFromChat(msg);
     return;
   }
+  // Two more paste formats that cost NOTHING — no model call, no AI credit.
+  // Checked before the router so a pasted list can never be mistaken for a
+  // question and billed as one.
+  const paste = pasteKind(msg);
+  if (paste === 'prices') { assistantPush('user', '⇩ Pasted price list'); pasteOpenPrices(msg); return; }
+  if (paste === 'items')  { assistantPush('user', '⇩ Pasted item list');  pasteOpenItems(msg);  return; }
+
   assistantPush('user', msg);
   let intent = aiCmdIntent(msg);
+  // A long written scope is a request for an estimate even when the sentence
+  // never says the word — this is how the estimator actually types.
+  if ((intent === 'chat' || intent === 'status') && typeof isHvacSub === 'function' && isHvacSub() && textBidLooksLike(msg)) intent = 'estimate';
   // "How many diffusers are on level 2?" is a question about the DRAWINGS, not
   // a status report — the 0-token status card would answer the wrong thing.
   if (intent === 'status' && !/status|estado|avance|progress|c[oó]mo va/i.test(msg) && asstWantsPlans(msg)) intent = 'chat';
@@ -18170,22 +18847,7 @@ async function aiCmdDispatch(intent, p, msg) {
       return;
     }
     assistantPush('assistant', `✦ ${due.length} item${due.length === 1 ? ' is' : 's are'} due — unpriced, or researched more than ${PRICE_TTL_DAYS} days ago. Looking up current Los Angeles prices${due.length > PRICE_HUNT_MAX ? ` (the first ${PRICE_HUNT_MAX} this run)` : ''}. Prices you set yourself are left alone.`);
-    if (!trialGuardAI()) return;
-    ST.assistantBusy = true; render();
-    try {
-      const hunt = await priceHuntFetch(null, due, '',
-        (done, total) => { ST.asstBusyLabel = `Pricing item ${done} of ${total}…`; render(); });
-      const wrote = priceHuntCommit(hunt);
-      aiLogEvent('pricehunt', { ok: true });
-      assistantPush('assistant', `✓ ${wrote} price${wrote === 1 ? '' : 's'} written to your book, dated today.\n${priceHuntSummary(hunt)}`
-        + (hunt.notes.length ? '\n\n' + hunt.notes.map(n => '△ ' + n).join('\n') : '')
-        + '\n\nThese are unit costs with waste inside them and no markup — set your markup in the Builder.');
-    } catch (err) {
-      aiLogEvent('pricehunt', { ok: false, err: err && err.message });
-      assistantPush('assistant', '△ The price refresh failed: ' + ((err && err.message) || err));
-    } finally {
-      ST.assistantBusy = false; ST.asstBusyLabel = ''; render();
-    }
+    await priceHuntRunOn(due.slice(0, PRICE_HUNT_MAX), `Pricing ${Math.min(due.length, PRICE_HUNT_MAX)} item${due.length === 1 ? '' : 's'}…`);
     return;
   }
 
@@ -18206,6 +18868,16 @@ async function aiCmdDispatch(intent, p, msg) {
     const words = msg.replace(/[^a-z0-9áéíóúñ ]/gi, ' ').split(/\s+/).filter(Boolean).length;
     if (!hasPlans && words < 8) {
       assistantPush('assistant', `I don't have plans for “${p.name}” yet, and the request doesn't describe the job. Two ways forward:\n• Attach the plans with 📎 below and ask me again — I'll read them.\n• Or describe the work right here (systems, sizes, rooms, materials…) and I'll generate the estimate anyway from your catalog, with notes on everything I assumed.`);
+      return;
+    }
+    // A WRITTEN breakdown beats the drawings, every time. The estimator has
+    // already read the sheets and typed out what the job needs; re-deriving the
+    // same facts from JPEGs is slower, costs vision tokens and is less accurate
+    // than reading what they typed. So this is checked BEFORE the plan path,
+    // even when plans are on file.
+    if (typeof isHvacSub === 'function' && isHvacSub() && textBidLooksLike(msg)) {
+      assistantPush('assistant', `✦ Building the bid for “${p.name}” straight from your written breakdown — no sheets to read, so this is fast. I'll expand what the trade requires but you left implicit (hangers, fittings, dampers, start-up), flag anything I had to assume, price it from your book and research whatever the book doesn't carry yet. You review it all before it lands in the Builder.`);
+      await textBidGenerate(pid, msg);
       return;
     }
     // HVAC shop + drawings on file → the full bid skill: reads every sheet in
@@ -18277,7 +18949,23 @@ async function aiCmdDispatch(intent, p, msg) {
   }
 
   if (intent === 'breakdown') {
-    if (isSubAccount()) { assistantPush('assistant', `Plan breakdown → RFPs is a GC tool. As a sub, ask me for an estimate instead — I'll read the plans and price from your catalog.`); return; }
+    // "Breakdown" means two different jobs depending on who is asking. For a GC
+    // it is "split the plans by trade so I can RFP subs". For a SUB it is "here
+    // is the breakdown of the work — build me the estimate from it", which is
+    // the most valuable path in the product and used to dead-end here with
+    // "that's a GC tool" while the estimator was holding the whole scope in
+    // their message.
+    if (isSubAccount()) {
+      if (textBidLooksLike(msg)) { await textBidGenerate(pid, msg); return; }
+      const e0 = getEstProj(pid);
+      if ((e0.plans || []).some(pl => hasPlanBinary(pl))) {
+        assistantPush('assistant', `✦ Building the bid for “${p.name}” from the drawings on file — I'll break the scope into your six divisions and price it.`);
+        await hvacBidGenerate(pid, msg);
+        return;
+      }
+      assistantPush('assistant', `I can build the estimate from a written breakdown — no plans needed. Paste the scope in one message: equipment with capacities, duct sizes and lengths, air devices by tag, piping, controls, and anything the Title-24 form calls for. Quantities where you have them; where you don't, I'll flag the line instead of inventing a number.\n\nOr attach the drawings with 📎 and I'll read them.`);
+      return;
+    }
     const e = getEstProj(pid);
     if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { assistantPush('assistant', `No plans on “${p.name}” yet — attach the PDF with 📎 below and ask me again.`); return; }
     assistantPush('assistant', `✦ Reading the plans of “${p.name}” and breaking the scope into your bid categories — then you can RFP the subs per category, with my item list per trade.`);
@@ -18306,8 +18994,15 @@ async function aiCmdDispatch(intent, p, msg) {
       } catch (err) { console.warn('assistant: plan render failed', err); }
       ST.asstBusyLabel = ''; render();
     }
-    const reply = await aiCompleteText(pid, msg, planImages, { history: asstHistory(true) });
-    assistantPush('assistant', (reply || '(no answer)') + (planImages && planImages.length ? `\n\n▦ Read ${planImages.length} page${planImages.length === 1 ? '' : 's'} of the plans.` : ''));
+    const reply = await aiCompleteText(pid, msg, planImages, {
+      history: asstHistory(true),
+      onBeat: () => { ST.asstBusyLabel = 'Thinking…'; scheduleIdleRender && scheduleIdleRender(); },
+    });
+    // Say when the plans were NOT read, not just when they were. Silence here is
+    // what let the cost of re-reading them go unnoticed for so long.
+    assistantPush('assistant', (reply || '(no answer)') + (planImages && planImages.length
+      ? `\n\n▦ Read ${planImages.length} page${planImages.length === 1 ? '' : 's'} of the plans.`
+      : ((e.plans || []).some(pl => hasPlanBinary(pl)) ? `\n\n▦ Answered from our conversation — the plans were not re-read. Say “the plans” or name a sheet to make me look.` : '')));
   } catch (err) {
     assistantPush('assistant', '△ ' + (err.message || err));
   } finally {
@@ -18319,8 +19014,29 @@ async function aiCmdDispatch(intent, p, msg) {
 // the schedules and notes most questions are about; the whole take-off pass
 // (which reads everything) is the tool for exhaustive answers.
 const ASST_QA_MAX_PAGES = 16;
+// Does this question need the DRAWINGS in front of the model?
+//
+// The old version matched on the whole HVAC vocabulary — duct, equipo, CFM,
+// tonelada, schedule, size, cuántos — which for a mechanical shop is every
+// sentence they ever type. So every follow-up re-rendered the PDFs from scratch
+// and re-uploaded 16 pages: roughly 20k tokens and several seconds of CPU, to
+// re-read sheets the model had already been shown one message earlier. That is
+// what "vuelve a leer las hojas" was.
+//
+// Now it asks a narrower question: is this person pointing AT the drawings?
+// Either they say so explicitly, or they cite a sheet, or they ask a locating
+// question ("where is", "how many ... on level 2") that can only be answered by
+// looking. Talking about ductwork is not the same as asking to look at it.
+// Naming the drawings, or citing a sheet, is the whole test. Anything less is
+// a conversation ABOUT the job, which the thread already carries.
+const ASST_PLANS_YES = /\b(plans?|sheets?|drawings?|blueprint|pdf)\b|planos?|hojas?|l[aá]mina|dibujo|title ?-?24|\b[amepsft]-\d+(\.\d+)?\b/i;
+// An explicit opt-out always wins — the escape hatch for when the heuristic is
+// wrong, and it costs the estimator three words.
+const ASST_PLANS_NO = /\bno plans?\b|without the plans?|don'?t read|do not read|sin (los )?planos|no leas|sin leer|from memory|de memoria/i;
+
 function asstWantsPlans(msg) {
-  return /plan|pdf|sheet|drawing|plano|hoja|l[aá]mina|dibujo|archivo|file|document|schedule|duct|diffuser|grille|register|\brtu\b|\bahu\b|equipment|equipo|cfm|\bton|level|nivel|floor|piso|roof|techo|detail|detalle|note|nota|spec|m-\d|a-\d|ducto|rejilla|difusor|tama[ñn]o|size|how many|cu[aá]nt[oa]s|where|d[oó]nde/i.test(String(msg || ''));
+  const s = String(msg || '');
+  return !ASST_PLANS_NO.test(s) && ASST_PLANS_YES.test(s);
 }
 // Which take-off a chat request is asking for. HVAC shops get the mechanical
 // take-off unless they clearly asked for something else.
@@ -18437,6 +19153,40 @@ setInterval(() => {
   if (el && _ASST_BUSY_T0) el.textContent = Math.max(0, Math.round((Date.now() - _ASST_BUSY_T0) / 1000)) + 's';
 }, 1000);
 
+// Stop whatever the assistant has in flight. It aborts the HTTP request, so the
+// model stops being billed for output the moment the connection closes, and it
+// clears every "…loading" flag — otherwise the pane would stay disabled forever
+// waiting on a promise whose rejection nobody is listening for.
+function asstStop() {
+  const had = aiStop();
+  // Cleared explicitly rather than by a loop that guesses each flag's type:
+  // asstBusyLabel() reads a mix of booleans, nulls and pids, and a flag left in
+  // the wrong shape leaves the whole pane disabled with nothing running — the
+  // exact dead end this button exists to prevent.
+  ST.assistantBusy = false;
+  ST.bidLearnLoading = false; ST.dbeLoading = false; ST.schedAILoading = false;
+  ST.gcBreakdownLoading = false; ST.fuComposeLoading = false; ST.awardLoading = false;
+  ST.coDraftLoading = false; ST.pbHuntLoading = false;
+  ST.bidLoading = null; ST.detailsLoading = null; ST.toAILoading = null;
+  ST.estimatorDraftLoading = null; ST.dlogCompileLoading = null;
+  ST.asstUploading = 0;
+  ST.bidStage = ''; ST.asstBusyLabel = ''; ST.pbHuntStage = '';
+  assistantPush('assistant', had
+    ? '■ Stopped. Nothing was applied' + (isTrialPlan() ? ', and the AI action was handed back to you.' : '.')
+    : '■ Nothing was running.');
+  render();
+}
+
+// Clear the assistant thread. Worth doing regularly, not just for tidiness: the
+// whole thread is re-sent on every turn, so a long conversation quietly makes
+// each new message more expensive than the last.
+function asstClearLog() {
+  showConfirm('Clear this conversation? Your projects, estimates and price book are untouched.', () => {
+    ST.assistantLog = [];
+    render();
+  });
+}
+
 function buildAssistantTab() {
   const log = ST.assistantLog || [];
   const examples = aiCmdExamples();
@@ -18499,11 +19249,18 @@ function buildAssistantTab() {
       <input id="ai-cmd-file" type="file" accept="application/pdf,.pdf" multiple onchange="asstAttachFiles(this)" style="display:none">
       <button class="btn btn-ghost" ${busy ? 'disabled' : ''} onclick="asstAttachPick()" title="Attach plan PDFs — they're saved to the selected project's plans">📎</button>
       <button class="btn btn-ghost" ${busy ? 'disabled' : ''} onclick="ST.bidPasteOpen=true;render();setTimeout(()=>document.getElementById('bid-paste')?.focus(),40)" title="Paste a bid written elsewhere — imported with no AI call">⇩</button>
-      <input id="ai-cmd-input" type="text" placeholder="${scopeP ? esc('Ask or tell me what to do on ' + scopeP.name + '…') : 'Ask across the workspace, or name a project…'}" ${busy ? 'disabled' : ''}
+      <input id="ai-cmd-input" type="text" placeholder="${scopeP ? esc('Ask, paste the breakdown, or paste “prices …” / “items …” for free') : 'Ask across the workspace, or name a project…'}" ${busy ? 'disabled' : ''}
         onkeydown="if(event.key==='Enter')aiCmdSend()"
         style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--r2);padding:11px 14px;font-family:var(--sans);font-size:13px;color:var(--text);outline:none" onfocus="this.style.borderColor='var(--amber)'" onblur="this.style.borderColor='var(--border)'">
-      <button class="btn btn-amber" ${busy ? 'disabled' : ''} onclick="aiCmdSend()">Send ↑</button>
+      ${busy
+        // While something is running, Send becomes Stop. One button, one place,
+        // no hunting for a way out of a request sent by mistake.
+        ? `<button class="btn" style="background:var(--red-bg,#3a1d1a);border:1px solid var(--red);color:var(--red)" onclick="asstStop()" title="Cancel this request. On the trial the AI action is handed back.">■ Stop</button>`
+        : `<button class="btn btn-amber" onclick="aiCmdSend()">Send ↑</button>`}
     </div>
+    ${log.length ? `<div style="display:flex;justify-content:flex-end;margin-top:6px">
+      <button class="edit-btn" onclick="asstClearLog()" ${busy ? 'disabled' : ''} title="Clear this conversation. The thread is sent with every message, so a long one costs more each turn.">🗑 Clear chat${log.length > 6 ? ` · ${log.length} messages` : ''}</button>
+    </div>` : ''}
     <div style="font-family:var(--mono);font-size:9px;color:var(--text3);margin-top:6px">
       ${scopeP
         ? `Every action is checked against “${esc(scopeP.name)}” before it runs — anything pointing elsewhere is dropped and reported.`
@@ -21192,6 +21949,15 @@ function trialGuardAI() {
   u.aiCalls = (u.aiCalls || 0) + 1;
   saveSt();
   return true;
+}
+// Hand a booked AI credit back. The guard books the credit BEFORE the call, so
+// that a request in flight can't be double-spent — which means a request the
+// estimator stopped, or one that died before the model answered, has to be
+// refunded explicitly or the trial silently eats it.
+function trialRefundAI() {
+  if (!isTrialPlan()) return;
+  const u = trialUsage();
+  if ((u.aiCalls || 0) > 0) { u.aiCalls -= 1; saveSt(); }
 }
 // Guard a plan-PDF upload. Same contract as trialGuardAI.
 function trialGuardPlanUpload() {
