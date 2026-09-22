@@ -4202,6 +4202,8 @@ let ST = {
   // Price book — reusable cost line items (a sub/GC's catalog), inserted into estimates
   priceBook: [],             // [{id, cat, title, desc, unit, unitCost, costType}]
   priceBookModal: null,      // {pid} when open
+  pbHuntLoading: false,      // a price refresh is running (ephemeral — never persisted)
+  pbHuntStage: '',           // what it is doing right now, for the button label
 
   // Scope templates — reusable inclusion/exclusion clauses per trade
   scopeTemplates: [],        // [{id, cat, name, included, excluded}]
@@ -4405,7 +4407,7 @@ function aiEdgeHeaders() {
 // While PAYMENT_LINK_URL is empty, the welcome screen will show
 // only the "Sign in" button and hide the subscription option.
 // ============================================================
-const PAYMENT_LINK_URL = 'https://link.payoneer.com/Token?t=0BE4BE9CCC2B44E0BD14F59D80894F12&src=mobile';   // ← PASTE YOUR PAYMENT LINK HERE (login "Subscribe" screen)
+const PAYMENT_LINK_URL = '';   // ← PASTE YOUR PAYMENT LINK HERE (login "Subscribe" screen)
 const PLAN_NAME = 'NOVANTU · Monthly Plan';
 const PLAN_PRICE = '$XXX USD / month';
 const PLAN_FEATURES = [
@@ -4692,6 +4694,11 @@ const DEFAULT_TEMPLATES = {
   }
 };
 
+// Set by a one-shot migration during loadSt when it actually changed something,
+// so the change is persisted by the single save at the end of the load instead
+// of a mid-load saveSt() racing the rest of the state in.
+let _pbDirtyAfterLoad = false;
+
 async function loadSt() {
   if (!AUTH.session) {
     if (window.BYPASS_LOGIN) {
@@ -4715,6 +4722,7 @@ async function loadSt() {
           ST.threadNotes = s.threadNotes || {};
           ST.subPortalTokens = s.subPortalTokens || {};
           ST.settings = s.settings || (typeof DEFAULT_SETTINGS !== 'undefined' ? DEFAULT_SETTINGS : null);
+          if (typeof hvacClearDemoPrices === 'function') hvacClearDemoPrices();
           ST.ownerPortalTokens = s.ownerPortalTokens || {};
           ST.projectFiles = s.projectFiles || {};
           ST.subMessages = s.subMessages || {};
@@ -4849,6 +4857,9 @@ async function loadSt() {
     ST.threadNotes = state.threadNotes || {};
     ST.subPortalTokens = state.subPortalTokens || {};
     ST.settings = state.settings || DEFAULT_SETTINGS;
+    // Runs once per workspace, right after its settings land: retires the
+    // invented HVAC demo prices so nothing quotes a number no one stood behind.
+    if (typeof hvacClearDemoPrices === 'function' && hvacClearDemoPrices()) _pbDirtyAfterLoad = true;
     ST.ownerPortalTokens = state.ownerPortalTokens || {};
     ST.projectFiles = state.projectFiles || {};
     ST.subMessages = state.subMessages || {};
@@ -4906,9 +4917,15 @@ async function loadSt() {
     ST.asstUploading = 0;
     ST.asstBusyLabel = '';
     ST.asstPlansHot = null;
+    ST.toCalcFull = null;
+    ST.bidPasteOpen = false;
     ST.bidLoading = null;
     ST.bidStage = '';
     ST.bidDraftOpen = null;   // the draft itself persists in overrides._bidDraft
+    // A price hunt is always ephemeral: carrying "pricing…" across a workspace
+    // switch would leave the Refresh button disabled with nothing running.
+    ST.pbHuntLoading = false;
+    ST.pbHuntStage = '';
     ST.bidLearnLoading = false;
     ST.workerInbox = {};
     ST.dlogCompile = null;
@@ -4961,6 +4978,10 @@ async function loadSt() {
       saveSt();
       console.log('Pricing wipe v2 applied — all legacy bid data cleared. You can now add bids manually.');
     }
+
+    // A one-shot migration above changed the price book — persist it now, with
+    // the rest of the loaded state already in place.
+    if (_pbDirtyAfterLoad) { _pbDirtyAfterLoad = false; saveSt(); }
 
     setSaveStatus('saved');
     // Pull in any sub-portal bids / no-bids / messages submitted since last load
@@ -6088,6 +6109,8 @@ function render() {
   if (typeof seedHvacDemoOnce === 'function') seedHvacDemoOnce();
   // One-time HVAC-sub layout: six divisions + client-facing proposal print.
   try { if (typeof hvacSubDefaultsOnce === 'function') hvacSubDefaultsOnce(); } catch (_e) {}
+  // Retired tab → Ask AI (protects a saved ST.tab from an older session).
+  if (typeof estTabRetire === 'function') estTabRetire();
   // Invalidate memoization caches at the start of each render
   _invalidateProjectSubCache();
   // Reset the take-off skip flag; buildEstTakeoff() re-asserts it this pass if
@@ -6145,6 +6168,8 @@ function render() {
     ST.agentPlan ? 'agentplan' : '',
     ST.detailsResult ? 'details' : '',
     ST.bidDraftOpen ? 'biddraft' : '',
+    ST.toCalcFull ? 'tocalc' : '',
+    ST.bidPasteOpen ? 'bidpaste' : '',
   ].filter(Boolean).join('|');
   const overlayJustOpened = overlaySig && overlaySig !== _lastOverlaySig;
   _lastOverlaySig = overlaySig;
@@ -6295,23 +6320,80 @@ function _shadeRgb(r, g, b, factor) {
 // draft, design-build estimate and agent action prices with. There is no second
 // copy to keep in sync: this IS the catalog.
 // ============================================================
+// ── PRICE FRESHNESS ──────────────────────────────────────────────────────────
+// A price is not just a number, it is a number AS OF A DATE. The shop's rule:
+// research a price once, reuse it for 15 days across every job that needs the
+// same item, then go and look again. That saves the searching on the second and
+// third bid of the fortnight, and it stops the book from quietly drifting a year
+// out of date.
+//
+// Each priced row carries:
+//   pricedAt   ISO date the number was established
+//   priceBy    'user' (someone typed or imported it) | 'ai' (researched)
+//   priceBasis one line: what the number is made of + the waste % inside it
+//   priceSrc   where it came from
+//   priceConf  'high' | 'medium' | 'low' (researched prices only)
+//
+// THE ONE RULE THAT MATTERS: a price the shop set by hand NEVER expires and is
+// NEVER overwritten by a refresh. Esvin correcting a number is the most valuable
+// input this book gets — a sweep that wipes it would teach him not to correct it.
+const PRICE_TTL_DAYS = 15;
+
+function priceAgeDays(row) {
+  const t = Date.parse((row && row.pricedAt) || '');
+  if (!isFinite(t)) return Infinity;
+  return Math.max(0, Math.floor((Date.now() - t) / 86400000));
+}
+// Hand-set prices are always fresh — see the rule above.
+function priceIsFresh(row) {
+  if (!row || !(Number(row.perUnit) > 0)) return false;
+  if (row.priceBy === 'user') return true;
+  return priceAgeDays(row) < PRICE_TTL_DAYS;
+}
+// Should this row go back out to the web? Unpriced, or a researched price that
+// has aged past the window.
+function priceNeedsHunt(row) { return !priceIsFresh(row); }
+// How a row's price reads in the UI: "$0" / "14d" / "stale · 22d" / "yours".
+function priceAgeLabel(row) {
+  if (!row || !(Number(row.perUnit) > 0)) return '';
+  if (row.priceBy === 'user') return 'yours';
+  const d = priceAgeDays(row);
+  if (!isFinite(d)) return 'undated';
+  return (d >= PRICE_TTL_DAYS ? 'stale · ' : '') + d + 'd';
+}
+
 function priceBookStats() {
   const types = (typeof getPricingEditorTypes === 'function') ? getPricingEditorTypes() : [];
-  let total = 0, unpriced = 0;
+  let total = 0, unpriced = 0, stale = 0;
   for (const t of types) {
-    for (const r of getPricingForType(t.id)) { total++; if (!(Number(r.perUnit) > 0)) unpriced++; }
+    for (const r of getPricingForType(t.id)) {
+      total++;
+      if (!(Number(r.perUnit) > 0)) unpriced++;
+      // Stale = priced, researched, and past the window. A hand-set price is
+      // never stale, so it never shows up in a "needs refreshing" count.
+      else if (priceNeedsHunt(r)) stale++;
+    }
   }
-  return { types, total, unpriced };
+  return { types, total, unpriced, stale };
 }
 
 function priceBookCSV() {
   const { types } = priceBookStats();
-  const rows = [['Category', 'Code', 'Item', 'Detail', 'Unit', 'Price per unit']];
+  // The provenance columns ride along so the book can be audited in a
+  // spreadsheet — where did this number come from, and how old is it. Import
+  // reads only Code and Price per unit, so these extra columns are safe to
+  // carry, safe to edit and safe to delete.
+  const rows = [['Category', 'Code', 'Item', 'Detail', 'Unit', 'Price per unit', 'Set by', 'Priced on', 'Basis', 'Sources', 'Confidence']];
   for (const t of types) {
     for (const r of getPricingForType(t.id)) {
       // HVAC exports its division (DUCTWORK, INSULATION & PIPING…) so the sheet
       // the shop fills in reads like its bid. Import ignores this column.
-      rows.push([pricingRowCat(t.id, r) || t.label, r.code, r.name, r.sub || '', r.unit, Number(r.perUnit) || 0]);
+      rows.push([
+        pricingRowCat(t.id, r) || t.label, r.code, r.name, r.sub || '', r.unit, Number(r.perUnit) || 0,
+        r.priceBy === 'user' ? 'you' : r.priceBy === 'ai' ? 'researched' : '',
+        r.pricedAt ? String(r.pricedAt).slice(0, 10) : '',
+        r.priceBasis || '', r.priceSrc || '', r.priceConf || '',
+      ]);
     }
   }
   const csv = rows.map(r => r.map(c => {
@@ -6438,8 +6520,34 @@ function pbSetPrice(typeId, idx, el) {
   if (typeof scheduleIdleRender === 'function') scheduleIdleRender();
 }
 
+// The Age column's colour carries the meaning at a glance: green = the shop's
+// own number and permanent, amber = due for a refresh, grey = still inside the
+// window. An unpriced row is already amber across the whole line, so it stays
+// blank here rather than shouting twice.
+function pbAgeColor(r) {
+  if (!r || !(Number(r.perUnit) > 0)) return 'var(--text3)';
+  if (r.priceBy === 'user') return 'var(--green)';
+  return priceNeedsHunt(r) ? 'var(--amber)' : 'var(--text3)';
+}
+function pbAgeTip(r) {
+  if (!r || !(Number(r.perUnit) > 0)) return 'No price yet. The next bid that needs this item will research it, or you can type it here.';
+  if (r.priceBy === 'user') return 'You set this price. A refresh will never overwrite it — clear the price if you want it researched again.';
+  const L = [];
+  if (r.pricedAt) {
+    L.push('Researched ' + priceAgeDays(r) + ' day(s) ago (' + String(r.pricedAt).slice(0, 10) + ').');
+    L.push(priceNeedsHunt(r) ? 'Past the ' + PRICE_TTL_DAYS + '-day window — the next bid that needs it will look it up again.'
+      : 'Reused as-is until it is ' + PRICE_TTL_DAYS + ' days old.');
+  } else {
+    L.push('No date on this price — it will be researched next time it is needed.');
+  }
+  if (r.priceBasis) L.push(r.priceBasis);
+  if (r.priceSrc) L.push('Sources: ' + r.priceSrc);
+  if (r.priceConf) L.push('Confidence: ' + r.priceConf);
+  return L.join('\n');
+}
+
 function buildPriceBookPane() {
-  const { types, total, unpriced } = priceBookStats();
+  const { types, total, unpriced, stale } = priceBookStats();
   const q = (ST.pbQuery || '').toLowerCase();
   const onlyUnpriced = !!ST.pbUnpricedOnly;
 
@@ -6468,12 +6576,13 @@ function buildPriceBookPane() {
               ${catSel}
               <td style="padding:3px 6px;width:62px">${inp('unit', r.unit, 'font-family:var(--mono);text-align:center')}</td>
               <td style="padding:3px 6px;width:104px"><input class="minp" type="number" min="0" step="0.01" value="${Number(r.perUnit) || 0}" onchange="pbSetPrice('${t.id}',${idx},this)" title="${zero ? 'No price yet — the AI will show this item at $0 until you set it' : ''}" style="width:100%;box-sizing:border-box;font-size:11.5px;padding:4px 6px;font-family:var(--mono);text-align:right;${zero ? 'border-color:var(--amber);color:var(--amber)' : ''}"></td>
+              <td style="padding:3px 6px;width:86px;font-family:var(--mono);font-size:9.5px;color:${pbAgeColor(r)}" title="${esc(pbAgeTip(r))}">${esc(priceAgeLabel(r))}</td>
               <td style="padding:3px 6px;width:30px"><button class="edit-btn" style="color:var(--red);border-color:var(--red-border);padding:2px 6px" onclick="if(confirm(${esc(JSON.stringify('Delete “' + String(r.name || '') + '”?'))}))deletePricingItem('${t.id}',${idx})">✕</button></td>
             </tr>`;
     };
     const table = (list) => `<table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr>
-          ${['Code', 'Item', 'Detail'].concat(cats ? ['Category'] : [], ['Unit', '$ / unit', '']).map(h => `<th style="text-align:${h === '$ / unit' ? 'right' : 'left'};font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:5px 6px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
+          ${['Code', 'Item', 'Detail'].concat(cats ? ['Category'] : [], ['Unit', '$ / unit', 'Age', '']).map(h => `<th style="text-align:${h === '$ / unit' ? 'right' : 'left'};font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:5px 6px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
         </tr></thead>
         <tbody>${list.map(rowHtml).join('')}</tbody>
       </table>`;
@@ -6514,7 +6623,7 @@ function buildPriceBookPane() {
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr>
-          ${['Code', 'Item', 'Detail', 'Unit', '$ / unit', ''].map((h, i) => `<th style="text-align:${i === 4 ? 'right' : 'left'};font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:5px 6px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
+          ${['Code', 'Item', 'Detail', 'Unit', '$ / unit', 'Age', ''].map((h, i) => `<th style="text-align:${i === 4 ? 'right' : 'left'};font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3);padding:5px 6px;border-bottom:1px solid var(--border)">${h}</th>`).join('')}
         </tr></thead>
         <tbody>
           ${rows.map(({ r, idx }) => {
@@ -6526,6 +6635,7 @@ function buildPriceBookPane() {
               <td style="padding:3px 6px;width:190px">${inp('sub', r.sub)}</td>
               <td style="padding:3px 6px;width:62px">${inp('unit', r.unit, 'font-family:var(--mono);text-align:center')}</td>
               <td style="padding:3px 6px;width:104px"><input class="minp" type="number" min="0" step="0.01" value="${Number(r.perUnit) || 0}" onchange="pbSetPrice('${t.id}',${idx},this)" title="${zero ? 'No price yet — the AI will show this item at $0 until you set it' : ''}" style="width:100%;box-sizing:border-box;font-size:11.5px;padding:4px 6px;font-family:var(--mono);text-align:right;${zero ? 'border-color:var(--amber);color:var(--amber)' : ''}"></td>
+              <td style="padding:3px 6px;width:86px;font-family:var(--mono);font-size:9.5px;color:${pbAgeColor(r)}" title="${esc(pbAgeTip(r))}">${esc(priceAgeLabel(r))}</td>
               <td style="padding:3px 6px;width:30px"><button class="edit-btn" style="color:var(--red);border-color:var(--red-border);padding:2px 6px" onclick="if(confirm(${esc(JSON.stringify('Delete “' + String(r.name || '') + '”?'))}))deletePricingItem('${t.id}',${idx})">✕</button></td>
             </tr>`;
           }).join('')}
@@ -6539,10 +6649,12 @@ function buildPriceBookPane() {
   return `
     <div style="display:flex;justify-content:space-between;align-items:flex-end;padding-bottom:14px;border-bottom:1px solid var(--ink-700);margin-bottom:18px;gap:12px;flex-wrap:wrap">
       <div>
-        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">[ FILES / PRICE BOOK ] · ${total} ITEM${total === 1 ? '' : 'S'}</div>
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:4px">[ FILES / PRICE BOOK ] · ${total} ITEM${total === 1 ? '' : 'S'}${unpriced ? ` · ${unpriced} UNPRICED` : ''}${stale ? ` · ${stale} DUE` : ''}</div>
         <h1 style="font-size:28px;font-weight:600;letter-spacing:-0.02em;color:var(--ink-900);margin:0">Price book</h1>
+        <div style="font-size:12px;color:var(--text3);line-height:1.5;margin-top:4px;max-width:620px">Unit costs before markup, with waste already inside the price. A researched price is reused for ${PRICE_TTL_DAYS} days, then looked up again; <b style="color:var(--green)">a price you set yourself never expires and is never overwritten</b>.</div>
       </div>
       <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn ${(unpriced + stale) ? 'btn-amber' : 'btn-ghost'} btn-sm" onclick="priceBookRefreshStale()" ${ST.pbHuntLoading ? 'disabled' : ''} title="Look up current Los Angeles prices for everything unpriced or more than ${PRICE_TTL_DAYS} days old. Your own prices are left alone.">${ST.pbHuntLoading ? '⋯ ' + esc(ST.pbHuntStage || 'Pricing…') : `🔎 Refresh prices${(unpriced + stale) ? ' · ' + (unpriced + stale) : ''}`}</button>
         <button class="btn btn-ghost btn-sm" onclick="priceBookCSV()" title="Download the whole book as a spreadsheet">⬇ Export CSV</button>
         <label class="btn btn-ghost btn-sm" style="cursor:pointer;margin:0" title="Bring prices back in — matched by code, prices only">⬆ Import prices
           <input type="file" accept=".csv,text/csv" onchange="priceBookImportFile(this)" style="display:none"></label>
@@ -11266,7 +11378,9 @@ function buildSidebar() {
     { id:'assistant',label:'AI Assistant',   icon:'sparkles',     count: '' },
     { id:'projects', label:'Projects',       icon:'home',         count: cProjects },
     { id:'subs',     label:dirLabels().plural, icon:'users',        count: cSubs },
-    { id:'estimator',label:'Estimator',      icon:'ruler',        count: '' },
+    // The Estimator tab is gone: plan sets live on the project, and reading
+    // plans / take-off / bids are asked for in Ask AI. estTabRetire() below
+    // catches anything still pointing at it.
     { id:'schedule', label:'Schedule',       icon:'calendar-range',count: '' },
     { id:'dailylog', label:'Daily Log',      icon:'clipboard-list',count: '' },
     { id:'rfis',     label:'RFIs',           icon:'help-circle',   count: cRFI },
@@ -11403,7 +11517,6 @@ function buildApp() {
           ST.tab==='builder' ? buildBuilderTab() :
           ST.tab==='settings' ? buildSettingsTab() :
           ST.tab==='insights' ? buildInsightsTab() :
-          ST.tab==='estimator' ? buildEstimatorTab() :
           ST.tab==='schedule' ? buildScheduleTab() :
           ST.tab==='dailylog' ? buildDailyLogTab() :
           ST.tab==='rfis' ? buildRfiTab() :
@@ -11461,6 +11574,8 @@ function buildApp() {
       ${ST.agentPlan ? buildAgentPlanModal() : ''}
       ${ST.detailsResult ? buildDetailsModal() : ''}
       ${ST.bidDraftOpen ? buildBidDraftModal() : ''}
+      ${ST.toCalcFull ? buildTakeoffCalcOverlay() : ''}
+      ${ST.bidPasteOpen ? buildBidPasteModal() : ''}
     </div>`;
 }
 
@@ -11657,6 +11772,7 @@ function buildProjectDetail(p) {
 
     ${buildProjBoxes(p)}
 
+    ${buildProjectPlansSection(p)}
     ${buildClientShareSectionV2(p)}
     ${buildProjectFilesSection(p)}
     ${buildThreadsSection(p)}
@@ -11764,6 +11880,8 @@ function buildSubProjectDetail(p) {
 
     ${buildProjectDetailsBox(p)}
 
+    ${buildProjectPlansSection(p)}
+
     ${buildProjBoxes(p)}
 
     <div class="cats-section">
@@ -11771,7 +11889,7 @@ function buildSubProjectDetail(p) {
         <span>Estimate — ${esc(tradeLabel)}</span>
         ${isHvacSub()
           ? `<button class="btn btn-ghost btn-sm" onclick="ST.builderSelProj='${p.id}';setTab('builder')" title="The line-by-line breakdown of these categories">Breakdown in Builder →</button>`
-          : `<button class="btn btn-ghost btn-sm" onclick="if(typeof _toMountReset==='function')_toMountReset();ST.tab='estimator';ST.estimatorSelProj='${p.id}';ST.estimatorTab='takeoff';render()" title="Open the budget calculator for this project">Budget calculator →</button>`}
+          : `<button class="btn btn-ghost btn-sm" onclick="toCalcOpen('${p.id}')" title="Measure on the plans by hand">Budget calculator →</button>`}
       </div>
       ${(() => {
         const ov = ST.overrides[p.id] || {};
@@ -14400,6 +14518,17 @@ async function estAddPlan(pid) {
   render();
 }
 
+// PDF.js loads its worker from a CDN. When that is blocked or slow, a
+// getDocument() promise never settles — and every caller that awaited it hung
+// forever with a spinner on screen. Nothing that reads a PDF may wait without
+// a deadline.
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_res, rej) => setTimeout(() => rej(new Error((label || 'The PDF reader') + ' did not respond in ' + Math.round(ms / 1000) + 's')), ms)),
+  ]);
+}
+
 // Discipline from the file name — "M-101 Mechanical.pdf" is M. Falls back to
 // Mechanical on an HVAC workspace (that is what an HVAC shop uploads) and to
 // Architectural otherwise. The user can change it later in the plan list.
@@ -14430,7 +14559,7 @@ async function estAddPlanFile(pid, f, disc) {
   if (window.pdfjsLib) {
     try {
       const buf = await f.arrayBuffer();
-      const doc = await pdfjsLib.getDocument({ data: buf }).promise;
+      const doc = await withTimeout(pdfjsLib.getDocument({ data: buf }).promise, 12000, 'Counting the pages');
       if (doc.numPages > MAX_AI_PAGES_PER_PLAN) {
         return { ok: false, err: `“${f.name}” has ${doc.numPages} pages. Novantu accepts max ${MAX_AI_PAGES_PER_PLAN} per file — split it into architectural, structural, MEP, etc. and upload each separately.` };
       }
@@ -14632,6 +14761,9 @@ function estBuildContext(pid) {
   return {
     projectName: p.name,
     setup: e.setup || {},
+    // Files → Bid method. These are the shop's standing rules, so they ride on
+    // EVERY call — chat, agent, take-off, letters — not just on a bid.
+    workspaceRules: (typeof bidRulesText === 'function') ? bidRulesText() : '',
     isSub: isSubAccount(),
     trade: pack ? pack.label : (isSubAccount() ? 'Subcontractor' : 'General Contractor'),
     // Only a sub's own trade price list rides along (keeps context lean + isolated).
@@ -15465,7 +15597,7 @@ async function takeoffGenerate(pid, opts) {
   ST.toAILoading = pid; render();
   let planImages = [];
   try {
-    const r = await renderAllProjectPlans(pid);
+    const r = await withTimeout(renderAllProjectPlans(pid), 180000, 'Rendering the plan pages');
     planImages = r.images || [];
   } catch (err) { console.warn('takeoff: plan render failed', err); }
   // Never let the AI fabricate a take-off with no pages in front of it —
@@ -15596,9 +15728,39 @@ function takeoffChatSummary(pid, t, pages) {
 // ============================================================
 const BID_MAX_IMAGES = 60;
 
+// A profile exists only when it actually carries something. Without this, the
+// first bidProfileSet('rules', …) would create {source:'', learnedAt:''} and
+// every "has a profile?" check in the UI would answer yes to an empty object.
 function bidProfileGet() {
   const p = ST.settings && ST.settings.bidProfile;
-  return (p && typeof p === 'object') ? p : null;
+  if (!p || typeof p !== 'object') return null;
+  const has = ['rules', 'numbering', 'markupNote', 'wasteNote', 'voice', 'notes', 'source'].some(k => String(p[k] || '').trim())
+    || ['inclusions', 'exclusions', 'clarifications', 'terms', 'divisions'].some(k => Array.isArray(p[k]) && p[k].length)
+    || Number(p.taxRate) > 0 || Number(p.laborPct) > 0;
+  return has ? p : null;
+}
+
+// THE RULES, compact. This rides on every single AI call (chat, agent,
+// take-off, letters, bid), so it is deliberately short: the owner's own rules
+// first, then the handful of shop facts that change what an answer should say.
+// The full profile (all clauses, voice, divisions) goes only to the bid task,
+// where it is actually used to write a document.
+function bidRulesText() {
+  const p = bidProfileGet(); if (!p) return '';
+  const L = [];
+  if (String(p.rules || '').trim()) L.push(String(p.rules).trim().slice(0, 900));
+  if (p.taxRate) L.push(`Sales tax rate this shop bids at: ${p.taxRate}% (say so when tax matters; never change it silently).`);
+  // Where waste lives is a platform-wide convention, not a per-shop preference:
+  // quantities stay as measured, the allowance sits inside the unit price. Said
+  // on every call, because the two halves of the job are two separate model
+  // calls and only one of them may carry it.
+  L.push('Waste / offcut allowance belongs INSIDE the unit price, never added to a quantity.'
+    + (String(p.wasteNote || '').trim() ? ' This shop’s own note on it: ' + String(p.wasteNote).trim().slice(0, 200) : ''));
+  if (String(p.markupNote || '').trim()) L.push('How margin is presented: ' + String(p.markupNote).trim().slice(0, 200));
+  if (Array.isArray(p.exclusions) && p.exclusions.length) {
+    L.push('Standing exclusions (never quote these as ours): ' + p.exclusions.slice(0, 6).map(x => String(x).slice(0, 90)).join(' · '));
+  }
+  return L.join('\n').slice(0, 1600);
 }
 function bidProfileSet(field, value) {
   if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
@@ -15631,6 +15793,26 @@ function bidProfileText() {
   return L.join('\n');
 }
 
+// The text layer of a PDF the user just picked. A proposal exported from Word
+// or a CAD title block carries real text; reading it costs a fraction of what
+// the same pages cost as images (a page of images is ~1,600 tokens, the same
+// page as text is ~250). Returns '' when the PDF is scanned or outlined.
+async function pdfFileToText(file, maxPages) {
+  if (!window.pdfjsLib) return '';
+  try {
+    const doc = await withTimeout(pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise, 20000, 'Reading the PDF text');
+    const n = Math.min(doc.numPages, maxPages || 20);
+    const out = [];
+    for (let pg = 1; pg <= n; pg++) {
+      const page = await doc.getPage(pg);
+      const tc = await page.getTextContent();
+      const txt = tc.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+      if (txt) out.push(`--- page ${pg} ---\n${txt}`);
+    }
+    return out.join('\n\n');
+  } catch (err) { console.warn('pdfFileToText failed', err); return ''; }
+}
+
 // Render a PDF the user just picked (not yet in any project) to page images.
 async function pdfFileToImages(file, maxPages) {
   if (!window.pdfjsLib) throw new Error('The PDF reader has not loaded — reload the page and try again.');
@@ -15656,14 +15838,20 @@ async function bidProfileLearn(input) {
   if (input) input.value = '';
   if (!file || ST.bidLearnLoading) return;
   if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { showToast('Pick the PDF of a bid you already sent.', 'warn'); return; }
+  if (bidProfileGet() && !confirm('Learn again? This replaces the learned profile below — your own “rules” are kept.')) return;
   if (!trialGuardAI()) return;
   ST.bidLearnLoading = true; render();
   try {
-    const images = await pdfFileToImages(file, 14);
+    // Text first, images only as the fallback for a scanned proposal. A typical
+    // 8-page bid goes from ~13,000 tokens of images to ~2,500 of text.
+    const docText = await pdfFileToText(file, 20);
+    const useText = docText.length > 1200;
+    const images = useText ? [] : await pdfFileToImages(file, 14);
+    if (!useText && !images.length) throw new Error('That PDF has neither readable text nor pages we could render.');
     const text = await aiPostAsk({
       projectContext: { projectName: '(bid profile)', setup: {}, plans: [], reviewItems: [], derivedCodes: [], openRfis: [], isSub: true },
       messages: [{ role: 'user', content: 'Learn bid profile' }],
-      task: 'bidprofile', taskData: {}, planImages: images,
+      task: 'bidprofile', taskData: { docText: useText ? docText.slice(0, 60000) : '' }, planImages: images,
     });
     const r = parseAIJson(text);
     if (!r) throw new Error('Could not read that proposal. Try again.');
@@ -15684,7 +15872,7 @@ async function bidProfileLearn(input) {
     };
     saveSt();
     aiLogEvent('bidprofile', { ok: true, images: images.length });
-    showToast(`Learned from “${file.name}” — review it below; every new bid will follow it.`, 'success');
+    showToast(`Learned from “${file.name}”${useText ? ' (read as text — a fraction of the cost of reading it as images)' : ''} — review it below; every new bid follows it.`, 'success');
   } catch (err) {
     aiLogEvent('bidprofile', { ok: false, err: err && err.message });
     showToast('Could not learn from that PDF: ' + (err.message || err), 'error');
@@ -15712,19 +15900,371 @@ function bidProfileToPrint() {
   showToast('Proposal template updated from your bid method.', 'success');
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// PRICE HUNT — researched prices, written into the price book with a date.
+// ------------------------------------------------------------
+// The shop prices equipment by searching what it costs around Los Angeles and
+// taking something in the middle. This does that job and then REMEMBERS it: the
+// number lands in the price book stamped with today's date, so the next bid in
+// the same fortnight that needs the same item reads it out of the book instead
+// of going back to the web. After PRICE_TTL_DAYS it is researched again.
+//
+// Nothing here invents a price. Every number comes back from a model that had
+// web_search on, and is stored with its basis and its sources, so any line in a
+// bid can be traced to where its price came from. An item the search could not
+// price stays at 0 and prints as "no price — you set it".
+//
+// One AI credit covers a whole hunt no matter how many batches it takes: the
+// batching is an API constraint, not something the estimator asked for.
+// ═════════════════════════════════════════════════════════════════════════════
+const PRICE_HUNT_BATCH = 6;      // items per call — MUST stay in step with TASK_CONFIG.pricehunt in ask-ai
+const PRICE_HUNT_MAX   = 48;     // a single hunt never runs away with the budget
+
+// Material or labor? The bid applies the same split when it files lines into
+// Materials / Labor cost types, so the price researched for a row is the kind
+// of cost that row will actually carry in the estimate.
+function priceKindFor(row) {
+  const s = [row && row.name, row && row.sub].filter(Boolean).join(' ');
+  return /install|\bset\b|labor|start-?up|balanc|supervis|mobiliz|demoli|remov|haul|submittal|closeout|as-built|coordinat|service|clean|relocat|test|permit|crane|rigging/i.test(s)
+    ? 'labor' : 'material';
+}
+
+// parseAIJson takes everything from the first "{" to the last "}", which is
+// right for a reply that is nothing but JSON. A price hunt is the one task with
+// a server-side tool in the loop, so the model can leave a sentence of its own
+// either side of the answer — and one stray brace in that sentence poisons the
+// greedy match. This finds the JSON object that actually carries `key`, by
+// balancing braces while respecting strings and escapes.
+function parseJsonObjectWith(text, key) {
+  const t = String(text || '');
+  const needle = '"' + key + '"';
+  for (let start = t.indexOf('{'); start >= 0; start = t.indexOf('{', start + 1)) {
+    let depth = 0, inStr = false, escaped = false;
+    for (let i = start; i < t.length; i++) {
+      const ch = t[i];
+      if (inStr) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        if (--depth) continue;
+        const slice = t.slice(start, i + 1);
+        if (slice.indexOf(needle) < 0) break;         // not the object we want — try the next "{"
+        try { return JSON.parse(slice); } catch (_e) {}
+        try { return JSON.parse(slice.replace(/,\s*([}\]])/g, '$1')); } catch (_e) {}
+        break;
+      }
+    }
+  }
+  return null;
+}
+
+// Which catalog rows need researching. Returns rows, not codes, so the caller
+// can show the estimator exactly what is about to be looked up.
+function priceHuntTargets(codes) {
+  const want = new Set((codes || []).filter(Boolean).map(String));
+  const out = [];
+  for (const t of (typeof getPricingEditorTypes === 'function' ? getPricingEditorTypes() : [])) {
+    getPricingForType(t.id).forEach((r, idx) => {
+      if (!r || !r.code) return;
+      if (want.size && !want.has(String(r.code))) return;
+      if (!priceNeedsHunt(r)) return;
+      out.push({ typeId: t.id, idx, code: r.code, name: r.name, sub: r.sub || '', unit: r.unit || 'EA', kind: priceKindFor(r) });
+    });
+  }
+  return out;
+}
+
+// Add a row the plans call for that the book has never carried. This is the AI
+// writing to the catalog — deliberately allowed, because a bid that silently
+// drops an item it had no row for is worse than one that adds the row. The
+// generated code is namespaced so the shop can see at a glance which rows came
+// out of a plan read rather than off its own list.
+function priceBookNewRow(typeId, spec) {
+  const list = ensurePricingList(typeId);
+  const used = new Set(list.map(r => r && r.code));
+  let code, n = 0;
+  do { code = 'ai-' + (Date.now() + n).toString(36).slice(-5); n++; } while (used.has(code) && n < 5000);
+  const row = {
+    code,
+    name: String((spec && spec.name) || 'New item').slice(0, 120),
+    sub: String((spec && spec.sub) || '').slice(0, 120),
+    unit: String((spec && spec.unit) || 'EA').slice(0, 6),
+    perUnit: 0,
+    matchTags: [],
+  };
+  if (spec && spec.cat) row.cat = String(spec.cat);
+  list.push(row);
+  return { typeId, idx: list.length - 1, code, row, name: row.name, sub: row.sub, unit: row.unit, kind: priceKindFor(row) };
+}
+
+// ── The hunt itself ──────────────────────────────────────────────────────────
+// targets: [{typeId, idx, code, name, sub, unit, kind}]
+// Writes NOTHING. The caller decides what to commit, because a price landing in
+// the book unseen is exactly the failure mode this product exists to avoid.
+async function priceHuntFetch(pid, targets, specText, onProgress) {
+  const items = (targets || []).slice(0, PRICE_HUNT_MAX);
+  const results = [];
+  const notes = [];
+  let searches = 0, failedBatches = 0;
+  const rules = (typeof bidRulesText === 'function') ? bidRulesText() : '';
+  const projName = (allProjects().find(p => p.id === pid) || {}).name || '';
+
+  for (let i = 0; i < items.length; i += PRICE_HUNT_BATCH) {
+    const batch = items.slice(i, i + PRICE_HUNT_BATCH);
+    if (onProgress) onProgress(Math.min(i + batch.length, items.length), items.length);
+    const body = {
+      projectContext: pid ? estBuildContext(pid) : {
+        projectName: '(price book)', setup: {}, plans: [], reviewItems: [],
+        derivedCodes: [], openRfis: [], isSub: isSubAccount(), workspaceRules: rules,
+      },
+      messages: [{ role: 'user', content: 'Price ' + batch.length + ' item(s) for the Los Angeles market.' }],
+      task: 'pricehunt',
+      taskData: {
+        projectName: projName,
+        specText: String(specText || '').slice(0, 4000),
+        rules,
+        items: batch.map(t => ({ code: t.code, name: t.name, sub: t.sub, unit: t.unit, kind: t.kind })),
+      },
+    };
+    // The workspace price list is the largest thing in the context and is not
+    // needed here — the items to price are spelled out in taskData already.
+    if (body.projectContext) body.projectContext.priceList = [];
+    let parsed = null;
+    try {
+      const text = await aiPostAsk(body);
+      searches += Number(AI_LAST && AI_LAST.searches) || 0;
+      // A batch that ran out of server-side tool turns comes back half-written.
+      // Keep whatever parsed and leave the unanswered codes unpriced.
+      if (AI_LAST && AI_LAST.stop_reason === 'pause_turn') {
+        notes.push('One batch hit the search limit — some items were left unpriced. Run it again to finish them.');
+      }
+      parsed = parseAIJson(text);
+      if (!parsed || !Array.isArray(parsed.prices)) parsed = parseJsonObjectWith(text, 'prices');
+    } catch (err) {
+      failedBatches++;
+      console.warn('pricehunt: batch failed', err);
+      notes.push('A batch of ' + batch.length + ' item(s) failed: ' + ((err && err.message) || err));
+      continue;
+    }
+    if (!parsed || !Array.isArray(parsed.prices)) { failedBatches++; notes.push('A batch came back unreadable.'); continue; }
+    if (parsed.notes) notes.push(String(parsed.notes).slice(0, 300));
+    // Only codes we ASKED about are accepted. Echoing the code back is how a
+    // result is matched to a row; anything else would write a researched price
+    // onto a row nobody asked to reprice.
+    const asked = new Map(batch.map(t => [String(t.code), t]));
+    for (const p of parsed.prices) {
+      const code = String((p && p.code) || '').trim();
+      const t = asked.get(code);
+      if (!t) continue;
+      asked.delete(code);   // one answer per item — a repeated code would be counted (and written) twice
+      results.push({
+        typeId: t.typeId, idx: t.idx, code, name: t.name, unit: t.unit, kind: t.kind,
+        unitPrice: Math.max(0, Number(p && p.unitPrice) || 0),
+        basis: String((p && p.basis) || '').slice(0, 200),
+        sources: (Array.isArray(p && p.sources) ? p.sources : []).map(s => String(s).slice(0, 60)).filter(Boolean).slice(0, 6),
+        confidence: ['high', 'medium', 'low'].includes(p && p.confidence) ? p.confidence : 'low',
+        note: String((p && p.note) || '').slice(0, 300),
+      });
+    }
+  }
+  const found = results.filter(r => r.unitPrice > 0).length;
+  return {
+    results,
+    // Several batches hitting the same wall produce the same sentence each
+    // time; saying it once is the useful version.
+    notes: [...new Set(notes)],
+    searches, found,
+    zero: results.length - found,
+    missed: items.length - results.length,
+    failedBatches, asked: items.length,
+  };
+}
+
+// Commit researched prices into the price book. Every write is stamped 'ai' so
+// the 15-day rule can find it again — and so a hand-set price, stamped 'user',
+// is never mistaken for one of these.
+function priceHuntCommit(hunt) {
+  let n = 0;
+  for (const r of ((hunt && hunt.results) || [])) {
+    if (!(r.unitPrice > 0)) continue;
+    const list = ensurePricingList(r.typeId);
+    const row = list[r.idx];
+    if (!row || row.code !== r.code) continue;                          // the book moved under us — skip rather than mis-write
+    if (row.priceBy === 'user' && Number(row.perUnit) > 0) continue;    // never overwrite the shop's own number
+    setPricingItem(r.typeId, r.idx, 'perUnit', r.unitPrice, 'ai');
+    row.priceBasis = r.basis;
+    row.priceSrc = r.sources.join(', ');
+    row.priceConf = r.confidence;
+    n++;
+  }
+  if (n) saveSt();
+  return n;
+}
+
+// One line for the estimator describing what a hunt did. Used by the bid chat
+// summary and by the stand-alone refresh.
+function priceHuntSummary(h) {
+  if (!h || !h.asked) return 'Nothing needed pricing — every item was already priced within the last ' + PRICE_TTL_DAYS + ' days.';
+  const bits = [h.found + ' of ' + h.asked + ' item' + (h.asked === 1 ? '' : 's') + ' priced from the LA market'];
+  if (h.searches) bits.push(h.searches + ' search' + (h.searches === 1 ? '' : 'es'));
+  if (h.zero) bits.push(h.zero + ' came back without a usable price');
+  if (h.missed) bits.push(h.missed + ' not answered');
+  return bits.join(' · ') + '.';
+}
+
+// Reuse a row the book already has for this item before inventing another one.
+// Without this, running the same bid twice would add a second "Rect duct 14x12"
+// every time and the catalog would silently rot into duplicates.
+function priceBookFindByName(typeId, name, unit) {
+  const n = String(name || '').trim().toLowerCase();
+  if (!n) return -1;
+  const u = String(unit || '').trim().toUpperCase();
+  return getPricingForType(typeId).findIndex(r =>
+    r && String(r.name || '').trim().toLowerCase() === n && (!u || String(r.unit || '').toUpperCase() === u));
+}
+
+// What the AI read off the sheets, boiled down to the part that decides a PRICE.
+// The hunt needs to know it is pricing a 4-ton heat pump at 16 SEER2 rather than
+// "a heat pump" — that difference is the whole job. Quantities are left out on
+// purpose: they are not the searcher's business and would only dilute it.
+function bidSpecTextFor(d) {
+  const p = d.project || {};
+  const L = [];
+  if (p.projectType || p.address) L.push([p.projectType, p.address].filter(Boolean).join(' — '));
+  if (p.sqft) L.push('Gross SF: ' + p.sqft);
+  if (d.summary) L.push(d.summary);
+  const specLines = d.lines
+    .filter(l => l.on && (l.basis || l.sheetRef))
+    .slice(0, 60)
+    .map(l => '• ' + l.name + (l.basis ? ' — ' + l.basis : '') + (l.sheetRef ? ' [' + l.sheetRef + ']' : ''));
+  if (specLines.length) L.push('WHAT THE SHEETS CALL FOR:', ...specLines);
+  return L.join('\n');
+}
+
+// ── Price a bid draft ────────────────────────────────────────────────────────
+// Runs straight after the sheets are read, before the estimator ever sees the
+// draft, so the review screen they open is a PRICED bid rather than a list of
+// zeros. Three things happen, in order:
+//   1. Every line is tied to a price-book row — creating the row when the plans
+//      call for something the book has never carried.
+//   2. Rows that are unpriced, or whose researched price has aged past
+//      PRICE_TTL_DAYS, are researched. Rows priced inside the window are reused
+//      untouched: that is the whole point of dating them.
+//   3. Every line is re-priced from the book and told where its price came from.
+async function bidDraftPriceHunt(pid, d, onStage) {
+  const typeId = 'hvac';
+  const say = (m) => { if (onStage) onStage(m); };
+  // 1 — tie every line to a row.
+  const fresh = [], targets = [], seen = new Set();
+  let added = 0;
+  for (const l of d.lines) {
+    if (!l.on) continue;
+    let idx = l.code ? getPricingForType(typeId).findIndex(r => r && r.code === l.code) : -1;
+    if (idx < 0) idx = priceBookFindByName(typeId, l.name, l.unit);
+    if (idx < 0) {
+      const made = priceBookNewRow(typeId, { name: l.name, sub: l.basis || '', unit: l.unit, cat: l.division });
+      idx = made.idx; added++;
+      l.priceNewRow = true;
+    }
+    const row = getPricingForType(typeId)[idx];
+    if (!row) continue;
+    l.code = row.code;
+    if (seen.has(row.code)) continue;
+    seen.add(row.code);
+    (priceNeedsHunt(row) ? targets : fresh).push({
+      typeId, idx, code: row.code, name: row.name, sub: row.sub || '',
+      unit: row.unit || l.unit || 'EA', kind: priceKindFor(row),
+    });
+  }
+  if (added) saveSt();
+
+  // 2 — research only what is stale or unpriced.
+  let hunt = null;
+  if (targets.length) {
+    say(`Pricing ${targets.length} item${targets.length === 1 ? '' : 's'} from the Los Angeles market${fresh.length ? ` (${fresh.length} already priced in the last ${PRICE_TTL_DAYS} days)` : ''}…`);
+    hunt = await priceHuntFetch(pid, targets, bidSpecTextFor(d),
+      (done, total) => say(`Pricing item ${done} of ${total} from the Los Angeles market…`));
+    priceHuntCommit(hunt);
+  }
+
+  // 3 — re-price every line from the book and record where the number came from.
+  const byCode = new Map(getPricingForType(typeId).map((r, i) => [r && r.code, r]));
+  for (const l of d.lines) {
+    const row = byCode.get(l.code);
+    if (!row) { l.perUnit = 0; continue; }
+    l.perUnit = Number(row.perUnit) || 0;
+    l.priceBy = row.priceBy || '';
+    l.priceAge = priceAgeLabel(row);
+    l.priceBasis = row.priceBasis || '';
+    l.priceSrc = row.priceSrc || '';
+    l.priceConf = row.priceConf || '';
+    l.priceHunted = targets.some(t => t.code === l.code);
+  }
+  d.hunt = hunt ? {
+    asked: hunt.asked, found: hunt.found, zero: hunt.zero, missed: hunt.missed,
+    searches: hunt.searches, notes: hunt.notes.slice(0, 4),
+    reused: fresh.length, added,
+    ttl: PRICE_TTL_DAYS, ts: new Date().toISOString(),
+  } : { asked: 0, found: 0, zero: 0, missed: 0, searches: 0, notes: [], reused: fresh.length, added, ttl: PRICE_TTL_DAYS, ts: new Date().toISOString() };
+  return d.hunt;
+}
+
+// ── Stand-alone refresh (Files → Price book) ─────────────────────────────────
+// The fortnightly sweep, run on purpose rather than as a side-effect of a bid.
+// Only touches rows the 15-day rule says are due — a hand-set price is never in
+// the list, so this can be run any time without undoing the shop's corrections.
+async function priceBookRefreshStale() {
+  if (ST.pbHuntLoading) return;
+  const targets = priceHuntTargets(null);
+  if (!targets.length) {
+    showToast(`Nothing to refresh — every item is either priced within ${PRICE_TTL_DAYS} days or set by hand.`, 'success');
+    return;
+  }
+  const n = Math.min(targets.length, PRICE_HUNT_MAX);
+  if (!confirm(`Research current Los Angeles prices for ${n} item${n === 1 ? '' : 's'}?\n\n`
+    + `Prices you typed or imported yourself are never touched — only items with no price, or whose researched price is more than ${PRICE_TTL_DAYS} days old.`
+    + (targets.length > PRICE_HUNT_MAX ? `\n\n${targets.length - PRICE_HUNT_MAX} more will be left for the next run.` : ''))) return;
+  if (!trialGuardAI()) return;
+  ST.pbHuntLoading = true; ST.pbHuntStage = `Pricing ${n} item${n === 1 ? '' : 's'}…`; render();
+  try {
+    const hunt = await priceHuntFetch(null, targets, '',
+      (done, total) => { ST.pbHuntStage = `Pricing item ${done} of ${total} from the Los Angeles market…`; render(); });
+    const wrote = priceHuntCommit(hunt);
+    aiLogEvent('pricehunt', { ok: true });
+    showToast(`${wrote} price${wrote === 1 ? '' : 's'} updated. ${priceHuntSummary(hunt)}`, wrote ? 'success' : 'warn');
+  } catch (err) {
+    aiLogEvent('pricehunt', { ok: false, err: err && err.message });
+    showToast('Price refresh failed: ' + ((err && err.message) || err), 'error');
+  } finally {
+    ST.pbHuntLoading = false; ST.pbHuntStage = ''; render();
+  }
+}
+
 // Every sheet as TILES. A 36x24 mechanical sheet sent as one image is shrunk
 // by the vision model until 8-point duct sizes and device tags are unreadable —
 // which is exactly the information a bid is made of. Each sheet goes as one
-// whole-sheet overview (for orientation) plus a 3x2 (or 2x2) grid of
-// overlapping crops at readable resolution. Falls back to whole pages when a
-// set is too big for the image budget.
+// whole-sheet overview (for orientation) plus a grid of overlapping crops at
+// readable resolution. Falls back to whole pages when a set is too big for the
+// image budget.
+//
+// 3x3 exists for the case this shop actually bids from: a handful of sheets,
+// where the money is in a Title-24 compliance table or a wall of general notes
+// rather than in a duct run. Splitting such a sheet nine ways puts ~6-point
+// type at a size the model can read character by character. It only unlocks
+// when the page count leaves room for 10 images per sheet, so a full set still
+// degrades to 3x2 and then to whole pages rather than losing sheets.
 async function renderProjectPlansForBid(pid, maxImages) {
   const { plans } = await getProjectPlanPageInfo(pid);
   const pages = [];
   for (const pl of plans) for (let pg = 1; pg <= pl.pages; pg++) pages.push({ pl, pg });
   if (!pages.length) return { images: [], pages: 0, mode: 'none' };
   const per = Math.floor((maxImages || BID_MAX_IMAGES) / pages.length);
-  const mode = per >= 7 ? '3x2' : per >= 5 ? '2x2' : 'page';
+  const mode = per >= 10 ? '3x3' : per >= 7 ? '3x2' : per >= 5 ? '2x2' : 'page';
   const images = [];
   const docs = {};
   for (const { pl, pg } of pages) {
@@ -15736,14 +16276,23 @@ async function renderProjectPlansForBid(pid, maxImages) {
     const page = await doc.getPage(pg);
     const v1 = page.getViewport({ scale: 1 });
     const land = v1.width >= v1.height;
-    const cols = mode === '3x2' ? (land ? 3 : 2) : 2;
-    const rows = mode === '3x2' ? (land ? 2 : 3) : 2;
-    // ~1300 px per tile column — under the model's downscale threshold.
-    const scale = Math.min(3, (1300 * cols) / v1.width);
+    const cols = mode === '3x3' ? 3 : mode === '3x2' ? (land ? 3 : 2) : 2;
+    const rows = mode === '3x3' ? 3 : mode === '3x2' ? (land ? 2 : 3) : 2;
+    // ~1500 px per tile column. The vision model downscales anything longer
+    // than ~1568 px on its long edge, so this lands just under the ceiling —
+    // every pixel rendered above it would be thrown away, and every pixel below
+    // it is legibility given up for nothing. At 1300 a Title-24 table read as a
+    // grey smear; the extra 200 px is the difference between reading "4.0 TON"
+    // and guessing it.
+    const scale = Math.min(3, (1500 * cols) / v1.width);
     const vp = page.getViewport({ scale });
     const full = document.createElement('canvas'); full.width = Math.round(vp.width); full.height = Math.round(vp.height);
     await page.render({ canvasContext: full.getContext('2d'), viewport: vp }).promise;
-    const jpeg = (cv) => cv.toDataURL('image/jpeg', 0.72).split(',')[1];
+    // Tiles carry the numbers, so they get the quality; JPEG ringing around
+    // 6-point type is what turns an 8 into a 3. The overview is orientation
+    // only and stays cheap. Quality does not change the token count — only the
+    // pixel dimensions do — so this costs bytes on the wire, not budget.
+    const jpeg = (cv, q) => cv.toDataURL('image/jpeg', q || 0.72).split(',')[1];
     // Overview
     const os = Math.min(1, 1400 / Math.max(full.width, full.height));
     const ov = document.createElement('canvas'); ov.width = Math.round(full.width * os); ov.height = Math.round(full.height * os);
@@ -15757,7 +16306,7 @@ async function renderProjectPlansForBid(pid, maxImages) {
       const sw = Math.min(full.width - sx, tw + 2 * ox), sh = Math.min(full.height - sy, th + 2 * oy);
       const t = document.createElement('canvas'); t.width = Math.round(sw); t.height = Math.round(sh);
       t.getContext('2d').drawImage(full, sx, sy, sw, sh, 0, 0, t.width, t.height);
-      images.push({ discipline: pl.discipline, name: `${pl.name} · detail ${where(r, c)}`, pageNum: pg, base64: jpeg(t) });
+      images.push({ discipline: pl.discipline, name: `${pl.name} · detail ${where(r, c)}`, pageNum: pg, base64: jpeg(t, 0.85) });
     }
     full.width = full.height = 0;   // free the big canvas now, not at GC time
   }
@@ -15773,7 +16322,7 @@ async function hvacBidGenerate(pid, extra) {
   if (!(e.plans || []).some(pl => hasPlanBinary(pl))) { say('Attach the mechanical drawings first — 📎 in Ask AI.'); return; }
   ST.bidLoading = pid; ST.bidStage = 'Preparing the sheets…'; render();
   let r = null;
-  try { r = await renderProjectPlansForBid(pid, BID_MAX_IMAGES); } catch (err) { console.warn('bid: render failed', err); }
+  try { r = await withTimeout(renderProjectPlansForBid(pid, BID_MAX_IMAGES), 300000, 'Preparing the sheets'); } catch (err) { console.warn('bid: render failed', err); }
   if (!r || !r.images.length) { ST.bidLoading = null; ST.bidStage = ''; render(); say('Could not read the plan pages — re-upload the PDF and try again.', 'error'); return; }
   if (!trialGuardAI()) { ST.bidLoading = null; ST.bidStage = ''; render(); return; }
   const catalog = aiPriceList().map(x => ({ code: x.code, name: x.name, unit: x.unit }));
@@ -15799,9 +16348,28 @@ async function hvacBidGenerate(pid, extra) {
     const d = bidDraftNormalize(pid, parsed, r);
     if (!ST.overrides[pid]) ST.overrides[pid] = {};
     ST.overrides[pid]._bidDraft = d;   // saved: an expensive read must survive a reload
-    ST.bidDraftOpen = pid;
     saveSt();
     aiLogEvent('hvacbid', { ok: true, images: r.images.length }).then(id => { d.evt = id; saveSt(); });
+    // PRICE IT. The sheets are read; now find what the items cost in LA, reusing
+    // anything the book already priced inside the 15-day window. The draft is
+    // already saved above, so a pricing failure costs the pricing — never the
+    // read, which is the expensive half.
+    try {
+      if (trialGuardAI()) {
+        await bidDraftPriceHunt(pid, d, (m) => { ST.bidStage = m; render(); });
+        aiLogEvent('pricehunt', { ok: true });
+      } else if (inChat) {
+        assistantPush('assistant', '△ The bid was read, but pricing it needs another AI action and the trial is out. The lines are in your divisions with no prices.');
+      }
+    } catch (err) {
+      aiLogEvent('pricehunt', { ok: false, err: err && err.message });
+      console.warn('bid: pricing failed', err);
+      d.huntError = (err && err.message) || String(err);
+      showToast('The bid was read, but prices could not be researched: ' + d.huntError, 'warn');
+    }
+    ST.overrides[pid]._bidDraft = d;
+    ST.bidDraftOpen = pid;
+    saveSt();
     if (inChat) assistantPush('assistant', bidChatSummary(d));
   } catch (err) {
     aiLogEvent('hvacbid', { ok: false, err: err && err.message, images: r.images.length });
@@ -15809,6 +16377,77 @@ async function hvacBidGenerate(pid, extra) {
   } finally {
     ST.bidLoading = null; ST.bidStage = ''; render();
   }
+}
+
+// ── Paste a finished bid — ZERO AI tokens ────────────────────────────────────
+// The owner reads the drawings outside the platform (or an estimator writes the
+// bid by hand) and pastes one block into Ask AI. It goes through the SAME
+// review screen as an AI bid, the same price-book matching and the same
+// division filing — but no model is called, so it costs nothing.
+// Shape: {"novantu":"bid","project":{...},"lines":[{division,code,name,qty,unit,basis,sheetRef,est}],
+//         "responsibility":[...],"inclusions":[],"exclusions":[],"clarifications":[],"rfis":[],"summary":"","notes":""}
+function bidImportLooksLike(msg) {
+  const t = String(msg || '').trim();
+  return t.startsWith('{') && /"novantu"\s*:\s*"bid"/i.test(t);
+}
+async function bidImportFromChat(msg) {
+  let x;
+  try { x = JSON.parse(String(msg).trim()); }
+  catch (err) { assistantPush('assistant', '△ That looks like a pasted bid but the JSON is broken: ' + (err.message || err)); return; }
+  if (!Array.isArray(x.lines) || !x.lines.length) { assistantPush('assistant', '△ That bid has no "lines" — nothing to import.'); return; }
+  // Where it lands: the locked project, else one that matches the name, else a
+  // new project (subject to the plan's project limit).
+  let p = asstScopeProject();
+  const wanted = String((x.project && x.project.name) || '').trim();
+  if (!p && wanted) p = allProjects().find(q => q.name.toLowerCase() === wanted.toLowerCase()) || null;
+  if (!p) {
+    if (!wanted) { assistantPush('assistant', '△ Pick the project in “Working on” first, or put its name in project.name.'); return; }
+    if (!canAddProject()) { ST.upsellModal = { reason: 'projects' }; render(); return; }
+    const id = 'cp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 5);
+    ST.addedProjects.push({ id, name: wanted.slice(0, 80), status: 'active', dl: '', sdl: null, est: null, source: null, comments: '', rfi: '', builder: null });
+    _invalidateProjectSubCache();
+    if (typeof hvacSeedGroups === 'function') hvacSeedGroups(id);
+    addActivity('project_added', '', wanted, '', null, null, 'Created from a pasted bid');
+    ST.selProj = id; asstSetScope(id);
+    p = allProjects().find(q => q.id === id);
+  }
+  const d = bidDraftNormalize(p.id, x, { images: 0, pages: Number(x.pages) || 0, mode: 'import' });
+  if (!ST.overrides[p.id]) ST.overrides[p.id] = {};
+  ST.overrides[p.id]._bidDraft = d;
+  ST.bidDraftOpen = p.id;
+  saveSt();
+  const t = bidDraftTotals(d);
+  assistantPush('assistant', [
+    `✓ Bid imported into “${p.name}” — ${d.lines.length} line${d.lines.length === 1 ? '' : 's'}, **0 AI tokens spent**.`,
+    `Priced from your book: ${t.priced} line${t.priced === 1 ? '' : 's'} = ${fmt$(t.total)} before markup${t.unpriced ? ` · ${t.unpriced} still to price` : ''}.`,
+    d.rfis.length ? `RFIs carried over: ${d.rfis.length}.` : '',
+    '',
+    `{{act:bidopen:${p.id}|✎ Review the bid}}`,
+  ].filter(Boolean).join('\n'));
+}
+
+function buildBidPasteModal() {
+  const p = asstScopeProject();
+  return `<div class="backdrop" onclick="if(event.target===this){ST.bidPasteOpen=false;render()}">
+    <div class="modal" style="max-width:720px" onclick="event.stopPropagation()">
+      <div class="modal-title">⇩ Paste a bid</div>
+      <div class="modal-sub">For a bid written outside the platform. It goes through the same review screen, the same price-book matching and the same six divisions — but <b>no AI is called, so it costs nothing</b>.${p ? ` It lands on “${esc(p.name)}”.` : ' With no project selected, it uses (or creates) the project named in the block.'}</div>
+      <textarea id="bid-paste" class="minp" rows="12" placeholder='{"novantu":"bid","project":{"name":"..."},"lines":[{"division":"DUCTWORK","code":"hv-rect-14x12","name":"Rect duct 14x12","qty":86,"unit":"LF","basis":"...","sheetRef":"M02.01","est":true}]}' style="width:100%;box-sizing:border-box;margin-top:12px;font-family:var(--mono);font-size:11px;line-height:1.45;resize:vertical"></textarea>
+      <div class="modal-btns" style="margin-top:12px">
+        <button class="btn btn-ghost" onclick="ST.bidPasteOpen=false;render()">Cancel</button>
+        <button class="btn btn-amber" onclick="bidPasteRun()">Import — 0 AI</button>
+      </div>
+    </div>
+  </div>`;
+}
+function bidPasteRun() {
+  const el = document.getElementById('bid-paste');
+  const txt = (el && el.value || '').trim();
+  if (!txt) { showToast('Paste the bid block first.', 'warn'); return; }
+  ST.bidPasteOpen = false;
+  setTab('assistant');
+  assistantPush('user', '⇩ Pasted bid (' + Math.round(txt.length / 1024) + ' KB)');
+  bidImportFromChat(txt);
 }
 
 function bidDraftNormalize(pid, x, r) {
@@ -15854,6 +16493,22 @@ function bidChatSummary(d) {
   const L = [`✓ Bid draft ready — ${d.lines.length} line${d.lines.length === 1 ? '' : 's'} in the six divisions, read from ${d.pages} sheet${d.pages === 1 ? '' : 's'}${d.mode !== 'page' ? ' (every sheet in detail tiles)' : ''}.`];
   for (const c of HVAC_CATEGORIES) { const n = d.lines.filter(l => l.division === c.cat).length; if (n) L.push(`• ${c.cat} — ${n}`); }
   L.push('', `Priced from your book: ${t.priced} line${t.priced === 1 ? '' : 's'} = ${fmt$(t.total)} (before markup) · ${t.unpriced} to price by hand.`);
+  // Where those prices came from. Reused-vs-researched is the number that tells
+  // the estimator whether this bid cost a round of searching or rode on the
+  // book — and it is the whole reason prices carry a date.
+  const h = d.hunt;
+  if (h) {
+    const bits = [];
+    if (h.found) bits.push(`${h.found} researched in the LA market just now`);
+    if (h.reused) bits.push(`${h.reused} reused from your book (priced within ${h.ttl} days)`);
+    if (h.zero) bits.push(`${h.zero} came back with no usable price`);
+    if (h.missed) bits.push(`${h.missed} not answered`);
+    if (h.added) bits.push(`${h.added} new item${h.added === 1 ? '' : 's'} added to your price book`);
+    if (bits.length) L.push('Prices: ' + bits.join(' · ') + '.');
+    for (const n of (h.notes || [])) L.push('△ ' + n);
+  }
+  if (d.huntError) L.push(`△ Prices could not be researched (${d.huntError}) — the lines are here, the numbers are not.`);
+  L.push('Markup is not in these numbers — set it in the Builder.');
   const others = d.responsibility.filter(q => !q.inScope).map(q => `${q.item} (${q.furnishedBy || '—'}/${q.installedBy || '—'})`);
   if (others.length) L.push('', 'Not ours per the responsibility schedule → excluded:', ...others.slice(0, 6).map(x => '• ' + x));
   if (d.rfis.length) L.push('', `RFIs to send before bid day (${d.rfis.length}):`, ...d.rfis.slice(0, 5).map(x => '• ' + x));
@@ -15936,6 +16591,50 @@ function bidCopyRfis(pid) {
   catch (_e) { showToast('Could not copy — select the text and copy it by hand.', 'warn'); }
 }
 
+// Where this bid's prices came from, stated once at the top of the review. The
+// split between researched and reused is the thing the estimator most needs to
+// see: it tells them which numbers are hours old and which are up to a
+// fortnight old, before they sign anything.
+function bidHuntBlock(d) {
+  const h = d.hunt;
+  if (d.huntError) {
+    return `<div style="margin-top:10px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:8px 11px;font-size:12px;color:var(--ink-900)">△ The sheets were read, but prices could not be researched (${esc(d.huntError)}). Every line is here — the numbers are not. Try “↻ Refresh prices” in Files → Price book.</div>`;
+  }
+  if (!h) return '';
+  const chip = (label, val, color) => val ? `<span style="font-family:var(--mono);font-size:9.5px;color:${color || 'var(--text2)'}">${esc(String(val))} ${esc(label)}</span>` : '';
+  const chips = [
+    chip('researched in LA', h.found, 'var(--green)'),
+    chip(`reused (< ${h.ttl}d old)`, h.reused, 'var(--text2)'),
+    chip('no usable price', h.zero, 'var(--amber)'),
+    chip('not answered', h.missed, 'var(--amber)'),
+    chip('new to your book', h.added, 'var(--text2)'),
+    chip('web searches', h.searches, 'var(--text3)'),
+  ].filter(Boolean);
+  if (!chips.length) return '';
+  return `<div style="margin-top:10px;border:1px solid var(--border);background:var(--bg1);border-radius:var(--r);padding:8px 11px">
+    <div style="font-family:var(--mono);font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);font-weight:600;margin-bottom:4px">Where these prices came from</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">${chips.join('')}</div>
+    <div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:5px">Unit costs for the Los Angeles market, waste already inside the unit price. <b>No markup</b> — apply yours in the Builder. Hover any price to see its sources.</div>
+    ${(h.notes || []).map(n => `<div style="font-size:11.5px;color:var(--ink-900);line-height:1.5;margin-top:4px">△ ${esc(n)}</div>`).join('')}
+  </div>`;
+}
+
+// The provenance of one line's unit price, as a hover. Everything the estimator
+// needs to decide whether to trust the number: who set it, when, what it is made
+// of (including the waste % baked in) and which sources it came from.
+function bidLinePriceTip(l) {
+  if (!(l.perUnit > 0)) return 'No price in your book for this item — set it in Files → Price book, or research it and it will land here.';
+  const L = [];
+  L.push(l.priceBy === 'user' ? 'Your own price — never overwritten by a refresh.'
+    : l.priceBy === 'ai' ? 'Researched from the Los Angeles market.' : 'From your price book.');
+  if (l.priceAge && l.priceBy !== 'user') L.push('Set ' + l.priceAge + ' ago.');
+  if (l.priceBasis) L.push(l.priceBasis);
+  if (l.priceSrc) L.push('Sources: ' + l.priceSrc);
+  if (l.priceConf) L.push('Confidence: ' + l.priceConf);
+  L.push('Cost before markup — markup is applied in the Builder.');
+  return L.join('\n');
+}
+
 function buildBidDraftModal() {
   const pid = ST.bidDraftOpen; if (!pid) return '';
   const d = (ST.overrides[pid] || {})._bidDraft;
@@ -15961,7 +16660,7 @@ function buildBidDraftModal() {
           <div style="font-family:var(--mono);font-size:9px;color:var(--text3);line-height:1.4">${l.code ? `<span style="color:var(--green)">▤ ${esc(l.code)}</span> · ` : ''}${esc(l.basis)}${l.sheetRef ? ` · ${esc(l.sheetRef)}` : ' · <span style="color:var(--amber)">unsourced</span>'}</div></div>
         <input type="number" min="0" step="any" value="${esc(String(l.qty))}" onchange="bidDraftSetQty(${i},this.value)" title="${l.est ? 'Scaled from the drawing — verify' : ''}" style="background:var(--bg2);border:1px solid ${l.est ? 'var(--amber)' : 'var(--border)'};border-radius:var(--r2);padding:4px 6px;font-family:var(--mono);font-size:12px;text-align:right;color:var(--text);outline:none;width:100%;box-sizing:border-box">
         <div style="font-family:var(--mono);font-size:10px;color:var(--text3)">${l.est ? '~' : ''}${esc(l.unit)}</div>
-        <div style="font-family:var(--mono);font-size:11px;text-align:right;color:${l.perUnit > 0 ? 'var(--text3)' : 'var(--amber)'}">${l.perUnit > 0 ? fmt$(l.perUnit) : 'price it'}</div>
+        <div style="font-family:var(--mono);font-size:11px;text-align:right;color:${l.perUnit > 0 ? 'var(--text3)' : 'var(--amber)'}" title="${esc(bidLinePriceTip(l))}">${l.perUnit > 0 ? fmt$(l.perUnit) : 'price it'}${l.perUnit > 0 && l.priceAge ? `<div style="font-size:8.5px;color:${l.priceBy === 'user' ? 'var(--green)' : (l.priceConf === 'low' ? 'var(--amber)' : 'var(--text3)')};line-height:1.2">${l.priceHunted ? '🔎 ' : ''}${esc(l.priceAge)}</div>` : ''}</div>
         <div style="font-family:var(--mono);font-size:12px;text-align:right;color:var(--ink-900)">${l.perUnit > 0 ? fmt$(l.qty * l.perUnit) : '—'}</div>
       </div>`).join('')}
     </div>`;
@@ -15975,8 +16674,9 @@ function buildBidDraftModal() {
   return `<div class="backdrop" onclick="if(event.target===this){ST.bidDraftOpen=null;render()}">
     <div class="modal modal-wide" style="max-width:940px" onclick="event.stopPropagation()">
       <div class="modal-title">✦ Bid draft — ${esc(p.name)}</div>
-      <div class="modal-sub">${d.lines.length} lines · read ${d.pages} sheet${d.pages === 1 ? '' : 's'} as ${d.images} image${d.images === 1 ? '' : 's'}${d.mode !== 'page' ? ' (detail tiles)' : ''} · <b>${t.priced}</b> priced from your book = <b>${fmt$(t.total)}</b> before markup${t.unpriced ? ` · <span style="color:var(--amber)">${t.unpriced} to price</span>` : ''} — nothing is in the Builder yet</div>
+      <div class="modal-sub">${d.lines.length} lines · ${d.mode === 'import' ? 'imported — no AI was used' : `read ${d.pages} sheet${d.pages === 1 ? '' : 's'} as ${d.images} image${d.images === 1 ? '' : 's'}${d.mode !== 'page' ? ' (detail tiles)' : ''}`} · <b>${t.priced}</b> priced from your book = <b>${fmt$(t.total)}</b> before markup${t.unpriced ? ` · <span style="color:var(--amber)">${t.unpriced} to price</span>` : ''} — nothing is in the Builder yet</div>
       ${d.summary ? `<div style="font-size:12.5px;color:var(--text2);line-height:1.55;margin-top:10px">${esc(d.summary)}</div>` : ''}
+      ${bidHuntBlock(d)}
       ${d.notes ? `<div style="margin-top:8px;background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:var(--r);padding:8px 11px;font-size:12px;color:var(--ink-900)">△ ${esc(d.notes)}</div>` : ''}
       <div style="max-height:56vh;overflow:auto;margin-top:12px;padding-right:4px">
         ${facts ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-bottom:12px">${facts}</div>` : ''}
@@ -16180,7 +16880,7 @@ async function detailsRead(pid) {
   ST.detailsLoading = pid; render();
   let planImages = [];
   try {
-    const r = await renderAllProjectPlans(pid);
+    const r = await withTimeout(renderAllProjectPlans(pid), 180000, 'Rendering the plan pages');
     planImages = r.images || [];
     // Title block, cover sheet and code-analysis table live at the FRONT of a
     // set, and vision cost scales with pages — 12 is plenty to identify a job.
@@ -16950,6 +17650,12 @@ function aiCmdIntent(msg) {
           'project details', 'detalles del proyecto', 'code compliance', 'cumplimiento',
           'what is this project', 'que es este proyecto', 'qué es este proyecto',
           'describe the', 'resumen de la casa', 'summarize the plan')) return 'details';
+  // Refreshing the price book is its own job — and it has to be caught before
+  // 'estimate', which owns the word "precio", or "actualiza los precios" would
+  // launch a whole bid instead of a price sweep.
+  if (has('update the price', 'update prices', 'refresh price', 'actualiza los precio', 'actualizar los precio',
+          'actualiza precio', 'actualizar precio', 'price book', 'libro de precio', 'lista de precio',
+          're-price', 'reprice', 'repricing', 'recotiza', 'busca precio', 'buscar precio')) return 'prices';
   if (has('take off', 'take-off', 'takeoff', 'metrado', 'cuantifica', 'quantities', 'quantify')) return 'takeoff';
   if (has('break down', 'breakdown', 'desglos', 'rfp', 'rfq')) return 'breakdown';
   if (has('follow', 'seguimiento', 'correo', 'email', 'mail', 'chase')) return 'followup';
@@ -17031,8 +17737,10 @@ function aiCmdMatchProject(msg) {
 // itself on its cover page: the GC's project reference, who priced it, and which
 // revision this is. Without them every proposal needs those three typed by hand.
 const AGENT_SETUP_FIELDS = ['address', 'jurisdiction', 'projectType', 'occupancy', 'constructionType', 'codeYear', 'stories', 'sqft', 'architect', 'mep', 'structural', 'civil', 'bidSet', 'prNumber', 'estimator', 'revision', 'notes'];
-const AGENT_TABS = ['projects', 'estimator', 'builder', 'bids', 'schedule', 'dailylog', 'subs', 'settings'];
-const AGENT_RUNS = ['takeoff', 'estimate', 'schedule', 'breakdown', 'details'];
+// 'estimator' and 'bids' are gone — the first was retired into Ask AI + the
+// project page, the second never existed (it fell through to Overview).
+const AGENT_TABS = ['projects', 'assistant', 'builder', 'files', 'schedule', 'dailylog', 'subs', 'settings'];
+const AGENT_RUNS = ['takeoff', 'estimate', 'schedule', 'breakdown', 'details', 'prices'];
 // Setup fields backed by a fixed <select>. A value outside the list saves fine
 // but renders as an EMPTY dropdown — silently wrong, which is worse than
 // refusing. Snap to the real option, or reject the write and say why.
@@ -17132,6 +17840,7 @@ async function aiAgentPlan(msg) {
       projectContext: scopePid ? estBuildContext(scopePid) : {
         projectName: '(workspace)', setup: {}, plans: [],
         reviewItems: [], derivedCodes: [], openRfis: [], isSub: isSubAccount(),
+        workspaceRules: (typeof bidRulesText === 'function') ? bidRulesText() : '',
       },
       messages: asstHistory(true).concat([{ role: 'user', content: msg }]),
       task: 'agent',
@@ -17178,7 +17887,11 @@ function asstPlanValidate(raw, scopePid) {
   const scoped = scopePid ? String(scopePid) : '';
   const scopeName = scoped ? ((allProjects().find(p => p.id === scoped) || {}).name || 'the selected project') : '';
 
-  for (const a of (Array.isArray(raw) ? raw : []).slice(0, 40)) {
+  const all = Array.isArray(raw) ? raw : [];
+  // A long plan used to be cut at 40 with no word to the user — 20 line items
+  // could vanish from a bid and nothing said so.
+  if (all.length > 40) rejected.push(`${all.length - 40} more action(s) past the 40-action limit — ask me to continue with the rest`);
+  for (const a of all.slice(0, 40)) {
     const op = String((a && a.op) || '');
     let pid = String((a && a.pid) || '').trim();
     // Inside a locked project an omitted pid is an obvious self-reference, not
@@ -17254,7 +17967,18 @@ function asstPlanDescribe(a) {
     case 'set_setup':      return `Set <b>${esc(a.field)}</b> = ${esc(a.value) || '<i>(blank)</i>'} on ${esc(nm(a.pid))}`;
     case 'add_group':      return `Add cost-code group <b>${esc(a.code)}</b>${a.title ? ' · ' + esc(a.title) : ''}`;
     case 'add_item':       return `Add line <b>${esc(a.title)}</b> — ${a.qty} ${esc(a.unit)}${a.unitCost ? ` @ ${fmt$(a.unitCost)}` : ' <i>(no price — you set it)</i>'}${a.groupCode ? ` → ${esc(a.groupCode)}` : ''}`;
-    case 'run':            return `Then open the <b>${esc(a.value)}</b> tool on ${esc(nm(a.pid))} for your review`;
+    case 'run': {
+      // "estimate" on an HVAC shop with plans on file is the full bid: it reads
+      // every sheet. That is minutes and real money — say so before it runs.
+      const heavy = ['takeoff', 'estimate', 'details', 'breakdown'].includes(a.value);
+      if (a.value === 'prices') {
+        const due = (typeof priceHuntTargets === 'function') ? priceHuntTargets(null).length : 0;
+        return `Then look up current Los Angeles prices for <b>${due}</b> item${due === 1 ? '' : 's'} in your price book`
+          + ` <span style="color:var(--amber)">(searches the web — your own prices are left alone)</span>`;
+      }
+      return `Then run <b>${esc(a.value)}</b> on ${esc(nm(a.pid))} for your review`
+        + (heavy ? ` <span style="color:var(--amber)">(reads the plan PDFs, then prices it — two AI actions)</span>` : '');
+    }
     case 'open_tab':       return `Take you to <b>${esc(a.value)}</b>`;
     default:               return esc(a.op);
   }
@@ -17375,6 +18099,12 @@ async function aiCmdSend() {
   const msg = (inp && inp.value || '').trim();
   if (!msg || asstBusyLabel()) return;
   if (inp) inp.value = '';
+  // A pasted bid block is executed locally — no model call, no AI credit.
+  if (bidImportLooksLike(msg)) {
+    assistantPush('user', '⇩ Pasted bid (' + Math.round(msg.length / 1024) + ' KB)');
+    await bidImportFromChat(msg);
+    return;
+  }
   assistantPush('user', msg);
   let intent = aiCmdIntent(msg);
   // "How many diffusers are on level 2?" is a question about the DRAWINGS, not
@@ -17384,6 +18114,10 @@ async function aiCmdSend() {
   // A selected project overrides everything: no guessing from the wording, no
   // "which project?" round-trip, and no way to land on a neighbouring job
   // because two names look alike.
+  // The price book belongs to the workspace, not to a job — so this one never
+  // needs a project, and must not be sent down the "which project?" path.
+  if (intent === 'prices') { await aiCmdDispatch('prices', { id: null, name: '' }, msg); return; }
+
   const scoped = asstScopeProject();
   if (scoped) {
     if (intent === 'agent') { await aiAgentPlan(msg); return; }
@@ -17427,6 +18161,34 @@ async function aiCmdDispatch(intent, p, msg) {
     return;
   }
 
+  // Price sweep — the fortnightly job, asked for in words. It is workspace-wide
+  // (the book is workspace-wide), so the selected project is irrelevant here.
+  if (intent === 'prices') {
+    const due = priceHuntTargets(null);
+    if (!due.length) {
+      assistantPush('assistant', `Your price book is current — everything is either priced within the last ${PRICE_TTL_DAYS} days or set by you, and your own prices are never overwritten.\n\nOpen Files → Price book to see the dates.`);
+      return;
+    }
+    assistantPush('assistant', `✦ ${due.length} item${due.length === 1 ? ' is' : 's are'} due — unpriced, or researched more than ${PRICE_TTL_DAYS} days ago. Looking up current Los Angeles prices${due.length > PRICE_HUNT_MAX ? ` (the first ${PRICE_HUNT_MAX} this run)` : ''}. Prices you set yourself are left alone.`);
+    if (!trialGuardAI()) return;
+    ST.assistantBusy = true; render();
+    try {
+      const hunt = await priceHuntFetch(null, due, '',
+        (done, total) => { ST.asstBusyLabel = `Pricing item ${done} of ${total}…`; render(); });
+      const wrote = priceHuntCommit(hunt);
+      aiLogEvent('pricehunt', { ok: true });
+      assistantPush('assistant', `✓ ${wrote} price${wrote === 1 ? '' : 's'} written to your book, dated today.\n${priceHuntSummary(hunt)}`
+        + (hunt.notes.length ? '\n\n' + hunt.notes.map(n => '△ ' + n).join('\n') : '')
+        + '\n\nThese are unit costs with waste inside them and no markup — set your markup in the Builder.');
+    } catch (err) {
+      aiLogEvent('pricehunt', { ok: false, err: err && err.message });
+      assistantPush('assistant', '△ The price refresh failed: ' + ((err && err.message) || err));
+    } finally {
+      ST.assistantBusy = false; ST.asstBusyLabel = ''; render();
+    }
+    return;
+  }
+
   if (intent === 'schedule') {
     if (!hasFeature('fieldops')) { assistantPush('assistant', 'Scheduling (Gantt) is part of the Pro plan — upgrade to unlock it.'); return; }
     if (!(ST.estimates && ST.estimates[pid] && (ST.estimates[pid].groups || []).length) && !(typeof subEstTotal === 'function' && subEstTotal(pid) > 0)) {
@@ -17449,7 +18211,7 @@ async function aiCmdDispatch(intent, p, msg) {
     // HVAC shop + drawings on file → the full bid skill: reads every sheet in
     // detail tiles, applies the shop's bid method, returns the bid for review.
     if (hasPlans && typeof isHvacSub === 'function' && isHvacSub()) {
-      assistantPush('assistant', `✦ Building the bid for “${p.name}” from the drawings — responsibility schedules first, then equipment, air devices, plan & keynotes, details and specs — in your six divisions${bidProfileGet() ? ', following the bid method learned from your past proposal' : ''}. A full mechanical set takes a few minutes. You review everything before it touches the Builder.`);
+      assistantPush('assistant', `✦ Building the bid for “${p.name}” from the drawings — responsibility schedules first, then equipment, air devices, plan & keynotes, details, Title-24 forms and the general notes — in your six divisions${bidProfileGet() ? ', following the bid method learned from your past proposal' : ''}.\n\nThen I price it: anything your book priced in the last ${PRICE_TTL_DAYS} days is reused as-is, and everything else gets looked up at current Los Angeles rates and saved to your book with today's date. Unit costs with waste inside, no markup — that stays yours to set in the Builder.\n\nA full mechanical set takes a few minutes. You review everything before it touches the Builder.`);
       await hvacBidGenerate(pid, msg);
       return;
     }
@@ -17736,6 +18498,7 @@ function buildAssistantTab() {
     <div style="display:flex;gap:8px;margin-top:8px">
       <input id="ai-cmd-file" type="file" accept="application/pdf,.pdf" multiple onchange="asstAttachFiles(this)" style="display:none">
       <button class="btn btn-ghost" ${busy ? 'disabled' : ''} onclick="asstAttachPick()" title="Attach plan PDFs — they're saved to the selected project's plans">📎</button>
+      <button class="btn btn-ghost" ${busy ? 'disabled' : ''} onclick="ST.bidPasteOpen=true;render();setTimeout(()=>document.getElementById('bid-paste')?.focus(),40)" title="Paste a bid written elsewhere — imported with no AI call">⇩</button>
       <input id="ai-cmd-input" type="text" placeholder="${scopeP ? esc('Ask or tell me what to do on ' + scopeP.name + '…') : 'Ask across the workspace, or name a project…'}" ${busy ? 'disabled' : ''}
         onkeydown="if(event.key==='Enter')aiCmdSend()"
         style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:var(--r2);padding:11px 14px;font-family:var(--sans);font-size:13px;color:var(--text);outline:none" onfocus="this.style.borderColor='var(--amber)'" onblur="this.style.borderColor='var(--border)'">
@@ -19426,6 +20189,99 @@ function getCalculatorTypes() {
     return filtered.length ? filtered : TAKEOFF_TYPES;
   }
   return TAKEOFF_TYPES;
+}
+
+// ── Measuring canvas, now a full-screen overlay ──────────────────────────────
+// It used to be the Estimator tab's second sub-tab. The tab is gone; the tool
+// is not: it opens over whatever screen you are on, from the project's Plans
+// block or from Ask AI, and closes back to it.
+function toCalcOpen(pid) {
+  if (typeof _toMountReset === 'function') _toMountReset();
+  ST.toCalcFull = pid; ST.selProj = pid; render();
+}
+function toCalcClose() {
+  if (typeof _toMountReset === 'function') _toMountReset();
+  ST.toCalcFull = null; render();
+}
+function buildTakeoffCalcOverlay() {
+  const pid = ST.toCalcFull; if (!pid) return '';
+  const p = allProjects().find(x => x.id === pid);
+  if (!p) { ST.toCalcFull = null; return ''; }
+  const e = getEstProj(pid);
+  return `<div class="backdrop" style="padding:0;align-items:stretch;justify-content:stretch">
+    <div style="background:var(--bg);width:100%;height:100%;display:flex;flex-direction:column" onclick="event.stopPropagation()">
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg1);flex-wrap:wrap">
+        <div style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">[ MEASURE ON THE PLANS ]</div>
+        <div style="font-size:13px;font-weight:600;color:var(--ink-900)">${esc(p.name)}</div>
+        <div style="flex:1"></div>
+        <button class="btn btn-ghost btn-sm" onclick="toCalcClose()">✕ Close</button>
+      </div>
+      <div class="est-body est-body--fullbleed" style="flex:1;min-height:0;overflow:auto">${buildEstTakeoff(p, e)}</div>
+    </div>
+  </div>`;
+}
+
+// ── Plans on the project page ────────────────────────────────────────────────
+// What the Estimator's "Plan Sets" screen did, where the project already is:
+// attach a PDF, see what is attached, download or remove it, fix its
+// discipline — plus one-click hand-off to the AI actions in Ask AI.
+function projPlansUpload(pid, input) {
+  const files = Array.from((input && input.files) || []);
+  if (input) input.value = '';
+  if (!files.length) return;
+  (async () => {
+    const saved = [], failed = [];
+    ST.asstUploading = files.length; render();
+    try {
+      for (const f of files) {
+        const r = await estAddPlanFile(pid, f, planGuessDiscipline(f.name));
+        if (r.ok) { saved.push(r.meta); if (r.warn) showToast(r.warn, 'warn'); } else failed.push(r.err);
+      }
+    } finally { ST.asstUploading = 0; }
+    if (saved.length) ST.asstPlansHot = pid;
+    failed.forEach(m => showToast(m, 'error'));
+    if (saved.length) showToast(`${saved.length} plan file${saved.length === 1 ? '' : 's'} attached — ask the AI to read them in Ask AI.`, 'success');
+    render();
+  })();
+}
+// Send the user to Ask AI locked on this project, optionally running an action.
+function projAskAI(pid, kind) {
+  asstSetScope(pid);
+  setTab('assistant');
+  if (kind) setTimeout(() => asstAct(kind, pid), 60);
+}
+function buildProjectPlansSection(p) {
+  const e = (ST.estimator && ST.estimator[p.id]) || null;
+  const plans = (e && Array.isArray(e.plans)) ? e.plans : [];
+  const hv = typeof isHvacSub === 'function' && isHvacSub();
+  const row = (pl) => `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">
+    <select onchange="estUpdatePlanDiscipline('${p.id}','${pl.id}',this.value)" title="Discipline" style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:3px 6px;font-family:var(--mono);font-size:10px;color:var(--text)">
+      ${EST_DISCIPLINES.map(d => `<option value="${d.id}"${d.id === pl.discipline ? ' selected' : ''}>${d.id}</option>`).join('')}
+    </select>
+    <span style="flex:1;min-width:140px;font-size:12px;color:var(--ink-900);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(pl.name || '')}</span>
+    ${hasPlanBinary(pl) ? '' : '<span style="font-family:var(--mono);font-size:9px;color:var(--amber)" title="Only the name was recorded — the AI cannot read this one">no file</span>'}
+    <button class="edit-btn" onclick="estDownloadPlan('${p.id}','${pl.id}')" title="Download">⬇</button>
+    <button class="edit-btn" style="color:var(--red);border-color:var(--red-border)" onclick="estRemovePlan('${p.id}','${pl.id}')" title="Remove">✕</button>
+  </div>`;
+  return `<div style="padding:14px 20px 0">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+      <div style="font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.12em;color:var(--text3);text-transform:uppercase">Plans${plans.length ? ' · ' + plans.length : ''}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <label class="edit-btn" style="cursor:pointer;margin:0">+ Attach PDF<input type="file" accept="application/pdf,.pdf" multiple onchange="projPlansUpload('${p.id}',this)" style="display:none"></label>
+        ${plans.length ? `<button class="edit-btn" onclick="projAskAI('${p.id}','details')" title="The AI reads the set and fills this project's details">▦ Read plans</button>
+        <button class="edit-btn" onclick="projAskAI('${p.id}','${hv ? 'estimate' : 'takeoff'}')" title="${hv ? 'Full bid from the drawings' : 'Take-off with costs'}">${hv ? '✎ Bid from drawings' : '⊟ Take-off'}</button>` : ''}
+        ${hasBudgetCalculator() && plans.length ? `<button class="edit-btn" onclick="toCalcOpen('${p.id}')" title="Measure on the PDF by hand">📐 Measure</button>` : ''}
+      </div>
+    </div>
+    ${plans.length
+      ? plans.map(row).join('')
+      : `<div style="font-family:var(--mono);font-size:10.5px;color:var(--text3);font-style:italic;padding-bottom:6px">No plans yet — attach the PDF here, or with 📎 in Ask AI.</div>`}
+  </div>`;
+}
+function estUpdatePlanDiscipline(pid, planId, disc) {
+  const e = getEstProj(pid);
+  const pl = (e.plans || []).find(x => x.id === planId);
+  if (pl) { pl.discipline = disc; saveSt(); render(); }
 }
 
 function buildEstTakeoff(p, e) {
@@ -25800,24 +26656,24 @@ const DEFAULT_PRICING_CATALOG = {
     { code: 'fs-test',           name: 'Inspector test & sign-off',  sub: 'Final acceptance',           unit: 'EA', perUnit: 380.00,  matchTags: ['test','inspection','sign-off'] },
   ],
   hvac: [
-    { code: 'hv-ahu-35',     name: 'Air handler · 3.5 ton',    sub: 'Mitsubishi · ducted',        unit: 'EA', perUnit: 3200.00, matchTags: ['air handler','ahu','3.5 ton','3 5 ton','handler'] },
-    { code: 'hv-ahu-4',      name: 'Air handler · 4 ton',      sub: 'Mitsubishi · ducted',        unit: 'EA', perUnit: 3600.00, matchTags: ['air handler','ahu','4 ton'] },
-    { code: 'hv-cond-35',    name: 'Heat pump condenser · 3.5 ton', sub: 'Mitsubishi · outdoor',  unit: 'EA', perUnit: 4200.00, matchTags: ['condenser','condensing','heat pump','heatpump','outdoor','unit'] },
-    { code: 'hv-minisplit',  name: 'Mini-split (ductless)',    sub: 'Per indoor head',            unit: 'EA', perUnit: 2800.00, matchTags: ['mini split','ductless','minisplit'] },
-    { code: 'hv-lineset',    name: 'Copper refrigerant line set', sub: 'Insulated · handler→cond', unit: 'LF', perUnit: 22.00,   matchTags: ['line set','lineset','refrigerant','copper','copper line'] },
-    { code: 'hv-duct',       name: 'R-8 flexible duct',        sub: 'Insulated flex run',         unit: 'LF', perUnit: 14.00,   matchTags: ['duct','ductwork','flex','r-8','r8'] },
-    { code: 'hv-linbox-4',   name: 'Linear diffuser box · 4 ft', sub: 'Insulated supply box',     unit: 'EA', perUnit: 280.00,  matchTags: ['linear','box','diffuser box','4ft','4 ft','defuser'] },
-    { code: 'hv-linbox-2',   name: 'Linear diffuser box · 2 ft', sub: 'Restroom supply box',      unit: 'EA', perUnit: 180.00,  matchTags: ['linear','box','restroom','2ft','2 ft'] },
-    { code: 'hv-supply-reg', name: 'Linear supply vent / diffuser', sub: 'Slot diffuser face',    unit: 'EA', perUnit: 95.00,   matchTags: ['supply','register','vent','diffuser','linear'] },
-    { code: 'hv-return',     name: 'Return air grille',        sub: 'Filter back',                unit: 'EA', perUnit: 160.00,  matchTags: ['return','grille'] },
-    { code: 'hv-plenum',     name: 'Custom insulated plenum',  sub: 'Supply + return · per system', unit: 'EA', perUnit: 850.00, matchTags: ['plenum','plenums','supply plenum','return plenum'] },
-    { code: 'hv-condensate', name: 'Condensate drain to sink', sub: 'PVC + pump if req',          unit: 'EA', perUnit: 220.00,  matchTags: ['condensate','condensation','drain','sink'] },
-    { code: 'hv-tstat',      name: 'Smart thermostat',         sub: 'Zoning · per system',        unit: 'EA', perUnit: 320.00,  matchTags: ['thermostat','tstat','control'] },
-    { code: 'hv-tstat-wire', name: 'Thermostat wire / low-volt', sub: 'Control wiring run',       unit: 'EA', perUnit: 180.00,  matchTags: ['thermostat wire','wire','low voltage','wiring'] },
-    { code: 'hv-permit',     name: 'Title-24 + Manual J + permit', sub: 'Load calc & submittal',  unit: 'EA', perUnit: 1800.00, matchTags: ['title 24','load calc','permit','manual j','design'] },
-    { code: 'hv-crane',      name: 'Crane / rooftop rigging',  sub: 'Set heavy equipment',        unit: 'EA', perUnit: 1800.00, matchTags: ['crane','rigging','rooftop'] },
-    { code: 'hv-labor',      name: 'Installation labor',       sub: 'Equipment set, duct, line sets', unit: 'LS', perUnit: 50000.00, matchTags: ['labor','install','installation','crew'] },
-    { code: 'hv-tab',        name: 'Test, balance & start-up', sub: 'Airflow commissioning',      unit: 'EA', perUnit: 1600.00, matchTags: ['balance','tab','commission','start-up','startup'] },
+    { code: 'hv-ahu-35',     name: 'Air handler · 3.5 ton',    sub: 'Mitsubishi · ducted',        unit: 'EA', perUnit: 0, matchTags: ['air handler','ahu','3.5 ton','3 5 ton','handler'] },
+    { code: 'hv-ahu-4',      name: 'Air handler · 4 ton',      sub: 'Mitsubishi · ducted',        unit: 'EA', perUnit: 0, matchTags: ['air handler','ahu','4 ton'] },
+    { code: 'hv-cond-35',    name: 'Heat pump condenser · 3.5 ton', sub: 'Mitsubishi · outdoor',  unit: 'EA', perUnit: 0, matchTags: ['condenser','condensing','heat pump','heatpump','outdoor','unit'] },
+    { code: 'hv-minisplit',  name: 'Mini-split (ductless)',    sub: 'Per indoor head',            unit: 'EA', perUnit: 0, matchTags: ['mini split','ductless','minisplit'] },
+    { code: 'hv-lineset',    name: 'Copper refrigerant line set', sub: 'Insulated · handler→cond', unit: 'LF', perUnit: 0,   matchTags: ['line set','lineset','refrigerant','copper','copper line'] },
+    { code: 'hv-duct',       name: 'R-8 flexible duct',        sub: 'Insulated flex run',         unit: 'LF', perUnit: 0,   matchTags: ['duct','ductwork','flex','r-8','r8'] },
+    { code: 'hv-linbox-4',   name: 'Linear diffuser box · 4 ft', sub: 'Insulated supply box',     unit: 'EA', perUnit: 0,  matchTags: ['linear','box','diffuser box','4ft','4 ft','defuser'] },
+    { code: 'hv-linbox-2',   name: 'Linear diffuser box · 2 ft', sub: 'Restroom supply box',      unit: 'EA', perUnit: 0,  matchTags: ['linear','box','restroom','2ft','2 ft'] },
+    { code: 'hv-supply-reg', name: 'Linear supply vent / diffuser', sub: 'Slot diffuser face',    unit: 'EA', perUnit: 0,   matchTags: ['supply','register','vent','diffuser','linear'] },
+    { code: 'hv-return',     name: 'Return air grille',        sub: 'Filter back',                unit: 'EA', perUnit: 0,  matchTags: ['return','grille'] },
+    { code: 'hv-plenum',     name: 'Custom insulated plenum',  sub: 'Supply + return · per system', unit: 'EA', perUnit: 0, matchTags: ['plenum','plenums','supply plenum','return plenum'] },
+    { code: 'hv-condensate', name: 'Condensate drain to sink', sub: 'PVC + pump if req',          unit: 'EA', perUnit: 0,  matchTags: ['condensate','condensation','drain','sink'] },
+    { code: 'hv-tstat',      name: 'Smart thermostat',         sub: 'Zoning · per system',        unit: 'EA', perUnit: 0,  matchTags: ['thermostat','tstat','control'] },
+    { code: 'hv-tstat-wire', name: 'Thermostat wire / low-volt', sub: 'Control wiring run',       unit: 'EA', perUnit: 0,  matchTags: ['thermostat wire','wire','low voltage','wiring'] },
+    { code: 'hv-permit',     name: 'Title-24 + Manual J + permit', sub: 'Load calc & submittal',  unit: 'EA', perUnit: 0, matchTags: ['title 24','load calc','permit','manual j','design'] },
+    { code: 'hv-crane',      name: 'Crane / rooftop rigging',  sub: 'Set heavy equipment',        unit: 'EA', perUnit: 0, matchTags: ['crane','rigging','rooftop'] },
+    { code: 'hv-labor',      name: 'Installation labor',       sub: 'Equipment set, duct, line sets', unit: 'LS', perUnit: 0, matchTags: ['labor','install','installation','crew'] },
+    { code: 'hv-tab',        name: 'Test, balance & start-up', sub: 'Airflow commissioning',      unit: 'EA', perUnit: 0, matchTags: ['balance','tab','commission','start-up','startup'] },
 
     // ── COMMERCIAL / SHEET-METAL LINE ──────────────────────────────────────
     // Modelled on a real submitted bid (campus modernization, Div 01 + Div 23):
@@ -25977,6 +26833,43 @@ function getPricingCatalog() {
   return merged;
 }
 
+// ── ONE-SHOT: clear the invented HVAC demo prices ────────────────────────────
+// The residential HVAC rows shipped with plausible-looking prices that nobody
+// in this shop ever quoted — they were demo numbers. Now that the AI researches
+// prices and stamps them with a date, a made-up number is worse than an empty
+// one: it looks established, it carries no source, and it goes straight into a
+// bid. So they go to zero.
+//
+// It zeroes a row ONLY when its stored price is still EXACTLY the old demo
+// value and nobody has stamped it since. A price the shop typed, imported or
+// researched differs from the seed and is left completely alone — this can't
+// eat anyone's work. Runs once per workspace, then never again.
+const HVAC_DEMO_SEED_PRICES = {
+  'hv-ahu-35': 3200, 'hv-ahu-4': 3600, 'hv-cond-35': 4200, 'hv-minisplit': 2800,
+  'hv-lineset': 22, 'hv-duct': 14, 'hv-linbox-4': 280, 'hv-linbox-2': 180,
+  'hv-supply-reg': 95, 'hv-return': 160, 'hv-plenum': 850, 'hv-condensate': 220,
+  'hv-tstat': 320, 'hv-tstat-wire': 180, 'hv-permit': 1800, 'hv-crane': 1800,
+  'hv-labor': 50000, 'hv-tab': 1600,
+};
+function hvacClearDemoPrices() {
+  const s = ST.settings;
+  if (!s || s._hvacDemoPricesCleared) return false;
+  const saved = s.takeoffPricing && s.takeoffPricing.hvac;
+  let n = 0;
+  if (Array.isArray(saved)) {
+    for (const r of saved) {
+      if (!r || r.priceBy || r.pricedAt) continue;                       // someone owns this number
+      const seed = HVAC_DEMO_SEED_PRICES[r.code];
+      if (seed === undefined) continue;
+      if (Number(r.perUnit) !== seed) continue;                          // already changed — leave it
+      r.perUnit = 0;
+      n++;
+    }
+  }
+  s._hvacDemoPricesCleared = true;
+  return n > 0;   // caller decides whether that is worth a save
+}
+
 function getPricingForType(typeId) {
   const cat = getPricingCatalog();
   return cat[typeId] || [];
@@ -26008,7 +26901,11 @@ function pricingTombstone(typeId, code) {
   ST.settings.takeoffPricingDeleted[typeId] = arr;
 }
 
-function setPricingItem(typeId, idx, field, value) {
+// `origin` says WHO is setting this price — it defaults to 'user' because every
+// call from the UI is a person typing or importing a number. The price hunt is
+// the only caller that passes 'ai', and the difference is not cosmetic: a 'user'
+// price is exempt from the 15-day refresh forever after.
+function setPricingItem(typeId, idx, field, value, origin) {
   // Before: the first edit of ANY price copied the entire built-in catalog into
   // settings, freezing every category against future additions. Now only the
   // edited category is materialised — from the merged list, positions intact.
@@ -26016,7 +26913,22 @@ function setPricingItem(typeId, idx, field, value) {
   if (!list[idx]) return;
   // min="0" on the input doesn't stop a typed minus sign; a negative unit price
   // would quietly subtract from every estimate that uses the item.
-  if (field === 'perUnit') value = Math.max(0, parseFloat(value) || 0);
+  if (field === 'perUnit') {
+    value = Math.max(0, parseFloat(value) || 0);
+    // Date every price the moment it is set, and record who set it. Without the
+    // stamp the 15-day rule has nothing to measure and every row looks ancient.
+    if (value > 0) {
+      list[idx].pricedAt = new Date().toISOString();
+      list[idx].priceBy = (origin === 'ai') ? 'ai' : 'user';
+      // A hand-typed price replaces whatever research was behind the old one —
+      // leaving the old basis attached would credit this number to sources that
+      // have nothing to do with it.
+      if (origin !== 'ai') { list[idx].priceBasis = ''; list[idx].priceSrc = ''; list[idx].priceConf = ''; }
+    } else {
+      delete list[idx].pricedAt; delete list[idx].priceBy;
+      delete list[idx].priceBasis; delete list[idx].priceSrc; delete list[idx].priceConf;
+    }
+  }
   if (field === 'code') {
     // The code is the row's identity: the budget calculator stores quantities by
     // it, and the AI and the CSV import look prices up by it. A blank or
@@ -27212,12 +28124,17 @@ function buildEstReview(p, e, activeIds) {
   `;
 }
 
+// The Estimator tab was retired. Anything still pointing at it — a saved
+// ST.tab from an older session, an old button, an agent open_tab — lands in
+// Ask AI, which is where plans are attached and read now.
+function estTabRetire() {
+  if (ST.tab === 'estimator') ST.tab = 'assistant';
+}
+
 function setTab(t) {
-  // If we're leaving the estimator's takeoff tab, reset its mount so the
-  // canvas re-initializes properly on next entry.
-  if (ST.tab === 'estimator' && ST.estimatorTab === 'takeoff' && t !== 'estimator') {
-    if (typeof _toMountReset === 'function') _toMountReset();
-  }
+  if (t === 'estimator') t = 'assistant';
+  // Leaving the measuring canvas resets its mount so it re-initializes cleanly.
+  if (ST.toCalcFull && typeof _toMountReset === 'function') _toMountReset();
   // Feature gate: block navigation to tabs the workspace's plan doesn't include
   const featId = TAB_FEATURE_MAP[t];
   if (featId && !hasFeature(featId)) {
