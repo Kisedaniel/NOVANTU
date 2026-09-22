@@ -15402,7 +15402,25 @@ async function aiPostAsk(body, onBeat, out) {
     if (AI_STOPPED || (err && err.name === 'AbortError')) { AI_STOPPED = false; throw new Error('Stopped — nothing was sent to the AI.'); }
     throw err;
   }
-  if (!res.ok) { AI_ABORT = null; throw new Error('HTTP ' + res.status); }
+  if (!res.ok) {
+    AI_ABORT = null;
+    // "HTTP 400" told the estimator nothing — and the one time it mattered most
+    // it meant "your Anthropic credit ran out", which is a thing they can fix in
+    // two minutes if only they are told. The edge function already returns the
+    // real reason in the body; this reads it instead of throwing it away.
+    let detail = '';
+    try { const j = await res.json(); detail = String(j.detail || j.error || j.message || ''); } catch (_e) {}
+    const d = detail.toLowerCase();
+    if (res.status === 429 || /credit balance|quota|usage limit|spend limit|rate_limit/.test(d)) {
+      throw new Error('Your Anthropic account is out of credit or over its limit, so the AI could not answer. Top it up or raise the spend limit in the Anthropic console, then try again. Nothing here was lost.');
+    }
+    if (res.status === 401 || res.status === 403) throw new Error('The AI rejected the request as unauthorised. Sign out and back in; if it persists the API key needs checking.');
+    if (res.status === 413 || /too large|too long|maximum.*token|context/.test(d)) {
+      throw new Error('That request was too big for one call — usually too many plan pages or too long a message. Send fewer sheets, or paste the breakdown as text.');
+    }
+    if (res.status >= 500) throw new Error('The AI service is having trouble right now (' + res.status + '). Wait a moment and try again — nothing was lost.');
+    throw new Error('The AI call failed (HTTP ' + res.status + ')' + (detail ? ': ' + detail.slice(0, 300) : '') + '.');
+  }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '', full = '';
