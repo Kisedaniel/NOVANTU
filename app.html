@@ -514,6 +514,25 @@ body.page-landscape { --page-w: 11in; --page-h: 8.5in; }
    in the browser. */
 .print-page { width: var(--page-w); max-width: 100%; box-sizing: border-box; margin-left: auto; margin-right: auto; }
 
+/* KEEP THE INK.
+   ------------------------------------------------------------------
+   Browsers drop every background-color and background-image when printing
+   unless the person ticks "Background graphics", which is OFF by default and
+   which nobody finds. The proposal's cover is a near-black band carrying white,
+   gold and cyan text; strip its background and you get white text on white
+   paper, which Chrome renders as a washed-out grey. That is not a broken
+   template — it is a template printed with its ink removed.
+
+   print-color-adjust: exact tells the browser this colour is content, not
+   decoration, so it prints regardless of that checkbox. It is set on the page
+   AND on every descendant, because the property does not inherit reliably
+   across all engines, and both prefixes are kept for older Chrome and Safari. */
+.print-page, .print-page *,
+.cover-page, .cover-page * {
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+}
+
 @media print {
   body { background: #fff !important; }
   .app-sidebar, .app-topbar, .no-print, .backdrop, .modal { display: none !important; }
@@ -6600,6 +6619,40 @@ function pbAgeTip(r) {
 // under a preview that is already open. Both halves are set here and nowhere
 // else — split across two places, they drift, and the symptom is content
 // printed sideways off the edge of the paper.
+// Print, or "download a PDF" — which on every current browser is the SAME
+// dialog with the destination set to Save as PDF. We deliberately do not
+// rasterise the page with a canvas library instead: that would turn selectable,
+// searchable, vector text into a blurry image, blow the file up, and break the
+// page breaks this template depends on. The browser's own PDF writer produces a
+// better document than anything we could generate ourselves.
+//
+// What we DO add is the part the browser gets wrong: the filename. Left alone
+// it saves as "app" — this names it after the proposal, which is what ends up
+// in the GC's inbox.
+function printDoc(pid, asPdf) {
+  const prev = document.title;
+  try {
+    const p = (typeof allProjects === 'function' ? allProjects() : []).find(x => x.id === pid);
+    const pi = ((getSettings() || {}).print) || {};
+    const who = (pi.companyName || ((getSettings() || {}).brand || {}).wordmark || '').toString().trim();
+    const name = [who, p && p.name].filter(Boolean).join(' — ') || 'Proposal';
+    // Windows and macOS both refuse these in a filename; a slash in a project
+    // name would otherwise silently truncate what gets saved.
+    document.title = name.replace(/[\\/:*?"<>|]+/g, '-').slice(0, 120);
+  } catch (_e) {}
+  const hinting = !!asPdf && !_PDF_HINT_SHOWN;
+  if (hinting) {
+    _PDF_HINT_SHOWN = true;
+    try { showToast('In the dialog, set Destination to “Save as PDF”. Paper size Letter (Carta) is already 8.5 × 11 — that IS ANSI A.', 'info'); } catch (_e) {}
+  }
+  // Let the toast and the title change land before the dialog freezes the page,
+  // then put the title back once it closes.
+  setTimeout(() => {
+    try { window.print(); } finally { setTimeout(() => { document.title = prev; }, 500); }
+  }, hinting ? 900 : 60);
+}
+let _PDF_HINT_SHOWN = false;
+
 function applyPageSize() {
   try {
     const land = (((getSettings() || {}).print || {}).pageOrientation || 'portrait') === 'landscape';
@@ -8630,7 +8683,8 @@ function buildBuilderPrintView() {
     ${editorPanel}
     <div class="no-print" style="position:fixed;top:0;left:0;right:${toolbarRight};height:52px;background:var(--bg1);border-bottom:1px solid var(--border);z-index:9997;display:flex;align-items:center;gap:8px;padding:0 16px;transition:right .15s">
       <button onclick="ST.builderPrintMode=false;ST.builderPrintEditPanel=false;render()" style="background:var(--ink-900);color:var(--bone-50);border:0;padding:7px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase">← Exit</button>
-      <button onclick="window.print()" style="background:var(--bg);color:var(--ink-900);border:1px solid var(--ink-900);padding:6px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase">▤ Print</button>
+      <button onclick="printDoc('${pid}')" style="background:var(--bg);color:var(--ink-900);border:1px solid var(--ink-900);padding:6px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase" title="Opens your printer dialog — pick a printer, or Save as PDF">▤ Print</button>
+      <button onclick="printDoc('${pid}', true)" style="background:var(--ink-900);color:var(--bone-50);border:1px solid var(--ink-900);padding:6px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase" title="Same dialog — choose “Save as PDF” (or Microsoft Print to PDF) as the destination. The file is named for you.">⬇ PDF</button>
       <div style="flex:1"></div>
       <button onclick="ST.builderPrintEditPanel=${panelOpen?'false':'true'};render()" style="background:${panelOpen?'var(--ink-900)':'var(--bg)'};color:${panelOpen?'var(--bone-50)':'var(--ink-900)'};border:1px solid var(--ink-900);padding:6px 14px;font-family:var(--mono);font-size:11px;cursor:pointer;letter-spacing:.06em;text-transform:uppercase" title="Edit template settings">✎ Edit template</button>
     </div>
