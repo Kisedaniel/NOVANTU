@@ -4777,6 +4777,14 @@ const DEFAULT_SETTINGS = {
   emailSignature: '',
   theme: 'bone',
   defaultMarkup: { None: 0, Materials: 10, Labor: 25, Subcontractor: 15, Equipment: 12, Other: 10 },
+  // Overhead & profit pricing. OFF by default on purpose: switching it on
+  // changes what every existing estimate totals, and that must be a decision
+  // the shop makes, never something a deploy does to their numbers behind their
+  // back. `defaultMarkup.Labor` doubles as the installation-labor rate, so the
+  // estimator keeps one field rather than two that can disagree.
+  opMode: false,
+  overheadPct: 10,
+  profitPct: 25,
   costTypes: [...DEFAULT_COST_TYPES],
   brand: { wordmark: 'NOVANTU', subtitle: '', logoData: '', accentColor: '' },
   print: { companyName: '', companyAddress: '', companyPhone: '', companyLicense: '', headerText: '', footerText: '', notes: '', coverPage: false, showGridLines: false, logoOffsetX: 0, logoOffsetY: 0, showLogo: true, logoSize: 'md', logoAlign: 'left', infoAlign: 'left', infoDisplay: 'lines', headerStyle: 'split', rightCorner: 'price', projectNamePrefix: '', layoutStyle: 'standard', fontFamily: 'sans', accentInPdf: true, headerBg: '#000000', pageOrientation: 'portrait',
@@ -7594,23 +7602,137 @@ function buildBuilderItemRow(pid, gid, it, idx) {
   </div>`;
 }
 
+// The client-facing value of ONE line. Every screen that shows a price must go
+// through here, because there are now two pricing models and a screen that
+// computes its own total will quietly disagree with the Builder — the same
+// estimate showing two different numbers in two places is the worst bug this
+// product could ship. `op` is builderTotals(pid).op, or null for per-line mode.
+function lineClient(it, op) {
+  const raw = Number(it && it.qty || 0) * Number(it && it.unitCost || 0);
+  return op ? raw * op.k : raw * (1 + Number(it && it.markup || 0) / 100);
+}
+
 function builderProjectTotal(pid) {
   const est = ST.estimates[pid] || { groups: [] };
-  let total = 0;
+  let raw = 0, marked = 0;
   for (const g of est.groups) for (const it of (g.items||[])) {
-    total += Number(it.qty||0) * Number(it.unitCost||0) * (1 + Number(it.markup||0)/100);
+    const bc = Number(it.qty||0) * Number(it.unitCost||0);
+    raw += bc;
+    marked += bc * (1 + Number(it.markup||0)/100);
   }
-  return total;
+  const cfg = opSettings();
+  // Same chain the Builder uses, so a project's headline figure and the bid it
+  // opens onto can never disagree.
+  return cfg.on ? opChain(raw, cfg).price : marked;
+}
+// ═════════════════════════════════════════════════════════════════════════════
+// INSTALLATION LABOR, OVERHEAD AND PROFIT — the three numbers a bid is built on.
+// ------------------------------------------------------------
+// Until now the estimate had exactly ONE lever: a markup % per line, defaulted
+// from the cost type. Overhead, profit and the crew's time were all bundled
+// inside it, invisibly, line by line. That matched how this shop used to bid
+// ("no separate contractor fee or percentage is presented"), but it cannot
+// answer the owner's question — "am I making 25%?" — because nothing in the
+// document is 25% of anything.
+//
+// THE CHAIN, in the order the money actually stacks:
+//
+//   D  direct cost          Σ (qty × unitCost), straight from the price book,
+//                           NO per-line markup. The price book now holds COST
+//                           prices (researched, margin excluded), so this is
+//                           what the job costs to buy.
+//   L  installation labor   D × labor%. The crews' time. The price book prices
+//                           material, not the hours to install it, so without
+//                           this the estimate is missing about a third of the
+//                           real cost. It is a COST, not a margin.
+//   C  = D + L              total direct cost
+//   O  overhead             C × overhead%. Office, insurance, trucks, admin —
+//                           the cost of being a company, spread over the work.
+//   S  = C + O              everything the job costs
+//   P  profit               applied as a MARGIN, not a markup: price = S ÷
+//                           (1 − profit%). At 25% that is ×1.3333, not ×1.25.
+//                           Multiplying by 1.25 would keep 20% of the invoice,
+//                           not 25% — the single most expensive arithmetic
+//                           mistake in contracting, and the reason this is
+//                           spelled out here rather than left to a comment.
+//
+// WHY PER-LINE MARKUP IS IGNORED WHILE THIS IS ON: the base is deliberately the
+// unmarked cost. If the line markups still applied, every line would carry its
+// own margin AND then the job-level overhead and profit on top — marked up
+// twice, silently, and the "25%" would be a fiction. One model or the other,
+// never both. Turn this off and the old per-line behaviour returns untouched.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// The installation-labor rate deliberately reads the SAME setting the estimator
+// already maintains in Settings → Default markup by cost type → Labor, because
+// that is where they have been keeping this number. It means one field, not two
+// that can disagree.
+function opSettings() {
+  const s = (typeof getSettings === 'function' ? getSettings() : {}) || {};
+  return {
+    on: !!s.opMode,
+    laborPct: Math.max(0, Number((s.defaultMarkup || {}).Labor) || 0),
+    overheadPct: Math.max(0, Number(s.overheadPct) || 0),
+    // A 100% margin is a division by zero — an infinite price. Clamp below it
+    // and say so in the UI rather than rendering Infinity into a proposal.
+    profitPct: Math.min(95, Math.max(0, Number(s.profitPct) || 0)),
+  };
+}
+
+// The whole chain, from a direct cost to a price. Pure arithmetic — no state,
+// no rounding until the very end, so the parts always add up to the total.
+function opChain(directCost, cfg) {
+  const c = cfg || opSettings();
+  const D = Math.max(0, Number(directCost) || 0);
+  const L = D * c.laborPct / 100;
+  const C = D + L;
+  const O = C * c.overheadPct / 100;
+  const S = C + O;
+  const price = c.profitPct > 0 ? S / (1 - c.profitPct / 100) : S;
+  return {
+    D, L, C, O, S, price,
+    P: price - S,
+    // TWO factors, because two different things are being spread.
+    //
+    // k spreads the price over the PRICED LINES. Division subtotals are
+    // D_group × k, so the divisions always add up to the job total and neither
+    // overhead nor profit is ever named in the client's document — the way this
+    // shop's own proposals present them.
+    k: D > 0 ? price / D : 1,
+    // kc spreads the price over TOTAL COST, which includes the installation
+    // labor that is not a line item. The cost composition (labor vs materials)
+    // has to use this one: applying k there and then adding L × k on top counts
+    // the labor twice, because L is extra cost, not a slice of D.
+    kc: (D + L) > 0 ? price / (D + L) : 1,
+    cfg: c,
+  };
 }
 function builderTotals(pid) {
   const est = ST.estimates[pid] || { groups: [] };
-  let builder=0, client=0, itemCount=0;
+  let builder=0, client=0, itemCount=0, laborCost=0;
   for (const g of est.groups) for (const it of (g.items||[])) {
     const bc = Number(it.qty||0) * Number(it.unitCost||0);
     builder += bc; client += bc * (1 + Number(it.markup||0)/100); itemCount++;
+    // Lines the estimator already classified as Labor. Kept separately so the
+    // proposal's cost composition can report crew time honestly: these hours
+    // plus the computed installation labor, against everything else.
+    if (String(it.costType||'') === 'Labor') laborCost += bc;
   }
   const co = coTotals(pid);
-  return { builder, client: client + co.approved, markup: (client + co.approved) - builder, itemCount, approvedCO: co.approved, pendingCO: co.pending };
+  const cfg = opSettings();
+  if (cfg.on) {
+    // Overhead & profit mode: the price comes from the chain, built on the
+    // UNMARKED direct cost. Per-line markup is deliberately not applied — see
+    // the note above opChain.
+    const op = opChain(builder, cfg);
+    const total = op.price + co.approved;
+    return {
+      builder, client: total, markup: total - builder, itemCount,
+      approvedCO: co.approved, pendingCO: co.pending,
+      op, laborCost,
+    };
+  }
+  return { builder, client: client + co.approved, markup: (client + co.approved) - builder, itemCount, approvedCO: co.approved, pendingCO: co.pending, op: null, laborCost };
 }
 function builderGroupTotals(pid, gid) {
   const est = ST.estimates[pid] || { groups: [] };
@@ -7620,6 +7742,16 @@ function builderGroupTotals(pid, gid) {
     const bc = Number(it.qty||0) * Number(it.unitCost||0);
     builder += bc;
     client += bc * (1 + Number(it.markup||0)/100);
+  }
+  const cfg = opSettings();
+  if (cfg.on) {
+    // Each division carries its pro-rata share of labor, overhead and profit,
+    // through the one factor k. The shares therefore always add up to the job
+    // total, and no line in the client-facing document is ever labelled
+    // "profit" — which is exactly how this shop's own proposals read.
+    const t = builderTotals(pid);
+    const k = (t.op && t.op.k) || 1;
+    return { builder, client: builder * k };
   }
   return { builder, client };
 }
@@ -8282,19 +8414,35 @@ function proposalParseTerms(raw) {
 function proposalNumbers(pid, est, totals, pi) {
   const taxRate = Number(pi.taxRate) || 0;
   const taxBase = pi.taxBase || 'materials';
+  const op = totals && totals.op;
   let laborAmt = 0, otherAmt = 0, taxableBase = 0;
   for (const g of (est.groups || [])) {
     for (const it of (g.items || [])) {
-      const line = Number(it.qty || 0) * Number(it.unitCost || 0) * (1 + Number(it.markup || 0) / 100);
-      if (String(it.costType || '') === 'Labor') laborAmt += line; else otherAmt += line;
+      const raw = Number(it.qty || 0) * Number(it.unitCost || 0);
+      // Composition uses kc (price over TOTAL cost, labor included); the client-
+      // facing division amounts use k (price over the priced lines). Mixing
+      // them is what makes the two halves stop adding up to the total.
+      const comp = op ? raw * op.kc : raw * (1 + Number(it.markup || 0) / 100);
+      if (String(it.costType || '') === 'Labor') laborAmt += comp; else otherAmt += comp;
       const taxable = taxBase === 'flagged'
         ? !!it.taxable
         : ['Materials', 'Equipment'].includes(String(it.costType || ''));
-      if (taxable) taxableBase += line;
+      // Tax follows what the client is actually billed for the material, which
+      // is the k-based figure shown in the divisions.
+      if (taxable) taxableBase += op ? raw * op.k : raw * (1 + Number(it.markup || 0) / 100);
     }
   }
+  // The computed installation labor is crew time too — it belongs on the labor
+  // side, not lumped in with materials. With kc, labor + everything else sums
+  // to the price exactly.
+  if (op) laborAmt += op.L * op.kc;
   const taxAmt = taxableBase * taxRate / 100;
-  return { laborAmt, otherAmt, taxAmt, taxRate, base: Number(totals.client) || 0, grand: (Number(totals.client) || 0) + taxAmt };
+  return {
+    laborAmt, otherAmt, taxAmt, taxRate,
+    base: Number(totals.client) || 0,
+    grand: (Number(totals.client) || 0) + taxAmt,
+    op: op || null,
+  };
 }
 
 function buildProposalPages(o) {
@@ -8924,7 +9072,7 @@ function buildBuilderPrintView() {
         <tbody>
           ${est.groups.map((g, gi) => { const gt = builderGroupTotals(pid, g.id); const cols = compact ? 3 : 6; return `
             <tr style="background:#f1eee5;border-top:1px solid ${headerBg};border-bottom:1px solid #ccc;font-weight:700"><td style="padding:8px 6px" colspan="${cols}">${esc(g.code||'')} - ${esc(g.title||'(untitled)')}</td><td style="padding:8px 6px;text-align:right;font-family:var(--mono)">${fmt$(gt.builder)}</td>${compact?'':'<td></td>'}<td style="padding:8px 6px;text-align:right;font-family:var(--mono);color:${accent}">${fmt$(gt.client)}</td></tr>
-            ${(g.items||[]).map((it, idx) => { const qty=Number(it.qty||0), uc=Number(it.unitCost||0), bc=qty*uc, cp=bc*(1+Number(it.markup||0)/100); return `<tr style="border-bottom:1px solid #eee"><td style="padding:7px 6px;font-family:var(--mono);font-size:10px;color:#666">${(g.code||'').slice(-2).padStart(2,'0')}${String(idx+1).padStart(2,'0')}</td><td style="padding:7px 6px"><div style="font-weight:600">${esc(it.title||'')}</div>${it.description?`<div style="font-size:${compact?10:11}px;color:#666;margin-top:2px">${esc(it.description)}</div>`:''}</td>${compact?'':`<td style="padding:7px 6px;text-align:right;font-family:var(--mono)">${qty.toFixed(2)}</td>`}${compact?'':`<td style="padding:7px 6px;font-family:var(--mono);color:#666">${esc(it.unit||'--')}</td>`}${compact?'':`<td style="padding:7px 6px;text-align:right;font-family:var(--mono)">${fmt$(uc)}</td>`}${compact?'':`<td style="padding:7px 6px;font-family:var(--mono);font-size:11px">${esc(it.costType||'None')}</td>`}<td style="padding:7px 6px;text-align:right;font-family:var(--mono);font-weight:600">${fmt$(bc)}</td>${compact?'':`<td style="padding:7px 6px;text-align:right;font-family:var(--mono);color:#666">${Number(it.markup||0).toFixed(2)}%</td>`}<td style="padding:7px 6px;text-align:right;font-family:var(--mono);font-weight:600;color:${accent}">${fmt$(cp)}</td></tr>`; }).join('')}
+            ${(g.items||[]).map((it, idx) => { const qty=Number(it.qty||0), uc=Number(it.unitCost||0), bc=qty*uc, cp=lineClient(it, totals.op); return `<tr style="border-bottom:1px solid #eee"><td style="padding:7px 6px;font-family:var(--mono);font-size:10px;color:#666">${(g.code||'').slice(-2).padStart(2,'0')}${String(idx+1).padStart(2,'0')}</td><td style="padding:7px 6px"><div style="font-weight:600">${esc(it.title||'')}</div>${it.description?`<div style="font-size:${compact?10:11}px;color:#666;margin-top:2px">${esc(it.description)}</div>`:''}</td>${compact?'':`<td style="padding:7px 6px;text-align:right;font-family:var(--mono)">${qty.toFixed(2)}</td>`}${compact?'':`<td style="padding:7px 6px;font-family:var(--mono);color:#666">${esc(it.unit||'--')}</td>`}${compact?'':`<td style="padding:7px 6px;text-align:right;font-family:var(--mono)">${fmt$(uc)}</td>`}${compact?'':`<td style="padding:7px 6px;font-family:var(--mono);font-size:11px">${esc(it.costType||'None')}</td>`}<td style="padding:7px 6px;text-align:right;font-family:var(--mono);font-weight:600">${fmt$(bc)}</td>${compact?'':`<td style="padding:7px 6px;text-align:right;font-family:var(--mono);color:#666">${totals.op ? 'O&amp;P' : Number(it.markup||0).toFixed(2) + '%'}</td>`}<td style="padding:7px 6px;text-align:right;font-family:var(--mono);font-weight:600;color:${accent}">${fmt$(cp)}</td></tr>`; }).join('')}
           `; }).join('')}
           <tr style="border-top:2px solid ${headerBg};background:${headerBg};color:#fff;font-weight:700"><td style="padding:10px 6px" colspan="${compact?3:6}">TOTAL</td><td style="padding:10px 6px;text-align:right;font-family:var(--mono)">${fmt$(totals.builder)}</td>${compact?'':'<td></td>'}<td style="padding:10px 6px;text-align:right;font-family:var(--mono)">${fmt$(totals.client)}</td></tr>
         </tbody>
@@ -10315,6 +10463,7 @@ function buildSettingsTab() {
     </div>
 
     <div style="margin-bottom:24px"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px"><div class="nv-set-kick" style="font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)">Default markup by cost type</div><div style="font-family:var(--mono);font-size:10px;color:var(--text3);font-style:italic">Applied when adding a Builder item.</div></div>
+      ${buildOpSettingsPanel()}
       <div style="border:1px solid var(--border);background:var(--bg);overflow:hidden">
         ${COST_TYPES.map(ct => `<div style="display:grid;grid-template-columns:200px 1fr 100px 40px;align-items:center;padding:10px 18px;border-bottom:1px solid var(--border);gap:10px"><div style="font-size:13px;color:var(--ink-900);font-weight:500">${esc(ct)}</div><div style="font-family:var(--mono);font-size:11px;color:var(--text3)">${ct==='None'?'No category':ct==='Materials'?'Wood, hardware':ct==='Labor'?'In-house crews':ct==='Subcontractor'?'External trades':ct==='Equipment'?'Rentals':'Custom'}</div><div style="display:flex;align-items:center;gap:6px"><input type="number" step="0.5" class="minp" style="text-align:right;font-family:var(--mono)" value="${s.defaultMarkup?.[ct] ?? 0}" onchange="settingsSetMarkup('${esc(ct)}', Number(this.value))"><span style="font-family:var(--mono);font-size:11px;color:var(--text3)">%</span></div>${DEFAULT_COST_TYPES.includes(ct) ? '' : `<button class="btn btn-ghost btn-sm" style="color:var(--red);padding:3px 6px" onclick="settingsRemoveCostType('${esc(ct)}')">✕</button>`}</div>`).join('')}
         <div style="padding:10px 18px;display:flex;gap:8px;align-items:center"><input type="text" class="minp" id="new-ct" placeholder="Add custom cost type…" onkeydown="if(event.key==='Enter')settingsAddCostType()" style="flex:1"><button class="btn btn-amber btn-sm" onclick="settingsAddCostType()">+ Add type</button></div>
@@ -10454,6 +10603,67 @@ function settingsSet(key, value) {
   // disabled for everyone else; this guard is the backstop).
   if ((key === 'currency' || key === 'language') && !AUTH.isMaster) { showToast('Currency & language are set by NOVANTU for your workspace — contact support to change them.', 'warn'); render(); return; }
   if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); ST.settings[key] = value; saveSt(); render();
+}
+// The Overhead & Profit panel in Settings. It lives directly above the per-cost-
+// type markup table because the two are alternatives, not companions: switching
+// this on takes the per-line markup out of the arithmetic entirely, and the
+// panel says so rather than leaving the estimator to discover it from a total
+// that changed.
+function buildOpSettingsPanel() {
+  const c = opSettings();
+  // A worked example is the whole point of this panel. "25% profit" reads as
+  // one thing and computes as another, and $50,000 of direct cost makes the
+  // difference impossible to misread.
+  const demo = opChain(50000, c);
+  const row = (label, hint, val, onchange, suffix) => `
+    <div style="display:grid;grid-template-columns:200px 1fr 100px 24px;align-items:center;padding:10px 18px;border-bottom:1px solid var(--border);gap:10px">
+      <div style="font-size:13px;color:var(--ink-900);font-weight:500">${label}</div>
+      <div style="font-family:var(--mono);font-size:11px;color:var(--text3)">${hint}</div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <input type="number" step="0.5" min="0" class="minp" style="text-align:right;font-family:var(--mono)" value="${val}" onchange="${onchange}">
+        <span style="font-family:var(--mono);font-size:11px;color:var(--text3)">${suffix || '%'}</span>
+      </div><div></div>
+    </div>`;
+  const money = (v) => (typeof fmt$ === 'function') ? fmt$(v) : ('$' + Math.round(v).toLocaleString());
+  return `
+    <div style="border:1px solid var(--border);background:var(--bg);overflow:hidden;margin-bottom:10px">
+      <label style="display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border);cursor:pointer;background:${c.on ? 'var(--amber-bg)' : 'transparent'}">
+        <input type="checkbox" ${c.on ? 'checked' : ''} onchange="settingsSetOpMode(this.checked)">
+        <span style="font-size:13px;color:var(--ink-900);font-weight:600">Price with installation labor, overhead and profit</span>
+        <span style="flex:1"></span>
+        <span style="font-family:var(--mono);font-size:10px;color:${c.on ? 'var(--amber)' : 'var(--text3)'}">${c.on ? 'ON — per-line markup is not applied' : 'OFF — using per-line markup'}</span>
+      </label>
+      ${c.on ? `
+      ${row('Installation labor', 'crew time as % of the priced cost — reads your Labor markup', c.laborPct, "settingsSetMarkup('Labor', Number(this.value))")}
+      ${row('Overhead', 'office, insurance, trucks, admin — on cost + labor', c.overheadPct, 'settingsSetPath([\'overheadPct\'], Number(this.value))')}
+      ${row('Profit', 'kept as a share OF THE PRICE, not added to cost', c.profitPct, 'settingsSetPath([\'profitPct\'], Number(this.value))')}
+      <div style="padding:14px 18px;background:var(--bg1)">
+        <div style="font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:8px">On a job costing ${money(50000)} from your price book</div>
+        <div style="display:grid;grid-template-columns:1fr auto;gap:2px 18px;font-size:12px;max-width:420px">
+          <div style="color:var(--text2)">Direct cost (price book)</div><div style="font-family:var(--mono);text-align:right;color:var(--ink-900)">${money(demo.D)}</div>
+          <div style="color:var(--text2)">+ Installation labor · ${c.laborPct}%</div><div style="font-family:var(--mono);text-align:right;color:var(--ink-900)">${money(demo.L)}</div>
+          <div style="color:var(--text2);border-top:1px solid var(--border);padding-top:3px">Total direct cost</div><div style="font-family:var(--mono);text-align:right;color:var(--ink-900);border-top:1px solid var(--border);padding-top:3px">${money(demo.C)}</div>
+          <div style="color:var(--text2)">+ Overhead · ${c.overheadPct}%</div><div style="font-family:var(--mono);text-align:right;color:var(--ink-900)">${money(demo.O)}</div>
+          <div style="color:var(--text2)">+ Profit · ${c.profitPct}% of the price</div><div style="font-family:var(--mono);text-align:right;color:var(--ink-900)">${money(demo.P)}</div>
+          <div style="color:var(--ink-900);font-weight:700;border-top:1px solid var(--ink-700);padding-top:3px">Price to the GC</div><div style="font-family:var(--mono);text-align:right;color:var(--ink-900);font-weight:700;border-top:1px solid var(--ink-700);padding-top:3px">${money(demo.price)}</div>
+        </div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text3);line-height:1.6;margin-top:10px">
+          Profit is ${c.profitPct}% of ${money(demo.price)} = ${money(demo.P)}. Adding ${c.profitPct}% to the cost instead would have kept only ${(demo.S > 0 ? (100 * (demo.S * c.profitPct / 100) / (demo.S * (1 + c.profitPct / 100))).toFixed(1) : '0')}% — that is the difference between markup and margin.<br>
+          Nothing above is printed on the proposal. Each division carries its share, the way your past bids read.
+        </div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--amber);line-height:1.6;margin-top:8px;border-top:1px solid var(--border);padding-top:8px">
+          △ Installation labor is charged on the WHOLE priced cost, including any line you already typed as cost type Labor — so a job with its own labor lines gets labor twice over. Check “Owner-Facing Cost Composition” on a real bid: if the labor share lands far above your usual ${'≈'}28%, either drop those Labor lines or lower this %.
+        </div>
+      </div>` : `
+      <div style="padding:14px 18px;font-family:var(--mono);font-size:11px;color:var(--text3);line-height:1.6">
+        Off: each line is priced by its own markup % from the table below, and overhead and profit stay buried inside those numbers. Switch it on to set them explicitly — the price book holds cost prices, so this is what turns cost into a bid.
+      </div>`}
+    </div>`;
+}
+function settingsSetOpMode(on) {
+  if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  ST.settings.opMode = !!on;
+  saveSt(); render();
 }
 function settingsSetMarkup(ct, val) { if (!ST.settings) ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); if (!ST.settings.defaultMarkup) ST.settings.defaultMarkup = {}; ST.settings.defaultMarkup[ct] = val; saveSt(); render(); }
 function settingsResetDefaults() { if (!confirm('Reset all settings? Data not affected.')) return; ST.settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)); saveSt(); render(); }
@@ -11601,15 +11811,30 @@ function exportEstimateCSV(pid){
   const proj=allProjects().find(p=>p.id===pid);
   const est=ST.estimates[pid]||{groups:[]};
   if(est.groups.length===0){showToast('Estimate is empty.','error');return;}
+  const _t=builderTotals(pid); const op=_t.op;
   const rows=[['Group code','Group title','Item #','Title','Code','Description','Qty','Unit','Unit cost','Cost type','Markup %','Builder cost','Client price']];
   let tBC=0,tCP=0;
   for(const g of est.groups){
     for(let idx=0;idx<(g.items||[]).length;idx++){
-      const it=g.items[idx];const q=Number(it.qty||0),u=Number(it.unitCost||0);const bc=q*u;const cp=bc*(1+Number(it.markup||0)/100);tBC+=bc;tCP+=cp;
-      rows.push([g.code||'',g.title||'',idx+1,it.title||'',it.code||'',it.description||'',q,it.unit||'',u,it.costType||'None',it.markup||0,bc.toFixed(2),cp.toFixed(2)]);
+      const it=g.items[idx];const q=Number(it.qty||0),u=Number(it.unitCost||0);const bc=q*u;const cp=lineClient(it,op);tBC+=bc;tCP+=cp;
+      // In O&P mode the line's own markup % is not what priced it, so the column
+      // says so rather than printing a number the total does not reflect.
+      rows.push([g.code||'',g.title||'',idx+1,it.title||'',it.code||'',it.description||'',q,it.unit||'',u,it.costType||'None',op?'(O&P)':(it.markup||0),bc.toFixed(2),cp.toFixed(2)]);
     }
   }
   rows.push([]); rows.push(['','','','','','TOTAL','','','','','',tBC.toFixed(2),tCP.toFixed(2)]);
+  // The chain, spelled out, so the export can be reconciled line by line by
+  // whoever checks the bid — including Esvin.
+  if(op){
+    rows.push([]);
+    rows.push(['','','','','','PRICING','','','','','','','']);
+    rows.push(['','','','','','Direct cost (price book)','','','','','','',op.D.toFixed(2)]);
+    rows.push(['','','','','',`Installation labor · ${op.cfg.laborPct}%`,'','','','','','',op.L.toFixed(2)]);
+    rows.push(['','','','','','Total direct cost','','','','','','',op.C.toFixed(2)]);
+    rows.push(['','','','','',`Overhead · ${op.cfg.overheadPct}%`,'','','','','','',op.O.toFixed(2)]);
+    rows.push(['','','','','',`Profit · ${op.cfg.profitPct}% of price`,'','','','','','',op.P.toFixed(2)]);
+    rows.push(['','','','','','PRICE','','','','','','',op.price.toFixed(2)]);
+  }
   const csv=rows.map(r=>r.map(c=>{const s=String(c??'');return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\n');
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
   const url=URL.createObjectURL(blob);const a=document.createElement('a');
@@ -11642,7 +11867,10 @@ function openVersionsModal(pid){ST.versionsModal=pid;render();}
 function buildVersionsModal(){
   const pid=ST.versionsModal;if(!pid)return'';
   const proj=allProjects().find(p=>p.id===pid);const versions=ST.estimateVersions[pid]||[];const curr=ST.estimates[pid]||{groups:[]};
-  function st(v){let bc=0,cp=0,it=0;for(const g of v.groups)for(const x of(g.items||[])){const q=Number(x.qty||0),u=Number(x.unitCost||0);bc+=q*u;cp+=q*u*(1+Number(x.markup||0)/100);it++;}return{items:it,bc,cp};}
+  // A saved version is priced by whatever model is in force now, so comparing
+  // two versions compares scope — not one version measured with a ruler the
+  // other never saw.
+  function st(v){const cfg=opSettings();let bc=0,cp=0,it=0;for(const g of v.groups)for(const x of(g.items||[])){const q=Number(x.qty||0),u=Number(x.unitCost||0);bc+=q*u;cp+=q*u*(1+Number(x.markup||0)/100);it++;}return{items:it,bc,cp:cfg.on?opChain(bc,cfg).price:cp};}
   const cur=st(curr);
   return `<div class="backdrop" onclick="if(event.target===this){ST.versionsModal=null;render()}"><div class="modal modal-wide" style="max-width:880px"><div class="modal-title">Estimate versions</div><div class="modal-sub">${esc(proj?.name||'')} - ${versions.length} snapshot${versions.length!==1?'s':''}</div>
     <div style="margin-top:14px;padding:10px 14px;background:var(--bg1);border:1px solid var(--border);display:flex;justify-content:space-between;align-items:center"><div><div style="font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text3)">Current</div><div style="font-size:13px;color:var(--ink-900);font-weight:500;margin-top:2px">${cur.items} items - ${fmt$(cur.cp)} price</div></div><button class="btn btn-amber btn-sm" onclick="ST.versionsModal=null;render();builderSnapshot('${pid}')">+ Snapshot now</button></div>
@@ -15341,6 +15569,14 @@ function gcBreakdownClose() { aiOutcomeOnce(ST.gcBreakdown, false); ST.gcBreakdo
 async function aiCompleteText(pid, userPrompt, planImages, opts) {
   const ctx = estBuildContext(pid);
   if (opts && opts.lean) { ctx.priceList = []; ctx.reviewItems = []; ctx.derivedCodes = []; ctx.openRfis = []; }
+  // THE PRICE LIST RIDES ONLY WHEN THE QUESTION IS ABOUT PRICES.
+  // It used to go on every non-lean call. That was fine when the catalog was a
+  // dozen rows; the book now grows on its own every time the AI researches an
+  // item (73 rows and counting), so "what's our usual markup?" was carrying the
+  // entire catalog — roughly a thousand tokens of pure waste, on every single
+  // message. Every task that genuinely needs the list embeds it in its own
+  // prompt, so nothing downstream loses anything.
+  else if (ctx.priceList && ctx.priceList.length && !asstWantsPrices(userPrompt)) ctx.priceList = [];
   // opts.history = prior turns of the SAME conversation. Without it every
   // message was a cold start: the assistant could not remember what you told it
   // one line earlier, which read as amnesia. One-shot tasks (take-off, schedule,
@@ -19386,6 +19622,13 @@ const ASST_PLANS_YES = /\b(plans?|sheets?|drawings?|blueprint|pdf)\b|planos?|hoj
 // An explicit opt-out always wins — the escape hatch for when the heuristic is
 // wrong, and it costs the estimator three words.
 const ASST_PLANS_NO = /\bno plans?\b|without the plans?|don'?t read|do not read|sin (los )?planos|no leas|sin leer|from memory|de memoria/i;
+
+// Does this question need the workspace's catalog in front of the model? Kept
+// deliberately generous — a false positive costs about a thousand tokens, while
+// a false negative makes the assistant answer a pricing question without the
+// prices, which is worse.
+const ASST_PRICES_YES = /pric|cost|\$|quote|cotiz|precio|costo|catalog|cat[aá]logo|price ?book|libro de precio|item|product|producto|material|equipo|equipment|unit|rate|tarifa|markup|margen|margin|budget|presupuesto|estimat|cu[aá]nto (cuesta|vale)|how much/i;
+function asstWantsPrices(msg) { return ASST_PRICES_YES.test(String(msg || '')); }
 
 function asstWantsPlans(msg) {
   const s = String(msg || '');
